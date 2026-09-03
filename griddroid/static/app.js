@@ -88,8 +88,8 @@ function renderGrid() {
         devices.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || ""));
     }
 
-    // Aggiorna colonne CSS
-    grid.style.setProperty("--grid-cols", state.gridCols);
+    // Aggiorna colonne CSS in base a zoom e larghezza container
+    updateGridColumns();
 
     // Costruisci o aggiorna le celle
     const existingCells = grid.querySelectorAll(".device-cell");
@@ -195,6 +195,7 @@ function wrapDeviceCard(cell, dev) {
             <span class="status-dot ${dev.status}"></span>
             <span class="device-status-label status-${dev.status}">${escapeHtml(getDeviceStatusLabel(dev.status))}</span>
         </div>
+        <div class="device-tags"></div>
     `;
 
     const nameEl = label.querySelector(".device-name");
@@ -232,6 +233,20 @@ function updateDeviceCell(cell, dev) {
     if (statusLabel && statusLabel !== document.activeElement) {
         statusLabel.textContent = getDeviceStatusLabel(dev.status);
         statusLabel.className = `device-status-label status-${dev.status}`;
+    }
+
+    // Gruppi / tag
+    const tagsEl = card?.querySelector(".device-tags");
+    if (tagsEl) {
+        const tags = dev.tags || [];
+        tagsEl.dataset.tags = tags.join(",");
+        tagsEl.innerHTML = tags
+            .slice(0, 5)
+            .map((t) => `<span class="device-tag">${escapeHtml(t)}</span>`)
+            .join("");
+        if (tags.length > 5) {
+            tagsEl.innerHTML += `<span class="device-tag">+${tags.length - 5}</span>`;
+        }
     }
 
     // Classi celle
@@ -1289,11 +1304,25 @@ function initHeaderButtons() {
         toast("Stream fermati");
     });
 
-    // Grid cols
-    document.getElementById("gridCols").addEventListener("change", (e) => {
-        state.gridCols = parseInt(e.target.value) || 5;
-        document.getElementById("deviceGrid").style.setProperty("--grid-cols", state.gridCols);
-    });
+    // Max colonne (il numero effettivo si adatta a zoom e larghezza)
+    const gridColsInput = document.getElementById("gridCols");
+    if (gridColsInput) {
+        state.gridCols = parseInt(gridColsInput.value) || 10;
+        gridColsInput.addEventListener("change", (e) => {
+            state.gridCols = parseInt(e.target.value) || 10;
+            if (state.gridCols < 2) state.gridCols = 2;
+            if (state.gridCols > 20) state.gridCols = 20;
+            e.target.value = state.gridCols;
+            updateGridColumns();
+        });
+    }
+
+    // Adatta colonne al ridimensionamento finestra / multi-schermo
+    const gridContainer = document.getElementById("gridContainer");
+    if (gridContainer && "ResizeObserver" in window) {
+        const resizeObserver = new ResizeObserver(updateGridColumns);
+        resizeObserver.observe(gridContainer);
+    }
 
     // Ordinamento
     const btnSort = document.getElementById("btnSort");
@@ -1402,10 +1431,22 @@ function escapeHtml(str) {
 // Zoom Feed
 // =====================================================================
 
+function updateGridColumns() {
+    const grid = document.getElementById("deviceGrid");
+    const container = document.getElementById("gridContainer");
+    if (!grid || !container) return;
+    const baseWidth = 260 * (state.feedZoom || 1);
+    const maxCols = Math.max(2, state.gridCols || 10);
+    const width = container.clientWidth;
+    let cols = Math.max(2, Math.min(maxCols, Math.round(width / baseWidth)));
+    grid.style.setProperty("--grid-cols", cols);
+}
+
 function applyZoom() {
     document.documentElement.style.setProperty("--feed-zoom", state.feedZoom);
     const label = document.getElementById("zoomLabel");
     if (label) label.textContent = Math.round(state.feedZoom * 100) + "%";
+    updateGridColumns();
 }
 
 function initZoomControls() {
@@ -1769,17 +1810,26 @@ function removeGroup(name) {
     let groups = loadStoredGroups();
     groups = groups.filter((g) => g !== name);
     saveStoredGroups(groups);
+
+    // Rimuove il tag anche da tutti i dispositivi
+    state.devices.forEach((d) => {
+        if ((d.tags || []).includes(name)) {
+            d.tags = (d.tags || []).filter((t) => t !== name);
+            wsSend({ action: "tags", serial: d.serial, tags: d.tags });
+        }
+    });
+
     renderGroups();
     renderAssignDevice();
+    renderGrid();
     toast(`Gruppo "${name}" rimosso`, "success");
 }
 
 function selectGroup(name) {
     state.devices.forEach((d) => {
-        if ((d.tags || []).includes(name) && !d.selected) {
-            d.selected = true;
-            wsSend({ action: "select", serial: d.serial, selected: true });
-        }
+        const inGroup = (d.tags || []).includes(name);
+        d.selected = inGroup;
+        wsSend({ action: "select", serial: d.serial, selected: inGroup });
     });
     renderGrid();
     renderPhoneSelection();

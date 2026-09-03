@@ -410,9 +410,6 @@ body::before {
     -webkit-user-drag: none;
     cursor: crosshair;
     display: block;
-    transform: scale(var(--feed-zoom, 1));
-    transform-origin: center center;
-    transition: transform 0.2s var(--ease);
     z-index: 1;
 }
 
@@ -496,6 +493,36 @@ body::before {
     align-items: center;
     gap: 8px;
     width: 100%;
+}
+
+.status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    pointer-events: auto;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.device-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    width: 100%;
+}
+
+.device-tag {
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--text-0);
+    background: var(--bg-3);
+    border: 1px solid var(--border-hover);
+    border-radius: var(--r-xs);
+    padding: 1px 4px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .status-dot {
