@@ -11,7 +11,7 @@ const state = {
     fullscreenSerial: null,
     logCount: 0,
     ws: null,
-    gridCols: 5,
+    gridCols: 20,
     feedZoom: 1.0,
     sortBy: false,
     searchText: "",
@@ -655,6 +655,17 @@ document.addEventListener("keydown", (e) => {
     // Ignora se il focus è su un input o textarea
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
 
+    // Copia / incolla / taglia / seleziona tutto: Ctrl (o Cmd) + C/V/X/A
+    if (e.ctrlKey || e.metaKey) {
+        const k = e.key.toLowerCase();
+        if (k === "c" || k === "v" || k === "x" || k === "a") {
+            e.preventDefault();
+            sendClipboardShortcut(k);
+            return;
+        }
+        return;
+    }
+
     // Mappa tasti speciali
     const keyMap = {
         "Backspace": 67,
@@ -677,6 +688,29 @@ document.addEventListener("keydown", (e) => {
         wsSend({ action: "text", text: e.key });
     }
 });
+
+async function sendClipboardShortcut(key) {
+    if (!state.focusedSerial && !state.broadcastMode) {
+        toast("Seleziona un dispositivo per Ctrl+" + key.toUpperCase(), "warn");
+        return;
+    }
+    if (key === "v") {
+        // Ctrl+V: prova a incollare il testo degli appunti del PC
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text) {
+                wsSend({ action: "text", text });
+                toast("Testo incollato sul dispositivo", "success");
+                return;
+            }
+        } catch {}
+    }
+    const keyMap = { "a": 29, "c": 31, "v": 50, "x": 52 };
+    const keycode = keyMap[key];
+    if (keycode) {
+        wsSend({ action: "keyevent", keycode, metastate: 0x1000 });
+    }
+}
 
 // =====================================================================
 // Toolbar Actions
@@ -1307,11 +1341,11 @@ function initHeaderButtons() {
     // Max colonne (il numero effettivo si adatta a zoom e larghezza)
     const gridColsInput = document.getElementById("gridCols");
     if (gridColsInput) {
-        state.gridCols = parseInt(gridColsInput.value) || 10;
+        state.gridCols = parseInt(gridColsInput.value) || 20;
         gridColsInput.addEventListener("change", (e) => {
-            state.gridCols = parseInt(e.target.value) || 10;
+            state.gridCols = parseInt(e.target.value) || 20;
             if (state.gridCols < 2) state.gridCols = 2;
-            if (state.gridCols > 20) state.gridCols = 20;
+            if (state.gridCols > 40) state.gridCols = 40;
             e.target.value = state.gridCols;
             updateGridColumns();
         });
@@ -1322,6 +1356,17 @@ function initHeaderButtons() {
     if (gridContainer && "ResizeObserver" in window) {
         const resizeObserver = new ResizeObserver(updateGridColumns);
         resizeObserver.observe(gridContainer);
+    }
+
+    // Zoom con Ctrl + rotellina del mouse
+    if (gridContainer) {
+        gridContainer.addEventListener("wheel", (e) => {
+            if (!e.ctrlKey && !e.metaKey) return;
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? -0.05 : 0.05;
+            state.feedZoom = Math.min(3.0, Math.max(0.25, state.feedZoom + delta));
+            applyZoom();
+        }, { passive: false });
     }
 
     // Ordinamento
@@ -1459,7 +1504,7 @@ function initZoomControls() {
         applyZoom();
     });
     if (btnOut) btnOut.addEventListener("click", () => {
-        state.feedZoom = Math.max(0.5, state.feedZoom - 0.05);
+        state.feedZoom = Math.max(0.25, state.feedZoom - 0.05);
         applyZoom();
     });
     if (btnReset) btnReset.addEventListener("click", () => {

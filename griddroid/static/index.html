@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
-    <link rel="stylesheet" href="/static/style.css?v=24">
+    <link rel="stylesheet" href="/static/style.css?v=25">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -209,7 +209,7 @@
                     <h4>Impostazioni</h4>
                     <div class="input-group">
                         <label>Max colonne</label>
-                        <input type="number" id="gridCols" value="10" min="2" max="20" />
+                        <input type="number" id="gridCols" value="20" min="2" max="40" />
                     </div>
                     <div class="input-group">
                         <label>Max FPS</label>
@@ -288,7 +288,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=24"></script>
+    <script src="/static/app.js?v=25"></script>
     <script>
     (async () => {
         try {

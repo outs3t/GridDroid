@@ -725,7 +725,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             )
 
         elif action == "keyevent":
-            await input_relay.keyevent(cmd.get("keycode", 0))
+            await input_relay.keyevent(
+                cmd.get("keycode", 0),
+                cmd.get("metastate", 0),
+            )
 
         elif action == "text":
             await input_relay.text(cmd.get("text", ""))
