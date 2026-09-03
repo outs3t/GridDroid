@@ -130,6 +130,12 @@ class AdbManager:
             return
         self._running = True
         logs.info("ADB Manager avviato")
+        # Sveglia il daemon ADB: con molti device il primo polling puo' essere incompleto
+        try:
+            await self.adb_command("start-server")
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            logs.warn(f"Impossibile avviare ADB server: {exc}")
         self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def stop(self) -> None:
@@ -165,10 +171,21 @@ class AdbManager:
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout
                 )
+                out_str = stdout.decode("utf-8", errors="replace")
+                err_str = stderr.decode("utf-8", errors="replace")
+                # Se un dispositivo specifico sparisce da ADB, sincronizziamo subito lo stato
+                if serial and serial in self._devices:
+                    combined = (out_str + err_str).lower()
+                    if "not found" in combined or "device offline" in combined or "no devices" in combined:
+                        dev = self._devices[serial]
+                        if dev.status != DeviceStatus.DISCONNECTED:
+                            dev.status = DeviceStatus.DISCONNECTED
+                            dev.streaming = False
+                            logs.warn("Dispositivo segnato offline da ADB", serial=serial)
                 return (
                     proc.returncode or 0,
-                    stdout.decode("utf-8", errors="replace"),
-                    stderr.decode("utf-8", errors="replace"),
+                    out_str,
+                    err_str,
                 )
             except asyncio.TimeoutError:
                 logs.warn(f"Timeout comando ADB: {' '.join(cmd)}")
@@ -264,36 +281,40 @@ class AdbManager:
             dev.error = ""
 
     async def _refresh_devices(self) -> None:
-        rc, out, err = await self.adb_command("devices", "-l")
-        if rc != 0:
-            logs.warn(f"adb devices -l fallito: {err}")
-            return
-
+        # Rilevazione robusta per grandi farm: `adb devices -l` puo' troncare con
+        # molti dispositivi, quindi usiamo `adb devices` per lo stato e fondiamo
+        # piu' tentativi; poi arricchiamo con `adb devices -l`.
         seen_serials: set = set()
-        for match in _DEVICE_RE.finditer(out):
-            serial = match.group("serial")
-            if serial == "List":
-                continue
-            seen_serials.add(serial)
-            self._upsert_device(
-                serial,
-                match.group("state"),
-                model=match.group("model"),
-                product=match.group("product"),
-                usb=match.group("usb"),
-                tid=match.group("tid"),
-            )
+        for attempt in range(3):
+            rc, out, _ = await self.adb_command("devices")
+            if rc == 0 and out:
+                for match in _DEVICE_RE_PLAIN.finditer(out):
+                    serial = match.group("serial")
+                    if serial == "List":
+                        continue
+                    if serial not in seen_serials:
+                        seen_serials.add(serial)
+                        self._upsert_device(serial, match.group("state"))
+                if len(seen_serials) >= 15:
+                    break
+            if attempt < 2:
+                await asyncio.sleep(0.2)
 
-        # Fallback: alcuni client ADB troncano `adb devices -l` con molti
-        # dispositivi, ma `adb devices` (senza -l) e' piu' corto e arriva intero.
-        rc2, out2, _ = await self.adb_command("devices")
-        if rc2 == 0 and out2:
-            for match in _DEVICE_RE_PLAIN.finditer(out2):
+        # Arricchisce con i dettagli di `adb devices -l` per i seriali gia' trovati
+        rc_l, out_l, _ = await self.adb_command("devices", "-l")
+        if rc_l == 0 and out_l:
+            for match in _DEVICE_RE.finditer(out_l):
                 serial = match.group("serial")
-                if serial == "List" or serial in seen_serials:
+                if serial == "List" or serial not in seen_serials:
                     continue
-                seen_serials.add(serial)
-                self._upsert_device(serial, match.group("state"))
+                self._upsert_device(
+                    serial,
+                    match.group("state"),
+                    model=match.group("model"),
+                    product=match.group("product"),
+                    usb=match.group("usb"),
+                    tid=match.group("tid"),
+                )
 
         logs.info(f"Dispositivi ADB rilevati: {len(seen_serials)}")
 
