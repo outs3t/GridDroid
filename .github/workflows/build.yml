@@ -85,7 +85,8 @@ jobs:
           Copy-Item -Path dist\GridDroid_Setup.exe -Destination .gh-pages-work\GridDroid_Setup.exe -Force
           Copy-Item -Path version.json -Destination .gh-pages-work\version.json -Force
           Push-Location .gh-pages-work
+          git pull --rebase origin gh-pages
           git add -A
-          git commit -m "release: GridDroid_Setup.exe v$ver"
+          git commit -m "release: GridDroid_Setup.exe v$ver" || exit 0
           git push origin gh-pages
           Pop-Location
