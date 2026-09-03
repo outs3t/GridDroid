@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Dict, List, Optional
 
@@ -174,12 +175,12 @@ class ScriptEngine:
 
             output: List[str] = []
             for cmd in script.comandi:
-                # Sostituisce i placeholder {param} con i valori forniti
+                # Sostituisce i placeholder {param} con i valori forniti, quotati
+                # per evitare shell injection lato dispositivo.
                 reale = cmd
                 for p in script.parametri:
-                    reale = reale.replace(
-                        "{" + p.name + "}", str(params.get(p.name, p.default)),
-                    )
+                    val = shlex.quote(str(params.get(p.name, p.default)))
+                    reale = reale.replace("{" + p.name + "}", val)
                 out = await self._adb.shell(serial, reale, timeout=script.timeout)
                 if out:
                     output.append(out)
@@ -372,6 +373,10 @@ class ScriptEngine:
         """Stress test casuale su un'app: utile per test massivi di stabilità."""
         pacchetto = str(params.get("pacchetto", "")).strip()
         eventi = str(params.get("eventi", "500")).strip() or "500"
+        if not re.match(r"^[A-Za-z][A-Za-z0-9_\.]*$", pacchetto):
+            return ScriptResult(serial, False, "Nome pacchetto non valido")
+        if not re.match(r"^[1-9]\d*$", eventi):
+            return ScriptResult(serial, False, "Numero di eventi non valido")
         cmd = (
             f"monkey -p {pacchetto} --throttle 100 "
             f"--pct-syskeys 0 --ignore-crashes --ignore-timeouts "

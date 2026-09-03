@@ -6,12 +6,13 @@ import asyncio
 import base64
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -30,6 +31,24 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         settings = load_settings()
 
     app = FastAPI(title="GridDroid", version="0.1.0")
+
+    # Protezione CSRF / Origin: accettiamo solo richieste dalla stessa origine.
+    _allowed_hosts = {"127.0.0.1", "localhost"}
+    if settings.host and settings.host not in ("0.0.0.0", "::"):
+        _allowed_hosts.add(settings.host)
+    _allowed_origins = {f"http://{h}:{settings.port}" for h in _allowed_hosts}
+
+    def _origin_allowed(origin: Optional[str]) -> bool:
+        if not origin:
+            return True
+        return origin in _allowed_origins
+
+    @app.middleware("http")
+    async def _origin_middleware(request: Request, call_next):
+        origin = request.headers.get("origin")
+        if origin and not _origin_allowed(origin):
+            return JSONResponse({"error": "origine non consentita"}, status_code=403)
+        return await call_next(request)
 
     # Servizi
     adb = AdbManager(settings)
@@ -329,6 +348,9 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         file: UploadFile = File(...),
         remote_path: str = Query("/sdcard/"),
     ):
+        remote_path = remote_path.strip()
+        if ".." in remote_path or not re.match(r"^/(sdcard|data/local/tmp)/", remote_path):
+            return JSONResponse({"error": "percorso remoto non consentito"}, status_code=400)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_" + (file.filename or "file"))
         try:
             content = await file.read()
@@ -368,18 +390,28 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     @app.post("/api/settings")
     async def update_settings(data: dict):
         nonlocal settings
+        ALLOWED = {"poll_interval_s", "grid_columns", "max_concurrent_installs"}
+        STREAM_KEYS = {"max_fps", "max_size", "bit_rate", "video_codec"}
         for key, value in data.items():
-            if key == "stream" and isinstance(value, dict):
+            if key in ALLOWED:
+                if key in ("poll_interval_s", "max_concurrent_installs"):
+                    value = max(1, int(value))
+                elif key == "grid_columns":
+                    value = max(1, min(20, int(value)))
+                setattr(settings, key, value)
+            elif key == "stream" and isinstance(value, dict):
                 for sk, sv in value.items():
+                    if sk not in STREAM_KEYS:
+                        continue
                     if sk == "max_size":
                         sv = max(240, min(1920, int(sv)))
                     elif sk == "max_fps":
                         sv = max(1, min(60, int(sv)))
                     elif sk == "bit_rate":
                         sv = max(500_000, min(20_000_000, int(sv)))
+                    elif sk == "video_codec":
+                        sv = "h264" if sv not in ("h264", "h265") else sv
                     setattr(settings.stream, sk, sv)
-            else:
-                setattr(settings, key, value)
         save_settings(settings)
         app.state.settings = settings
         return {"ok": True}
@@ -462,6 +494,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
         Formato: 1 byte flag (1 = keyframe, 0 = delta) + access unit Annex-B.
         """
+        if not _origin_allowed(ws.headers.get("origin")):
+            return
         await ws.accept()
         stream = streams.get_stream(serial)
         if not stream:
@@ -483,6 +517,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
+        if not _origin_allowed(ws.headers.get("origin")):
+            return
         await ws.accept()
         log_queue = logs.subscribe()
         try:
@@ -531,6 +567,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     async def _handle_ws_command(cmd: dict) -> None:
         """Gestisce i comandi ricevuti via WebSocket."""
+        if not isinstance(cmd, dict):
+            return
         action = cmd.get("action")
         serial = cmd.get("serial", "")
 
