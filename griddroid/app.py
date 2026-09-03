@@ -57,13 +57,25 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         asyncio.create_task(_auto_stream_loop())
 
     async def _auto_stream_loop() -> None:
-        """Avvia automaticamente lo stream per i dispositivi online."""
+        """Avvia automaticamente lo stream per i dispositivi online e lo riavvia se cade."""
         await asyncio.sleep(3)
         logs.info("Auto-stream loop attivo")
         while True:
             try:
                 devices_snapshot = list(adb.devices.items())
                 for serial, dev in devices_snapshot:
+                    # Se il frontend pensa che lo stream sia attivo ma il motore
+                    # e morto, resettiamo lo stato cosi il loop lo riavvia.
+                    if dev.streaming:
+                        stream = streams.get_stream(serial)
+                        if stream is None or not stream.alive:
+                            dev.streaming = False
+                            if stream is not None:
+                                try:
+                                    await streams.stop_stream(serial)
+                                except Exception:
+                                    pass
+
                     if dev.status == DeviceStatus.ONLINE and not dev.streaming:
                         try:
                             logs.info("Avvio stream...", serial=serial)
@@ -71,6 +83,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                             dev.streaming = True
                             logs.success("Stream attivo", serial=serial)
                         except Exception as exc:
+                            dev.streaming = False
                             logs.error(f"Errore avvio stream: {exc}", serial=serial)
             except Exception as exc:
                 logs.warn(f"Errore auto-stream loop: {exc}")
@@ -130,6 +143,20 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         await adb.reboot(serial)
         return {"ok": True}
 
+    @app.post("/api/adb/restart")
+    async def restart_adb():
+        """Riavvia il daemon ADB per forzare un nuovo handshake RSA.
+
+        Richiede che sul telefono siano state revocate le autorizzazioni debug USB;
+        l'app non puo aggirare la sicurezza Android.
+        """
+        success = await adb.restart_adb_server()
+        if success:
+            return {"ok": True, "message": "Daemon ADB riavviato"}
+        return JSONResponse(
+            {"ok": False, "error": "riavvio ADB fallito"}, status_code=500
+        )
+
     @app.get("/api/devices/{serial}/screenshot")
     async def screenshot(serial: str):
         data = await adb.take_screenshot_raw(serial)
@@ -148,8 +175,13 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         dev = adb.get_device(serial)
         if not dev or dev.status != DeviceStatus.ONLINE:
             return JSONResponse({"error": "dispositivo non online"}, status_code=400)
-        stream = await streams.start_stream(serial)
-        dev.streaming = True
+        try:
+            stream = await streams.start_stream(serial)
+            dev.streaming = stream.alive
+        except Exception as exc:
+            dev.streaming = False
+            logs.error(f"Errore avvio stream: {exc}", serial=serial)
+            return JSONResponse({"error": str(exc)}, status_code=500)
         return {"ok": True}
 
     @app.post("/api/stream/{serial}/stop")
@@ -164,8 +196,12 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     async def start_all_streams():
         for serial, dev in adb.devices.items():
             if dev.status == DeviceStatus.ONLINE:
-                await streams.start_stream(serial)
-                dev.streaming = True
+                try:
+                    await streams.start_stream(serial)
+                    dev.streaming = True
+                except Exception as exc:
+                    dev.streaming = False
+                    logs.error(f"Errore avvio stream: {exc}", serial=serial)
         return {"ok": True}
 
     @app.post("/api/stream/stop-all")
@@ -341,7 +377,14 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     async def apply_stream_settings():
         await streams.stop_all()
         for serial in adb.devices:
-            await streams.start_stream(serial)
+            dev = adb.get_device(serial)
+            if dev and dev.status == DeviceStatus.ONLINE:
+                try:
+                    await streams.start_stream(serial)
+                    dev.streaming = True
+                except Exception as exc:
+                    dev.streaming = False
+                    logs.error(f"Errore riavvio stream: {exc}", serial=serial)
         return {"ok": True}
 
     # ------------------------------------------------------------------

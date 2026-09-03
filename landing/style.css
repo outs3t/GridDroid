@@ -1,0 +1,357 @@
+/* GridDroid Landing Page Styles */
+
+:root {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --accent: #d4af35;
+  --accent-glow: rgba(212, 175, 53, 0.35);
+  --card-bg: rgba(31, 31, 31, 0.6);
+  --card-border: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: #0a0a0a;
+  color: #f8fafc;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+h1, h2, .font-orbitron {
+  font-family: 'Orbitron', sans-serif;
+}
+
+::selection {
+  background: rgba(212, 175, 53, 0.3);
+  color: #e5c560;
+}
+
+/* Mock device grid in hero */
+.mock-device {
+  aspect-ratio: 9/19;
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: linear-gradient(145deg, #111 0%, #1a1a1a 100%);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+  animation: float 6s ease-in-out infinite;
+}
+
+.mock-device:nth-child(1) { animation-delay: 0s; }
+.mock-device:nth-child(2) { animation-delay: 0.3s; }
+.mock-device:nth-child(3) { animation-delay: 0.6s; }
+.mock-device:nth-child(4) { animation-delay: 0.9s; }
+.mock-device:nth-child(5) { animation-delay: 1.2s; }
+.mock-device:nth-child(6) { animation-delay: 1.5s; }
+.mock-device:nth-child(7) { animation-delay: 1.8s; }
+.mock-device:nth-child(8) { animation-delay: 2.1s; }
+.mock-device:nth-child(9) { animation-delay: 2.4s; }
+
+.mock-screen {
+  position: absolute;
+  inset: 4%;
+  border-radius: 0.5rem;
+  background: #0a0a0a;
+  display: flex;
+  flex-direction: column;
+  padding: 4% 5%;
+  gap: 6%;
+}
+
+.mock-notch {
+  position: absolute;
+  top: 3%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 28%;
+  height: 3%;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.12);
+  z-index: 5;
+}
+
+.mock-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.4rem;
+  color: rgba(255,255,255,0.5);
+  padding-top: 5%;
+}
+
+.mock-apps {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8%;
+}
+
+.mock-app {
+  border-radius: 0.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+  cursor: default;
+  position: relative;
+  background: rgba(255,255,255,0.06);
+}
+
+.mock-app.open {
+  transform: scale(1.18);
+  z-index: 6;
+  box-shadow: 0 0 40px rgba(212,175,53,0.08);
+}
+
+.mock-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  background: rgba(10,10,10,0.95);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+  text-align: center;
+  padding: 0.5rem;
+  z-index: 8;
+}
+
+.mock-overlay .spinner {
+  width: 1.2rem;
+  height: 1.2rem;
+  border: 2px solid rgba(212,175,53,0.2);
+  border-top-color: #e5c560;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.mock-overlay .label {
+  font-size: 0.45rem;
+  font-weight: 600;
+  color: #e5c560;
+}
+
+.mock-overlay .status-line {
+  width: 60%;
+  height: 0.12rem;
+  border-radius: 999px;
+  background: rgba(212,175,53,0.4);
+  position: relative;
+  overflow: hidden;
+}
+
+.mock-overlay .status-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: #e5c560;
+  width: 0%;
+  animation: loadLine 1.6s ease-in-out infinite;
+}
+
+.mock-device.active {
+  border-color: rgba(212, 175, 53, 0.55);
+  box-shadow: 0 0 36px rgba(212,175,53,0.45);
+}
+
+/* App colors */
+.app-rose { background: linear-gradient(135deg, #ff5c5c, #b83030); }
+.app-blue { background: linear-gradient(135deg, #1f8fff, #0f4f8f); }
+.app-green { background: linear-gradient(135deg, #ff7a7a, #e04444); }
+.app-amber { background: linear-gradient(135deg, #d4af35, #b8921f); }
+.app-slate { background: linear-gradient(135deg, #64748b, #1f1f1f); }
+.app-emerald { background: linear-gradient(135deg, #4d9fff, #176fc9); }
+.app-cyan { background: linear-gradient(135deg, #ff5c5c, #b83030); }
+.app-violet { background: linear-gradient(135deg, #d4af35, #9a7a18); }
+
+/* Animations */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes loadLine {
+  0% { width: 0%; left: 0; }
+  50% { width: 100%; left: 0; }
+  100% { width: 0%; left: 100%; }
+}
+
+
+/* Feature cards */
+.feature-card {
+  border: 1px solid var(--card-border);
+  border-radius: 1.25rem;
+  background: var(--card-bg);
+  padding: 1.75rem;
+  backdrop-filter: blur(12px);
+  transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+}
+
+.feature-card:hover {
+  transform: translateY(-6px);
+  border-color: rgba(212, 175, 53, 0.25);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.35), 0 0 30px rgba(212,175,53,0.06);
+}
+
+.icon-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 0.875rem;
+  background: rgba(212, 175, 53, 0.12);
+  color: #e5c560;
+  box-shadow: 0 0 18px rgba(212,175,53,0.12);
+}
+
+/* Steps */
+.step-card {
+  border: 1px solid var(--card-border);
+  border-radius: 1.25rem;
+  background: rgba(31, 31, 31, 0.6);
+  padding: 2rem;
+  text-align: center;
+  backdrop-filter: blur(8px);
+  transition: transform 0.3s ease;
+}
+
+.step-card:hover {
+  transform: translateY(-4px);
+}
+
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 1rem;
+  background: linear-gradient(135deg, #d4af35, #ff5c5c);
+  color: #0a0a0a;
+  font-size: 1.5rem;
+  font-weight: 800;
+  box-shadow: 0 0 24px rgba(212,175,53,0.3);
+}
+
+/* Download cards */
+.download-card {
+  display: block;
+  border: 1px solid var(--card-border);
+  border-radius: 1.5rem;
+  background: var(--card-bg);
+  padding: 2rem;
+  backdrop-filter: blur(12px);
+  transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.download-card:hover {
+  transform: translateY(-6px) scale(1.01);
+  border-color: rgba(212, 175, 53, 0.35);
+  box-shadow: 0 24px 60px rgba(0,0,0,0.35), 0 0 40px rgba(212,175,53,0.08);
+}
+
+/* Donate buttons */
+.donate-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  color: #e2e8f0;
+  font-weight: 600;
+  transition: all 0.25s ease;
+  text-decoration: none;
+}
+
+.donate-btn:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(212,175,53,0.3);
+  transform: translateY(-2px);
+}
+
+.donate-btn.highlighted {
+  background: linear-gradient(135deg, #d4af35, #ff5c5c);
+  color: #0a0a0a;
+  border-color: transparent;
+  box-shadow: 0 0 32px rgba(212,175,53,0.35);
+}
+
+.donate-btn.highlighted:hover {
+  box-shadow: 0 0 48px rgba(212,175,53,0.5);
+}
+
+/* Animations */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes gradient-x {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Gradient text already handled by Tailwind; extra polish for code */
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Smooth fade-in on scroll */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Cyberpunk clipped corners */
+.feature-card,
+.step-card,
+.download-card,
+.donate-btn {
+  clip-path: polygon(3% 0, 100% 0, 100% 94%, 97% 100%, 0 100%, 0 6%);
+}
+
+/* Mobile menu */
+#mobile-menu {
+  background: rgba(10, 10, 10, 0.95);
+  backdrop-filter: blur(12px);
+}
+
+/* Utility overrides */
+a {
+  text-decoration: none;
+}
+
+/* Dynamic background canvas */
+#bg-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -20;
+  pointer-events: none;
+  opacity: 0.4;
+}

@@ -59,14 +59,18 @@ install_arch() {
     gtk3 webkit2gtk-4.1 gobject-introspection || true
 }
 
-if is_debian; then
-  install_debian
-elif is_arch; then
-  install_arch
+if [ -z "$UPDATE_MODE" ]; then
+  if is_debian; then
+    install_debian
+  elif is_arch; then
+    install_arch
+  else
+    echo "ATTENZIONE: distro non riconosciuta. Continuo senza installare pacchetti di sistema."
+    echo "Assicurati di avere: python3, pip, adb e (opzionale) pywebview/GTK."
+    read -rp "Premi INVIO per continuare..."
+  fi
 else
-  echo "ATTENZIONE: distro non riconosciuta. Continuo senza installare pacchetti di sistema."
-  echo "Assicurati di avere: python3, pip, adb e (opzionale) pywebview/GTK."
-  read -rp "Premi INVIO per continuare..."
+  echo "Salto installazione pacchetti di sistema (aggiornamento)."
 fi
 
 # --- versione python ---------------------------------------------------------
@@ -84,6 +88,12 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }
 fi
 
 echo "Python: $PYTHON_BIN ($PY_MAJOR.$PY_MINOR)"
+
+# --- rileva aggiornamento ----------------------------------------------------
+if [ -d "$APP_DIR" ] && [ -d "$VENV_DIR" ] && [ -x "$BIN_DIR/griddroid" ]; then
+  UPDATE_MODE=1
+  echo "Installazione esistente trovata. Modalità aggiornamento."
+fi
 
 # --- copia applicazione ------------------------------------------------------
 echo
@@ -135,13 +145,17 @@ fi
 # --- virtualenv e pacchetti python -----------------------------------------
 echo
 echo "Creo il virtualenv e installo le dipendenze Python..."
-rm -rf "$VENV_DIR"
-$PYTHON_BIN -m venv "$VENV_DIR"
+if [ "$UPDATE_MODE" = "1" ]; then
+  echo "Riutilizzo virtualenv esistente."
+else
+  rm -rf "$VENV_DIR"
+  $PYTHON_BIN -m venv "$VENV_DIR"
+fi
 # shellcheck source=/dev/null
 . "$VENV_DIR/bin/activate"
 
 pip install --upgrade pip wheel
-pip install -r "$APP_DIR/requirements-linux.txt"
+pip install --upgrade -r "$APP_DIR/requirements-linux.txt"
 
 # --- launcher ---------------------------------------------------------------
 echo

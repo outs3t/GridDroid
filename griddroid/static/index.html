@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GridDroid — Farm Manager</title>
+    <title>GridDroid &mdash; Farm Manager</title>
     <link rel="stylesheet" href="/static/style.css?v=24">
 </head>
 <body>
@@ -208,6 +208,17 @@
                     </div>
                     <div class="input-group" style="margin-top:4px;">
                         <button class="btn btn-accent" id="btnApplyStream" style="width:100%;">Applica qualità stream</button>
+                    </div>
+                </div>
+
+                <!-- Diagnostica ADB -->
+                <div class="sidebar-section">
+                    <h4>Diagnostica ADB</h4>
+                    <p style="font-size:11px;color:var(--text-2);margin:0 0 8px 0;">
+                        Se il telefono non mostra la richiesta di autorizzazione, revoca le autorizzazioni debug USB sul telefono e premi qui.
+                    </p>
+                    <div class="input-group" style="margin-top:4px;">
+                        <button class="btn" id="btnRestartAdb" style="width:100%;">Riavvia daemon ADB</button>
                     </div>
                 </div>
 

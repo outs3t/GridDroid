@@ -1249,6 +1249,24 @@ async function initSettings() {
             }
         });
     }
+
+    const btnRestartAdb = document.getElementById("btnRestartAdb");
+    if (btnRestartAdb) {
+        btnRestartAdb.addEventListener("click", async () => {
+            if (!confirm("Riavviare il daemon ADB?\\nSul telefono devi aver prima revocato le autorizzazioni debug USB.")) return;
+            try {
+                const r = await fetch("/api/adb/restart", { method: "POST" });
+                const data = await r.json();
+                if (r.ok && data.ok) {
+                    toast("Daemon ADB riavviato. Controlla il telefono per la richiesta.", "success");
+                } else {
+                    toast(data.error || "Errore riavvio ADB", "error");
+                }
+            } catch (e) {
+                toast("Errore riavvio ADB", "error");
+            }
+        });
+    }
 }
 
 // =====================================================================

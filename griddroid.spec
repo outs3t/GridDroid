@@ -43,6 +43,7 @@ a = Analysis(
         'webview.platforms.winforms',
         'pythonnet',
         'clr',
+        'psutil',
     ],
     hookspath=[],
     hooksconfig={},

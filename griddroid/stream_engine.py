@@ -7,12 +7,14 @@ import io
 import os
 import random
 import shutil
+import socket
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from PIL import Image
 
+from .adb_manager import adb_cmd_lock
 from .config import AppSettings
 from .control_channel import ControlChannel
 from .log_manager import logs
@@ -52,6 +54,23 @@ def _find_scrcpy_server() -> Optional[str]:
     if bundled.exists():
         return str(bundled)
     return None
+
+
+def _is_port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex((host, port)) != 0
+
+
+# Protegge l'allocazione della porta tra più stream paralleli
+_PORT_LOCK: Optional[asyncio.Lock] = None
+
+
+def _port_lock() -> asyncio.Lock:
+    global _PORT_LOCK
+    if _PORT_LOCK is None:
+        _PORT_LOCK = asyncio.Lock()
+    return _PORT_LOCK
 
 
 class DeviceStream:
@@ -152,6 +171,21 @@ class DeviceStream:
             logs.info("Fallback a screenshot periodici", serial=self.serial)
             await self._screenshot_fallback()
 
+    async def _is_device_online(self) -> bool:
+        adb = self._settings.adb_path or "adb"
+        async with adb_cmd_lock():
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    adb, "-s", self.serial, "get-state",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    **_SUBPROCESS_KW,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                return stdout.decode("utf-8", errors="replace").strip() == "device"
+            except Exception:
+                return False
+
     async def _run_scrcpy_server(self, server_jar: str) -> None:
         adb = self._settings.adb_path or "adb"
         s = self._settings.stream
@@ -159,20 +193,34 @@ class DeviceStream:
         await self._detect_native_resolution()
 
         while self._running:
+            if not await self._is_device_online():
+                logs.warn(
+                    "Dispositivo non più raggiungibile, interrompo stream",
+                    serial=self.serial,
+                )
+                self._running = False
+                break
             try:
                 # 1. Push server jar
                 remote_jar = "/data/local/tmp/scrcpy-server.jar"
                 await self._adb_exec(adb, "push", server_jar, remote_jar)
 
-                # 2. Setup forward con porta random
-                self._tcp_port = _BASE_PORT + random.randint(0, 999)
-                scid_int = random.randint(0, 0x7FFFFFFF)
-                scid_hex = f"{scid_int:08x}"
-                socket_name = f"scrcpy_{scid_hex}"
-                await self._adb_exec(
-                    adb, "forward", f"tcp:{self._tcp_port}",
-                    f"localabstract:{socket_name}",
-                )
+                # 2. Setup forward con porta libera (evita collisioni)
+                async with _port_lock():
+                    for _ in range(20):
+                        port = _BASE_PORT + random.randint(0, 999)
+                        if _is_port_free("127.0.0.1", port):
+                            break
+                    else:
+                        raise RuntimeError("Nessuna porta TCP libera per il forward")
+                    self._tcp_port = port
+                    scid_int = random.randint(0, 0x7FFFFFFF)
+                    scid_hex = f"{scid_int:08x}"
+                    socket_name = f"scrcpy_{scid_hex}"
+                    await self._adb_exec(
+                        adb, "forward", f"tcp:{self._tcp_port}",
+                        f"localabstract:{socket_name}",
+                    )
 
                 # 3. Avvia server sul dispositivo.
                 #    control=true abilita il control socket (input nativi).
@@ -181,7 +229,7 @@ class DeviceStream:
                     f"CLASSPATH={remote_jar} "
                     f"app_process / com.genymobile.scrcpy.Server {_SCRCPY_VERSION} "
                     f"tunnel_forward=true "
-                    f"audio=false control=true cleanup=false "
+                    f"audio=false control=true cleanup=true "
                     f"send_device_meta=false send_frame_meta=false "
                     f"send_dummy_byte=false "
                     f"max_size={s.max_size} max_fps={s.max_fps} "
@@ -306,14 +354,20 @@ class DeviceStream:
     # ------------------------------------------------------------------
 
     async def _adb_exec(self, adb: str, *args: str) -> str:
-        proc = await asyncio.create_subprocess_exec(
-            adb, "-s", self.serial, *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **_SUBPROCESS_KW,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-        return stdout.decode("utf-8", errors="replace").strip()
+        async with adb_cmd_lock():
+            proc = await asyncio.create_subprocess_exec(
+                adb, "-s", self.serial, *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **_SUBPROCESS_KW,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode != 0:
+                text = stdout.decode("utf-8", errors="replace").strip()
+                if not text:
+                    text = "errore ADB"
+                raise RuntimeError(text)
+            return stdout.decode("utf-8", errors="replace").strip()
 
     async def _remove_forward(self) -> None:
         if not self._tcp_port:
@@ -337,8 +391,14 @@ class DeviceStream:
             self._writer = None
         if self._server_proc:
             try:
-                self._server_proc.kill()
+                self._server_proc.terminate()
+                try:
+                    await asyncio.wait_for(self._server_proc.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    self._server_proc.kill()
             except ProcessLookupError:
+                pass
+            except Exception:
                 pass
             self._server_proc = None
         self._sps = b""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import ctypes
 import os
 import socket
@@ -44,17 +45,15 @@ LOGGING_CONFIG = {
 
 
 def _get_log_path() -> Path:
-    """Restituisce il percorso del file di log vicino all'eseguibile."""
-    if getattr(sys, "frozen", False):
-        # onefile/pyinstaller: sys.argv[0] è il percorso dell'exe originale
-        base = Path(sys.argv[0]).with_suffix(".log")
-        try:
-            base.parent.mkdir(parents=True, exist_ok=True)
-            return base
-        except Exception:
-            pass
-        return Path(sys._MEIPASS) / "griddroid.log"  # type: ignore
-    return Path("griddroid.log")
+    """Restituisce il percorso del file di log persistente."""
+    try:
+        config_dir = Path.home() / ".griddroid"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        return config_dir / "griddroid.log"
+    except Exception:
+        if getattr(sys, "frozen", False):
+            return Path(sys._MEIPASS) / "griddroid.log"  # type: ignore
+        return Path("griddroid.log")
 
 
 def _log(msg: str) -> None:
@@ -130,26 +129,100 @@ def _show_message(text: str) -> None:
     _log(text)
 
 
-def _run_server(bind_host: str, port: int) -> None:
-    _log(f"Avvio server uvicorn su {bind_host}:{port}")
-    uvicorn.run(
-        "griddroid.app:create_app",
-        host=bind_host,
-        port=port,
-        factory=True,
-        log_level="warning",
-        log_config=LOGGING_CONFIG,
-    )
+_server_state: dict = {}
 
 
-def _server_thread(bind_host: str, port: int, ready: threading.Event) -> None:
+class _NoSignalServer(uvicorn.Server):
+    """Server uvicorn che non installa signal handler (evita errori in thread secondari)."""
+
+    def install_signal_handlers(self) -> None:
+        pass
+
+
+def _server_thread(bind_host: str, port: int) -> None:
+    """Esegue uvicorn.Server in un loop asyncio separato."""
     try:
-        _run_server(bind_host, port)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _server_state["loop"] = loop
+
+        config = uvicorn.Config(
+            "griddroid.app:create_app",
+            host=bind_host,
+            port=port,
+            factory=True,
+            log_level="warning",
+            log_config=LOGGING_CONFIG,
+        )
+        server = _NoSignalServer(config)
+        _server_state["server"] = server
+
+        loop.run_until_complete(server.serve())
     except Exception as exc:
         _log(f"Server crash: {exc}")
         _log(traceback.format_exc())
     finally:
-        ready.set()
+        _server_state["server"] = None
+        _server_state["loop"] = None
+
+
+def _stop_server(timeout: float = 15.0) -> None:
+    """Richiede la chiusura di uvicorn.Server e attende il termine del thread."""
+    server = _server_state.get("server")
+    loop = _server_state.get("loop")
+    if server and loop:
+        try:
+            loop.call_soon_threadsafe(setattr, server, "should_exit", True)
+        except Exception as exc:
+            _log(f"Errore richiesta stop server: {exc}")
+    thread = _server_state.get("thread")
+    if thread and thread.is_alive():
+        try:
+            thread.join(timeout=timeout)
+        except Exception as exc:
+            _log(f"Errore join server thread: {exc}")
+
+
+def _cleanup_children() -> None:
+    """Termina eventuali processi figli rimasti aperti (adb shell, scrcpy, ecc.)."""
+    try:
+        import psutil
+        try:
+            parent = psutil.Process()
+            for child in parent.children(recursive=True):
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            gone, alive = psutil.wait_procs(parent.children(recursive=True), timeout=2)
+            for child in alive:
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+        except Exception as exc:
+            _log(f"Errore psutil cleanup: {exc}")
+    except ImportError:
+        pass
+
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/FI", f"PARENT eq {os.getpid()}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except Exception as exc:
+            _log(f"Errore taskkill: {exc}")
+
+
+def _wait_for_user_interrupt() -> None:
+    """Mantiene il processo vivo in modalita console fino a Ctrl+C."""
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
 
 
 def _open_browser_when_ready(host: str, port: int) -> None:
@@ -237,33 +310,36 @@ def main() -> None:
     url = f"http://{ui_host}:{port}"
     _log(f"URL finale: {url}")
 
-    ready = threading.Event()
     server_thread = threading.Thread(
         target=_server_thread,
-        args=(bind_host, port, ready),
+        args=(bind_host, port),
         daemon=True,
     )
+    _server_state["thread"] = server_thread
     server_thread.start()
 
     # Attende che il server risponda prima di aprire la finestra
     if not _wait_for_server(ui_host, port):
-        _log("ERRORE: il server non si è avviato.")
-        _show_message(f"Il server non si è avviato.\nProva ad aprire manualmente:\n{url}")
+        _log("ERRORE: il server non si e avviato.")
+        _show_message(f"Il server non si e avviato.\nProva ad aprire manualmente:\n{url}")
+        _stop_server(5.0)
         sys.exit(1)
 
-    if args.browser:
-        _open_browser(url)
-    elif args.message:
-        _show_message(f"GridDroid e in esecuzione su:\n{url}\n\nApri il browser e incolla l'indirizzo.")
-    else:
-        _run_with_webview(url)
-
-    # Mantieni il processo attivo finché il server è in esecuzione
     try:
-        while server_thread.is_alive():
-            time.sleep(1)
+        if args.browser:
+            _open_browser(url)
+            _wait_for_user_interrupt()
+        elif args.message:
+            _show_message(f"GridDroid e in esecuzione su:\n{url}\n\nApri il browser e incolla l'indirizzo.")
+        else:
+            _run_with_webview(url)
     except KeyboardInterrupt:
         pass
+    finally:
+        _stop_server()
+        _cleanup_children()
+        _log("GridDroid chiuso")
+        os._exit(0)
 
 
 if __name__ == "__main__":
@@ -273,4 +349,4 @@ if __name__ == "__main__":
         _log(f"Errore fatale: {exc}")
         _log(traceback.format_exc())
         _show_message(f"GridDroid ha riscontrato un errore:\n{exc}")
-        raise
+        os._exit(1)

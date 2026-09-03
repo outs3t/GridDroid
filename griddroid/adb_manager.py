@@ -1,4 +1,4 @@
-"""Gestione asincrona del daemon ADB: discovery, reconnect, stato dispositivi."""
+"""Gestione asincrona del daemon ADB: discovery, polling e stato dispositivi."""
 
 from __future__ import annotations
 
@@ -18,6 +18,18 @@ else:
 from .config import AppSettings, load_labels, save_labels, load_tags, save_tags
 from .device import DeviceInfo, DeviceState, DeviceStatus
 from .log_manager import logs
+
+
+# Lock globale per serializzare i comandi ADB (più stabile su hub USB).
+# Creato lazy per evitare errori in fase di import senza event loop.
+_ADB_CMD_LOCK: Optional[asyncio.Lock] = None
+
+
+def adb_cmd_lock() -> asyncio.Lock:
+    global _ADB_CMD_LOCK
+    if _ADB_CMD_LOCK is None:
+        _ADB_CMD_LOCK = asyncio.Lock()
+    return _ADB_CMD_LOCK
 
 
 # Regex per parsare l'output di `adb devices -l`
@@ -106,31 +118,32 @@ class AdbManager:
         self, *args: str, serial: Optional[str] = None, timeout: float = 30.0
     ) -> Tuple[int, str, str]:
         """Esegue un comando ADB e ritorna (returncode, stdout, stderr)."""
-        cmd = [self._adb]
-        if serial:
-            cmd += ["-s", serial]
-        cmd += list(args)
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **_SUBPROCESS_KW,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
-            return (
-                proc.returncode or 0,
-                stdout.decode("utf-8", errors="replace"),
-                stderr.decode("utf-8", errors="replace"),
-            )
-        except asyncio.TimeoutError:
-            logs.warn(f"Timeout comando ADB: {' '.join(cmd)}")
-            return -1, "", "timeout"
-        except Exception as exc:
-            logs.error(f"Errore ADB: {exc}")
-            return -1, "", str(exc)
+        async with adb_cmd_lock():
+            cmd = [self._adb]
+            if serial:
+                cmd += ["-s", serial]
+            cmd += list(args)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    **_SUBPROCESS_KW,
+                )
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+                return (
+                    proc.returncode or 0,
+                    stdout.decode("utf-8", errors="replace"),
+                    stderr.decode("utf-8", errors="replace"),
+                )
+            except asyncio.TimeoutError:
+                logs.warn(f"Timeout comando ADB: {' '.join(cmd)}")
+                return -1, "", "timeout"
+            except Exception as exc:
+                logs.error(f"Errore ADB: {exc}")
+                return -1, "", str(exc)
 
     async def shell(self, serial: str, command: str, timeout: float = 30.0) -> str:
         """Esegue un comando shell su un dispositivo specifico."""
@@ -198,9 +211,18 @@ class AdbManager:
                 self._devices[serial] = dev
                 logs.success(f"Nuovo dispositivo rilevato: {dev.display_name}", serial=serial)
 
-            # Tentativo di riconnessione per dispositivi offline
+            # Non forziamo mai `adb reconnect` automaticamente: su molti
+            # sistemi/host fa cadere l'intero daemon ADB e disconnette
+            # tutti gli altri dispositivi. Lasciamo che ADB gestisca la
+            # riconnessione da solo.
             if status == DeviceStatus.OFFLINE:
-                asyncio.create_task(self._try_reconnect(serial))
+                dev.streaming = False
+                dev.error = "offline"
+            elif status == DeviceStatus.UNAUTHORIZED:
+                dev.streaming = False
+                dev.error = "unauthorized"
+            else:
+                dev.error = ""
 
         # Segna come disconnessi i dispositivi non più visibili
         for serial, dev in self._devices.items():
@@ -209,10 +231,6 @@ class AdbManager:
                 dev.streaming = False
                 logs.warn(f"Dispositivo disconnesso", serial=serial)
 
-    async def _try_reconnect(self, serial: str) -> None:
-        """Prova a riconnettere un dispositivo offline."""
-        logs.info("Tentativo di riconnessione...", serial=serial)
-        await self.adb_command("reconnect", serial=serial, timeout=10.0)
 
     # ------------------------------------------------------------------
     # Comandi utili
@@ -233,6 +251,27 @@ class AdbManager:
     async def reboot(self, serial: str) -> None:
         logs.info("Riavvio in corso...", serial=serial)
         await self.adb_command("reboot", serial=serial)
+
+    async def restart_adb_server(self) -> bool:
+        """Riavvia il daemon ADB: utile per forzare un nuovo handshake RSA.
+
+        ATTENZIONE: non aggira l'autorizzazione sul telefono, ma obbliga il
+        dispositivo a richiedere la fingerprint se l'utente ha revocato le
+        autorizzazioni debug USB dalle impostazioni Android.
+        """
+        logs.warn("Riavvio daemon ADB richiesto dall'utente")
+        try:
+            await self.adb_command("kill-server", timeout=10.0)
+            await asyncio.sleep(0.5)
+            rc, out, err = await self.adb_command("start-server", timeout=15.0)
+            if rc == 0:
+                logs.success("Daemon ADB riavviato")
+                return True
+            logs.error(f"Start ADB fallito: {err}")
+            return False
+        except Exception as exc:
+            logs.error(f"Errore riavvio ADB: {exc}")
+            return False
 
     async def get_battery(self, serial: str) -> int:
         out = await self.shell(serial, "dumpsys battery | grep level")

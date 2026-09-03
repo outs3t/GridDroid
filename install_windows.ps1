@@ -20,6 +20,13 @@ if (-not $sourceExe) {
 $installDir = Join-Path $env:LOCALAPPDATA "Programs\$appName"
 $exePath = Join-Path $installDir "$appName.exe"
 $uninstallScript = Join-Path $installDir "uninstall_windows.ps1"
+$isUpdate = Test-Path $exePath
+
+if ($isUpdate) {
+    Write-Host "Installazione esistente trovata. Aggiornamento in corso..."
+} else {
+    Write-Host "Nuova installazione in corso..."
+}
 
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 Copy-Item -Path $sourceExe -Destination $exePath -Force
@@ -66,5 +73,9 @@ Set-ItemProperty -Path $regPath -Name "Publisher" -Value $appName
 Set-ItemProperty -Path $regPath -Name "DisplayVersion" -Value "1.0.0"
 Set-ItemProperty -Path $regPath -Name "InstallLocation" -Value $installDir
 
-Write-Host "GridDroid installato in $installDir"
+if ($isUpdate) {
+    Write-Host "GridDroid aggiornato in $installDir"
+} else {
+    Write-Host "GridDroid installato in $installDir"
+}
 Write-Host "Scorciatoie create: Start Menu e Desktop."
