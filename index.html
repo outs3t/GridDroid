@@ -292,7 +292,7 @@
           <span class="mt-6 inline-flex items-center gap-2 font-semibold text-jh-gold-400 group-hover:text-jh-gold-300">
             Scarica GridDroid_Setup.exe <i data-lucide="arrow-right" class="h-4 w-4 transition group-hover:translate-x-1"></i>
           </span>
-          <p class="mt-3 text-xs text-slate-500">Ultimo aggiornamento: <span id="lastUpdate" class="text-jh-gold-400">caricamento...</span></p>
+          <p class="mt-3 text-xs text-slate-500">Versione: <span id="latestVersion" class="text-jh-gold-400 font-semibold">...</span> &middot; Aggiornamento: <span id="lastUpdate" class="text-jh-gold-400">caricamento...</span></p>
         </a>
         <div class="download-card group cursor-default">
           <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-jh-red-500/10 text-jh-red-400 group-hover:bg-jh-red-500 group-hover:text-white transition">
@@ -313,6 +313,18 @@
       </div>
       <script>
         (async function () {
+          // Versione
+          const verEl = document.getElementById('latestVersion');
+          if (verEl) {
+            try {
+              const vr = await fetch('version.json?t=' + Date.now());
+              const vdata = await vr.json();
+              verEl.textContent = 'v' + (vdata.version || '?');
+            } catch (e) {
+              verEl.textContent = '?';
+            }
+          }
+          // Data ultimo aggiornamento
           const el = document.getElementById('lastUpdate');
           if (!el) return;
           try {
