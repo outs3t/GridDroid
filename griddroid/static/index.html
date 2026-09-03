@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
     <link rel="stylesheet" href="/static/style.css?v=24">
+    <style>
+        .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
+        .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
+        .update-modal-content { position: relative; background: #1a1a1a; color: #eee; border: 1px solid #333; border-radius: 10px; padding: 24px; width: min(90%, 420px); box-shadow: 0 8px 32px rgba(0,0,0,.5); }
+        .update-modal-content h3 { margin: 0 0 12px; font-size: 18px; }
+        .update-modal-content p { margin: 0 0 16px; font-size: 14px; color: #bbb; }
+        .update-progress-wrap { height: 10px; background: #333; border-radius: 5px; overflow: hidden; margin-bottom: 16px; }
+        .update-progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg,#4ade80,#22c55e); transition: width .2s; }
+        .update-actions { display: flex; gap: 10px; justify-content: flex-end; }
+        .update-actions .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        .btn-update-ok { background: #22c55e; color: #000; }
+        .btn-update-cancel { background: #333; color: #fff; }
+    </style>
 </head>
 <body>
     <!-- HEADER -->
@@ -259,6 +272,89 @@
         </div>
     </div>
 
+    <!-- UPDATE MODAL -->
+    <div class="update-modal" id="updateModal">
+        <div class="update-modal-backdrop"></div>
+        <div class="update-modal-content">
+            <h3 id="updateTitle">Aggiornamento disponibile</h3>
+            <p id="updateText"></p>
+            <div class="update-progress-wrap">
+                <div class="update-progress-bar" id="updateProgressBar"></div>
+            </div>
+            <div class="update-actions">
+                <button class="btn btn-update-ok" id="btnUpdateOk">OK</button>
+                <button class="btn btn-update-cancel" id="btnUpdateCancel">Più tardi</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/app.js?v=24"></script>
+    <script>
+    (async () => {
+        try {
+            const res = await fetch('/api/check-update');
+            const data = await res.json();
+            if (!data.available) return;
+
+            const modal = document.getElementById('updateModal');
+            const title = document.getElementById('updateTitle');
+            const text = document.getElementById('updateText');
+            const bar = document.getElementById('updateProgressBar');
+            const btnOk = document.getElementById('btnUpdateOk');
+            const btnCancel = document.getElementById('btnUpdateCancel');
+
+            title.textContent = 'Aggiornamento disponibile';
+            text.textContent = `Versione ${data.new_version} pronta. Clicca OK per scaricare e installare automaticamente.`;
+            modal.style.display = 'flex';
+
+            btnCancel.onclick = () => { modal.style.display = 'none'; };
+
+            btnOk.onclick = async () => {
+                btnOk.disabled = true;
+                btnCancel.disabled = true;
+                text.textContent = 'Preparazione download...';
+
+                const start = await fetch('/api/update/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        download_url: data.download_url,
+                        version: data.new_version,
+                        silent_args: data.silent_args,
+                    }),
+                });
+                if (!start.ok) {
+                    text.textContent = 'Errore avvio aggiornamento.';
+                    return;
+                }
+
+                const poll = setInterval(async () => {
+                    try {
+                        const p = await fetch('/api/update/progress');
+                        const s = await p.json();
+                        bar.style.width = `${s.percent || 0}%`;
+                        if (s.status === 'downloading') {
+                            text.textContent = `Download in corso... ${s.percent || 0}%`;
+                        } else if (s.status === 'error') {
+                            clearInterval(poll);
+                            text.textContent = 'Errore: ' + (s.error || 'sconosciuto');
+                            btnOk.disabled = false;
+                            btnCancel.disabled = false;
+                        } else if (s.status === 'ready') {
+                            clearInterval(poll);
+                            text.textContent = 'Installazione in corso, GridDroid si riavvierà...';
+                            bar.style.width = '100%';
+                            await fetch('/api/update/apply', { method: 'POST' });
+                        }
+                    } catch {
+                        // la connessione può cadere durante il riavvio
+                        clearInterval(poll);
+                        text.textContent = 'Riavvio in corso...';
+                    }
+                }, 600);
+            };
+        } catch {}
+    })();
+    </script>
 </body>
 </html>

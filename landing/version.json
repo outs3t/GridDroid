@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "windows": {
+    "download_url": "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe",
+    "silent_args": ["/SILENT"]
+  },
+  "linux": {
+    "download_url": "https://raw.githubusercontent.com/outs3t/GridDroid/main/install_linux.sh",
+    "silent_args": []
+  }
+}

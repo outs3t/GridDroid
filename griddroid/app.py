@@ -22,6 +22,7 @@ from .config import AppSettings, load_settings, save_settings
 from .device import DeviceStatus
 from .input_relay import InputRelay
 from .log_manager import logs
+from . import __version__, updater
 from .scripts import ScriptEngine
 from .stream_engine import StreamManager
 
@@ -64,6 +65,15 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     app.state.bulk = bulk
     app.state.scripts = script_engine
     app.state.settings = settings
+    app.state.update_state = {
+        "status": "idle",
+        "percent": 0,
+        "error": None,
+        "version": None,
+        "download_url": None,
+        "silent_args": [],
+        "installer": None,
+    }
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -483,6 +493,88 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             "riusciti": sum(1 for r in risultati if r.ok),
             "totale": len(risultati),
         }
+
+    # ------------------------------------------------------------------
+    # Aggiornamento automatico
+    # ------------------------------------------------------------------
+
+    @app.get("/api/check-update")
+    async def check_update():
+        remote = await updater.fetch_remote_info(settings.update_url)
+        if not remote:
+            return JSONResponse(
+                {"error": "impossibile contattare il server degli aggiornamenti"},
+                status_code=503,
+            )
+        remote_version = remote.get("version", "0.0.0")
+        if not updater.is_newer(remote_version, __version__):
+            return {"available": False, "version": __version__}
+        platform_key = "windows" if sys.platform == "win32" else "linux"
+        platform_info = remote.get(platform_key)
+        if not platform_info:
+            return {"available": False, "version": __version__}
+        return {
+            "available": True,
+            "current_version": __version__,
+            "new_version": remote_version,
+            "download_url": platform_info.get("download_url"),
+            "silent_args": platform_info.get("silent_args", []),
+        }
+
+    @app.post("/api/update/start")
+    async def update_start(data: dict):
+        url = data.get("download_url")
+        version = data.get("version")
+        silent_args = data.get("silent_args", [])
+        if not url or not version:
+            return JSONResponse({"error": "dati mancanti"}, status_code=400)
+        if app.state.update_state["status"] in ("downloading", "installing"):
+            return JSONResponse({"error": "aggiornamento già in corso"}, status_code=409)
+        ext = ".exe" if sys.platform == "win32" else ".sh"
+        dest = Path(tempfile.gettempdir()) / f"GridDroid_{version}_setup{ext}"
+        app.state.update_state = {
+            "status": "starting",
+            "percent": 0,
+            "error": None,
+            "version": version,
+            "download_url": url,
+            "silent_args": silent_args,
+            "installer": str(dest),
+        }
+
+        async def _do_download():
+            await updater.download_file(url, dest, app.state.update_state)
+
+        asyncio.create_task(_do_download())
+        return {"ok": True}
+
+    @app.get("/api/update/progress")
+    async def update_progress():
+        return app.state.update_state
+
+    @app.post("/api/update/apply")
+    async def update_apply():
+        if app.state.update_state.get("status") != "ready":
+            return JSONResponse({"error": "download non pronto"}, status_code=409)
+        installer = Path(app.state.update_state["installer"])
+        if not installer.exists():
+            return JSONResponse({"error": "installer non trovato"}, status_code=500)
+        silent_args = app.state.update_state.get("silent_args", [])
+        app.state.update_state["status"] = "installing"
+        app.state.update_state["percent"] = 100
+
+        restart_path = None
+        if getattr(sys, "frozen", False):
+            restart_path = sys.executable
+
+        updater.schedule_install(installer, silent_args, restart_path)
+
+        async def _shutdown():
+            await asyncio.sleep(1.0)
+            os._exit(0)
+
+        asyncio.create_task(_shutdown())
+        return {"closing": True}
 
     # ------------------------------------------------------------------
     # WebSocket – Aggiornamenti in tempo reale

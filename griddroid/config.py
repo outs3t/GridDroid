@@ -52,6 +52,7 @@ class AppSettings(BaseSettings):
     port: int = 8470
     adb_path: str = Field(default_factory=_find_bundled_adb)
     scrcpy_server_path: str = ""
+    update_url: str = "https://outs3t.github.io/GridDroid/version.json"
     poll_interval_s: float = 2.0
     max_concurrent_installs: int = 6
     grid_columns: int = 5
