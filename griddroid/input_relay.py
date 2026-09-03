@@ -61,6 +61,8 @@ class InputRelay:
 
     @focused_serial.setter
     def focused_serial(self, serial: Optional[str]) -> None:
+        if serial == self._focused_serial:
+            return
         self._focused_serial = serial
         if serial:
             logs.info(f"Focus su dispositivo", serial=serial)

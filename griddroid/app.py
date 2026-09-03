@@ -76,6 +76,17 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                                 except Exception:
                                     pass
 
+                    # Se il dispositivo e offline/unauthorized/disconnesso,
+                    # fermo subito lo stream per evitare tentativi infiniti.
+                    if dev.status != DeviceStatus.ONLINE and dev.streaming:
+                        logs.info("Dispositivo non online, interrompo stream", serial=serial)
+                        dev.streaming = False
+                        try:
+                            await streams.stop_stream(serial)
+                        except Exception:
+                            pass
+                        continue
+
                     if dev.status == DeviceStatus.ONLINE and not dev.streaming:
                         try:
                             logs.info("Avvio stream...", serial=serial)

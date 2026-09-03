@@ -201,7 +201,7 @@ class AdbManager:
                 dev.error = ""
                 if old_status != status:
                     logs.info(
-                        f"Stato cambiato: {old_status.value} → {status.value}",
+                        f"Stato cambiato: {old_status.value} -> {status.value}",
                         serial=serial,
                     )
             else:

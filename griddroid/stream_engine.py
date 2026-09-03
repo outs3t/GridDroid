@@ -192,6 +192,8 @@ class DeviceStream:
 
         await self._detect_native_resolution()
 
+        consecutive_failures = 0
+
         while self._running:
             if not await self._is_device_online():
                 logs.warn(
@@ -269,18 +271,31 @@ class DeviceStream:
                     self._control = None
 
                 # 6. Passthrough H264 → browser (decodifica hardware WebCodecs)
-                await self._stream_h264(reader)
+                au_count = await self._stream_h264(reader)
+                if au_count > 0:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
 
             except asyncio.CancelledError:
                 break
             except Exception as exc:
+                consecutive_failures += 1
                 logs.warn(f"Errore stream: {exc}", serial=self.serial)
             finally:
                 await self._cleanup_server()
 
             if self._running:
-                logs.info("Riconnessione stream tra 2s...", serial=self.serial)
-                await asyncio.sleep(2)
+                if consecutive_failures >= 5:
+                    logs.warn(
+                        "Troppi tentativi falliti, interrompo stream",
+                        serial=self.serial,
+                    )
+                    self._running = False
+                    break
+                delay = min(2.0 * (1.5 ** consecutive_failures), 30.0)
+                logs.info(f"Riconnessione stream tra {delay:.1f}s...", serial=self.serial)
+                await asyncio.sleep(delay)
 
     async def _stream_h264(self, tcp_reader: asyncio.StreamReader) -> None:
         """Legge H264 Annex-B dal socket TCP, lo divide in access unit e le
@@ -348,6 +363,7 @@ class DeviceStream:
                     pending.extend(nal)
 
         logs.info(f"Pipeline terminata ({au_count} frame)", serial=self.serial)
+        return au_count
 
     # ------------------------------------------------------------------
     # Helpers
