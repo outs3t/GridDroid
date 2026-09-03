@@ -315,13 +315,13 @@
           const el = document.getElementById('lastUpdate');
           if (!el) return;
           try {
-            const r = await fetch('https://api.github.com/repos/outs3t/GridDroid/commits?per_page=1');
+            const r = await fetch('https://api.github.com/repos/outs3t/GridDroid/commits?path=GridDroid_Setup.exe&sha=gh-pages&per_page=1');
             if (!r.ok) throw new Error('non disponibile');
             const data = await r.json();
             const commit = data[0];
             const date = new Date(commit.commit.committer.date);
             const sha = (commit.sha || '').substring(0, 7);
-            el.textContent = date.toLocaleDateString('it-IT') + (sha ? ' (' + sha + ')' : '');
+            el.textContent = date.toLocaleString('it-IT') + (sha ? ' (' + sha + ')' : '');
           } catch (e) {
             el.textContent = 'controlla su GitHub';
           }
