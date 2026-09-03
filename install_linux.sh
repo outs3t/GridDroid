@@ -53,7 +53,7 @@ install_arch() {
   # Nota: non eseguiamo pacman -Syu per evitare aggiornamenti di sistema forzati.
   # Se mancano pacchetti, aggiorna prima il sistema con il gestore della tua distro.
   $SUDO pacman -S --needed --noconfirm \
-    python python-pip python-virtualenv python-pygobject \
+    python python-pip python-virtualenv python-gobject \
     android-tools libjpeg-turbo zlib pkgconf gcc || true
   # Dipendenze opzionali per la finestra nativa (pywebview/GTK)
   $SUDO pacman -S --needed --noconfirm \
@@ -96,14 +96,36 @@ if [ -d "$APP_DIR" ] && [ -d "$VENV_DIR" ] && [ -x "$BIN_DIR/griddroid" ]; then
   echo "Installazione esistente trovata. Modalità aggiornamento."
 fi
 
-# --- copia applicazione ------------------------------------------------------
+# --- scarica applicazione da GitHub ------------------------------------------
 echo
+echo "Scarico GridDroid da GitHub (main) ..."
+TMP_DIR="$(mktemp -d)"
+REPO_TARBALL="$TMP_DIR/griddroid-main.tar.gz"
+ARCHIVE_DIR="$TMP_DIR/GridDroid-main"
+
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "https://github.com/outs3t/GridDroid/archive/refs/heads/main.tar.gz" -o "$REPO_TARBALL"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$REPO_TARBALL" "https://github.com/outs3t/GridDroid/archive/refs/heads/main.tar.gz"
+else
+  echo "ERRORE: curl o wget sono richiesti per scaricare il programma."
+  exit 1
+fi
+
+tar -xzf "$REPO_TARBALL" -C "$TMP_DIR"
+SOURCE_DIR="$ARCHIVE_DIR"
+
+if [ ! -d "$SOURCE_DIR" ]; then
+  echo "ERRORE: impossibile estrarre l'archivio scaricato."
+  exit 1
+fi
+
 echo "Copio GridDroid in $APP_DIR ..."
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 
-# Copia il contenuto della directory corrente (repo), escludendo roba inutile.
-# Provo rsync; se non c'è, uso cp -r e poi elimino le cartelle/file inutili.
+# Copia il contenuto dell'archivio escludendo roba inutile.
+# Provo rsync; se non c'e', uso cp -r e poi elimino le cartelle/file inutili.
 if command -v rsync >/dev/null 2>&1; then
   rsync -a \
     --exclude='.git' \
@@ -115,10 +137,10 @@ if command -v rsync >/dev/null 2>&1; then
     --exclude='dist' \
     --exclude='.devin' \
     --exclude='.windsurf' \
-    . "$APP_DIR/"
+    "$SOURCE_DIR/" "$APP_DIR/"
 else
   echo "rsync non disponibile, uso cp -r ..."
-  cp -r . "$APP_DIR/"
+  cp -r "$SOURCE_DIR/." "$APP_DIR/"
   rm -rf \
     "$APP_DIR/.git" \
     "$APP_DIR/venv" \
