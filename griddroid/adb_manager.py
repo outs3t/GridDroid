@@ -28,25 +28,16 @@ from .device import DeviceInfo, DeviceState, DeviceStatus
 from .log_manager import logs
 
 
-# Semaforo per limitare la concorrenza dei comandi ADB (evita sovraccarico hub USB).
+# Lock globale per serializzare i comandi ADB (piu' stabile su hub USB).
 # Creato lazy per evitare errori in fase di import senza event loop.
-_ADB_CMD_SEM: Optional[asyncio.Semaphore] = None
-_ADB_CMD_MAX: int = 8
+_ADB_CMD_LOCK: Optional[asyncio.Lock] = None
 
 
-def adb_cmd_sem() -> asyncio.Semaphore:
-    global _ADB_CMD_SEM
-    if _ADB_CMD_SEM is None:
-        _ADB_CMD_SEM = asyncio.Semaphore(_ADB_CMD_MAX)
-    return _ADB_CMD_SEM
-
-
-def set_adb_cmd_max(value: int) -> None:
-    global _ADB_CMD_MAX, _ADB_CMD_SEM
-    _ADB_CMD_MAX = value
-    if _ADB_CMD_SEM is not None:
-        # Non possiamo ridimensionare un semaforo esistente; lo ricreiamo alla prossima richiesta
-        _ADB_CMD_SEM = None
+def adb_cmd_lock() -> asyncio.Lock:
+    global _ADB_CMD_LOCK
+    if _ADB_CMD_LOCK is None:
+        _ADB_CMD_LOCK = asyncio.Lock()
+    return _ADB_CMD_LOCK
 
 
 # Regex per parsare l'output di `adb devices -l`
@@ -78,9 +69,6 @@ class AdbManager:
         self._running = False
         self._poll_task: Optional[asyncio.Task] = None
         self._change_callbacks: List = []
-        # Panda-style: cooldown per reconnect e grace period disconnessione
-        self._last_reconnect = 0.0
-        self._offline_grace_s = 3.0
 
     # ------------------------------------------------------------------
     # Proprietà pubbliche
@@ -142,15 +130,6 @@ class AdbManager:
             return
         self._running = True
         logs.info("ADB Manager avviato")
-        # Panda-style: accendi il daemon ADB e inizia polling costante
-        try:
-            rc, _, err = await self.adb_command("start-server", timeout=15.0)
-            if rc == 0:
-                logs.info("ADB server attivo")
-            else:
-                logs.warn(f"ADB start-server rc={rc}: {err}")
-        except Exception as exc:
-            logs.error(f"Errore start-server: {exc}")
         self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def stop(self) -> None:
@@ -171,7 +150,7 @@ class AdbManager:
         self, *args: str, serial: Optional[str] = None, timeout: float = 30.0
     ) -> Tuple[int, str, str]:
         """Esegue un comando ADB e ritorna (returncode, stdout, stderr)."""
-        async with adb_cmd_sem():
+        async with adb_cmd_lock():
             cmd = [self._adb]
             if serial:
                 cmd += ["-s", serial]
@@ -302,76 +281,46 @@ class AdbManager:
             dev.error = ""
 
     async def _refresh_devices(self) -> None:
-        """Panda-style discovery: interroga costantemente `adb devices -l`.
-
-        Usa `adb devices -l` come fonte primaria (serial + dettagli);
-        se ritorna vuoto, fallback su `adb devices` e infine reconnect offline.
-        I dispositivi non vengono rimossi istantaneamente, ma dopo un grace period.
-        """
+        # Rilevazione: piu' tentativi di `adb devices` per raccogliere tutti
+        # i seriali, poi arricchiamo con `adb devices -l`.
         seen_serials: set = set()
-
-        # Tentativi con `adb devices -l` (timeout lungo per grandi farm)
-        for attempt in range(5):
-            rc, out, _ = await self.adb_command("devices", "-l", timeout=30.0)
-            if rc == 0 and out:
-                for match in _DEVICE_RE.finditer(out):
-                    serial = match.group("serial")
-                    if serial == "List":
-                        continue
-                    seen_serials.add(serial)
-                    self._upsert_device(
-                        serial,
-                        match.group("state"),
-                        model=match.group("model"),
-                        product=match.group("product"),
-                        usb=match.group("usb"),
-                        tid=match.group("tid"),
-                    )
-                if seen_serials:
-                    break
-            if attempt < 4:
-                await asyncio.sleep(0.5)
-
-        # Fallback su `adb devices` plain se `-l` e' tornato vuoto
-        if not seen_serials:
-            rc, out, _ = await self.adb_command("devices", timeout=30.0)
+        for attempt in range(3):
+            rc, out, _ = await self.adb_command("devices")
             if rc == 0 and out:
                 for match in _DEVICE_RE_PLAIN.finditer(out):
                     serial = match.group("serial")
-                    if serial == "List" or serial in seen_serials:
+                    if serial == "List":
                         continue
-                    seen_serials.add(serial)
-                    self._upsert_device(serial, match.group("state"))
+                    if serial not in seen_serials:
+                        seen_serials.add(serial)
+                        self._upsert_device(serial, match.group("state"))
+            if attempt < 2:
+                await asyncio.sleep(0.3)
 
-        # Se non troviamo nulla, forziamo un reconnect offline (con cooldown)
-        if not seen_serials:
-            await self._reconnect_offline_if_needed()
-
-        # Grace period: non rimuoviamo subito un dispositivo che e' scomparso per un attimo
-        now = time.time()
-        for serial, dev in list(self._devices.items()):
-            if serial not in seen_serials:
-                if (
-                    now - dev.last_seen > self._offline_grace_s
-                    and dev.status != DeviceStatus.DISCONNECTED
-                ):
-                    dev.status = DeviceStatus.DISCONNECTED
-                    dev.streaming = False
-                    logs.warn("Dispositivo non piu' visibile", serial=serial)
+        # Arricchisce con i dettagli di `adb devices -l` per i seriali gia' trovati
+        rc_l, out_l, _ = await self.adb_command("devices", "-l")
+        if rc_l == 0 and out_l:
+            for match in _DEVICE_RE.finditer(out_l):
+                serial = match.group("serial")
+                if serial == "List" or serial not in seen_serials:
+                    continue
+                self._upsert_device(
+                    serial,
+                    match.group("state"),
+                    model=match.group("model"),
+                    product=match.group("product"),
+                    usb=match.group("usb"),
+                    tid=match.group("tid"),
+                )
 
         logs.info(f"Dispositivi ADB rilevati: {len(seen_serials)}")
 
-    async def _reconnect_offline_if_needed(self, force: bool = False) -> None:
-        """Tenta `adb reconnect offline` al massimo una volta ogni 30 secondi."""
-        now = time.time()
-        if not force and now - self._last_reconnect < 30.0:
-            return
-        self._last_reconnect = now
-        logs.warn("Nessun dispositivo trovato, tentativo reconnect offline")
-        try:
-            await self.adb_command("reconnect", "offline", timeout=15.0)
-        except Exception as exc:
-            logs.error(f"Reconnect offline fallito: {exc}")
+        # Segna come disconnessi i dispositivi non piu' visibili
+        for serial, dev in self._devices.items():
+            if serial not in seen_serials and dev.status != DeviceStatus.DISCONNECTED:
+                dev.status = DeviceStatus.DISCONNECTED
+                dev.streaming = False
+                logs.warn(f"Dispositivo disconnesso", serial=serial)
 
 
     # ------------------------------------------------------------------
@@ -395,19 +344,21 @@ class AdbManager:
         await self.adb_command("reboot", serial=serial)
 
     async def restart_adb_server(self) -> bool:
-        """Resetta le connessioni ADB senza uccidere il daemon."""
-        logs.warn("Reset connessioni ADB richiesto dall'utente")
+        """Riavvia il daemon ADB: kill + start per forzare re-enumerazione USB."""
+        logs.warn("Riavvio daemon ADB richiesto dall'utente")
         try:
-            rc, _, err = await self.adb_command("start-server", timeout=15.0)
-            if rc != 0:
-                logs.error(f"Start ADB fallito: {err}")
-                return False
-            await self._reconnect_offline_if_needed(force=True)
-            await self._refresh_devices()
-            logs.success("Connessioni ADB resettate")
-            return True
+            await self.adb_command("kill-server", timeout=10.0)
+            await asyncio.sleep(1.0)
+            rc, out, err = await self.adb_command("start-server", timeout=15.0)
+            if rc == 0:
+                logs.success("Daemon ADB riavviato")
+                await asyncio.sleep(1.0)
+                await self._refresh_devices()
+                return True
+            logs.error(f"Start ADB fallito: {err}")
+            return False
         except Exception as exc:
-            logs.error(f"Errore reset ADB: {exc}")
+            logs.error(f"Errore riavvio ADB: {exc}")
             return False
 
     async def get_battery(self, serial: str) -> int:
