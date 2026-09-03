@@ -85,6 +85,16 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         await adb.start()
         asyncio.create_task(_auto_stream_loop())
 
+        # Proactor Windows: evita crash da OSError non gestiti su socket chiusi
+        def _proactor_exc_handler(loop, context):
+            exc = context.get("exception")
+            if isinstance(exc, OSError):
+                # connessione rifiutata/resettata: gia' gestita dai task stream
+                return
+            loop.default_exception_handler(context)
+
+        asyncio.get_running_loop().set_exception_handler(_proactor_exc_handler)
+
     async def _auto_stream_loop() -> None:
         """Avvia automaticamente lo stream per i dispositivi online e lo riavvia se cade."""
         await asyncio.sleep(3)

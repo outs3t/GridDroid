@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import os
 import random
@@ -76,9 +77,15 @@ def _port_lock() -> asyncio.Lock:
 class DeviceStream:
     """Streaming di un singolo dispositivo via scrcpy-server TCP → ffmpeg → JPEG."""
 
-    def __init__(self, serial: str, settings: AppSettings) -> None:
+    def __init__(
+        self,
+        serial: str,
+        settings: AppSettings,
+        start_sem: Optional[asyncio.Semaphore] = None,
+    ) -> None:
         self.serial = serial
         self._settings = settings
+        self._start_sem = start_sem
         self._server_proc: Optional[asyncio.subprocess.Process] = None
         self._running = False
         self._current_frame: Optional[bytes] = None
@@ -93,6 +100,8 @@ class DeviceStream:
         self._tcp_port: int = 0
         self._writer: Optional[asyncio.StreamWriter] = None
         self._control: Optional[ControlChannel] = None
+        self._server_ready = asyncio.Event()
+        self._server_error: Optional[str] = None
 
     @property
     def alive(self) -> bool:
@@ -127,18 +136,30 @@ class DeviceStream:
     async def stop(self) -> None:
         self._running = False
         if self._control:
-            self._control.close()
+            try:
+                self._control.close()
+            except Exception:
+                pass
             self._control = None
         if self._writer:
             try:
-                self._writer.close()
+                if not self._writer.is_closing():
+                    self._writer.close()
             except Exception:
                 pass
             self._writer = None
         if self._server_proc:
             try:
-                self._server_proc.kill()
-            except ProcessLookupError:
+                if self._server_proc.returncode is None:
+                    self._server_proc.terminate()
+                    try:
+                        await asyncio.wait_for(self._server_proc.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        try:
+                            self._server_proc.kill()
+                        except Exception:
+                            pass
+            except (ProcessLookupError, Exception):
                 pass
             self._server_proc = None
         if self._tcp_port:
@@ -146,9 +167,10 @@ class DeviceStream:
         if self._task:
             self._task.cancel()
             try:
-                await self._task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+            self._task = None
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=60)
@@ -161,6 +183,30 @@ class DeviceStream:
     # ------------------------------------------------------------------
     # Core: scrcpy-server standalone via TCP
     # ------------------------------------------------------------------
+
+    @contextlib.asynccontextmanager
+    async def _start_sem_cm(self):
+        """Acquisisce (se presente) il semaforo per limitare avvii concorrenti."""
+        if self._start_sem is not None:
+            async with self._start_sem:
+                yield
+        else:
+            yield
+
+    def _on_server_output(self, text: str, tag: str) -> None:
+        """Intercetta l'output di scrcpy-server per capire quando e' pronto."""
+        if "INFO: Device:" in text and not self._server_ready.is_set():
+            self._server_ready.set()
+        if (
+            "ERROR:" in text
+            or "FATAL:" in text
+            or "Exception" in text
+            or ("device" in text and "not found" in text)
+        ):
+            if not self._server_error:
+                self._server_error = text
+            if not self._server_ready.is_set():
+                self._server_ready.set()
 
     async def _run(self) -> None:
         server_jar = _find_scrcpy_server()
@@ -202,73 +248,97 @@ class DeviceStream:
                 )
                 self._running = False
                 break
+
+            reader: Optional[asyncio.StreamReader] = None
             try:
-                # 1. Push server jar
-                remote_jar = "/data/local/tmp/scrcpy-server.jar"
-                await self._adb_exec(adb, "push", server_jar, remote_jar)
+                async with self._start_sem_cm():
+                    # 1. Push server jar
+                    remote_jar = "/data/local/tmp/scrcpy-server.jar"
+                    await self._adb_exec(adb, "push", server_jar, remote_jar)
 
-                # 2. Setup forward con porta libera (evita collisioni)
-                async with _port_lock():
-                    for _ in range(20):
-                        port = _BASE_PORT + random.randint(0, 999)
-                        if _is_port_free("127.0.0.1", port):
+                    # 2. Setup forward con porta libera (evita collisioni)
+                    async with _port_lock():
+                        for _ in range(20):
+                            port = _BASE_PORT + random.randint(0, 999)
+                            if _is_port_free("127.0.0.1", port):
+                                break
+                        else:
+                            raise RuntimeError("Nessuna porta TCP libera per il forward")
+                        self._tcp_port = port
+                        scid_int = random.randint(0, 0x7FFFFFFF)
+                        scid_hex = f"{scid_int:08x}"
+                        socket_name = f"scrcpy_{scid_hex}"
+                        await self._adb_exec(
+                            adb, "forward", f"tcp:{self._tcp_port}",
+                            f"localabstract:{socket_name}",
+                        )
+
+                    # 3. Avvia server sul dispositivo.
+                    #    control=true abilita il control socket (input nativi).
+                    #    I meta sono disattivati: il socket video porta H264 puro.
+                    server_cmd = (
+                        f"CLASSPATH={remote_jar} "
+                        f"app_process / com.genymobile.scrcpy.Server {_SCRCPY_VERSION} "
+                        f"tunnel_forward=true "
+                        f"audio=false control=true cleanup=true "
+                        f"send_device_meta=false send_frame_meta=false "
+                        f"send_dummy_byte=false "
+                        f"max_size={s.max_size} max_fps={s.max_fps} "
+                        f"video_bit_rate={s.bit_rate} "
+                        f"scid={scid_hex}"
+                    )
+                    self._server_proc = await asyncio.create_subprocess_exec(
+                        adb, "-s", self.serial, "shell", server_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        **_SUBPROCESS_KW,
+                    )
+                    self._server_ready.clear()
+                    self._server_error = None
+                    asyncio.create_task(self._log_proc_output(self._server_proc, "server"))
+                    logs.info(f"scrcpy-server avviato (porta {self._tcp_port})", serial=self.serial)
+
+                    # Attende che il server logghi "INFO: Device:"
+                    try:
+                        await asyncio.wait_for(self._server_ready.wait(), timeout=6.0)
+                    except asyncio.TimeoutError:
+                        raise RuntimeError("scrcpy-server non pronto entro 6s")
+                    if self._server_error:
+                        raise RuntimeError(f"scrcpy-server: {self._server_error}")
+
+                    # 4. Connessione video con retry (evita WinError 1225 per avvio troppo rapido)
+                    last_exc: Optional[Exception] = None
+                    for attempt in range(3):
+                        try:
+                            reader, self._writer = await asyncio.wait_for(
+                                asyncio.open_connection("127.0.0.1", self._tcp_port),
+                                timeout=3.0,
+                            )
                             break
-                    else:
-                        raise RuntimeError("Nessuna porta TCP libera per il forward")
-                    self._tcp_port = port
-                    scid_int = random.randint(0, 0x7FFFFFFF)
-                    scid_hex = f"{scid_int:08x}"
-                    socket_name = f"scrcpy_{scid_hex}"
-                    await self._adb_exec(
-                        adb, "forward", f"tcp:{self._tcp_port}",
-                        f"localabstract:{socket_name}",
-                    )
+                        except (ConnectionRefusedError, OSError, asyncio.TimeoutError) as exc:
+                            last_exc = exc
+                            if attempt < 2:
+                                await asyncio.sleep(0.5)
+                    if reader is None or self._writer is None:
+                        raise last_exc or RuntimeError("Connessione video TCP rifiutata")
+                    logs.success("Connesso al video socket TCP", serial=self.serial)
 
-                # 3. Avvia server sul dispositivo.
-                #    control=true abilita il control socket (input nativi).
-                #    I meta sono disattivati: il socket video porta H264 puro.
-                server_cmd = (
-                    f"CLASSPATH={remote_jar} "
-                    f"app_process / com.genymobile.scrcpy.Server {_SCRCPY_VERSION} "
-                    f"tunnel_forward=true "
-                    f"audio=false control=true cleanup=true "
-                    f"send_device_meta=false send_frame_meta=false "
-                    f"send_dummy_byte=false "
-                    f"max_size={s.max_size} max_fps={s.max_fps} "
-                    f"video_bit_rate={s.bit_rate} "
-                    f"scid={scid_hex}"
-                )
-                self._server_proc = await asyncio.create_subprocess_exec(
-                    adb, "-s", self.serial, "shell", server_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **_SUBPROCESS_KW,
-                )
-                asyncio.create_task(self._log_proc_output(self._server_proc, "server"))
-                logs.info(f"scrcpy-server avviato (porta {self._tcp_port})", serial=self.serial)
-
-                # 4. Aspetta che il server sia pronto e connetti i socket.
-                #    Con tunnel_forward il server accetta prima il video, poi il controllo.
-                await asyncio.sleep(1.0)
-                reader, self._writer = await asyncio.wait_for(
-                    asyncio.open_connection("127.0.0.1", self._tcp_port),
-                    timeout=5.0,
-                )
-                logs.success("Connesso al video socket TCP", serial=self.serial)
-
-                # 5. Control socket: input nativi a latenza ~1ms.
-                #    Piccolo delay: il server deve chiamare accept() di nuovo.
-                await asyncio.sleep(0.3)
-                try:
-                    _, ctrl_writer = await asyncio.wait_for(
-                        asyncio.open_connection("127.0.0.1", self._tcp_port),
-                        timeout=5.0,
-                    )
-                    self._control = ControlChannel(self.serial, ctrl_writer)
-                    logs.success("Canale di controllo attivo (input nativi)", serial=self.serial)
-                except Exception as exc:
-                    logs.warn(f"Canale di controllo non disponibile: {exc}", serial=self.serial)
-                    self._control = None
+                    # 5. Control socket: input nativi a latenza ~1ms.
+                    for attempt in range(3):
+                        try:
+                            _, ctrl_writer = await asyncio.wait_for(
+                                asyncio.open_connection("127.0.0.1", self._tcp_port),
+                                timeout=3.0,
+                            )
+                            self._control = ControlChannel(self.serial, ctrl_writer)
+                            logs.success("Canale di controllo attivo (input nativi)", serial=self.serial)
+                            break
+                        except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
+                            if attempt == 2:
+                                logs.warn("Canale di controllo non disponibile", serial=self.serial)
+                                self._control = None
+                                break
+                            await asyncio.sleep(0.3)
 
                 # 6. Passthrough H264 → browser (decodifica hardware WebCodecs)
                 au_count = await self._stream_h264(reader)
@@ -459,6 +529,7 @@ class DeviceStream:
                     text = line.decode("utf-8", errors="replace").strip()
                     if text:
                         logs.info(f"{tag}: {text}", serial=self.serial)
+                        self._on_server_output(text, tag)
             except Exception:
                 pass
 
@@ -557,6 +628,8 @@ class StreamManager:
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
         self._streams: Dict[str, DeviceStream] = {}
+        starts = max(1, settings.stream.max_concurrent_stream_starts)
+        self._start_sem = asyncio.Semaphore(starts)
 
     @property
     def streams(self) -> Dict[str, DeviceStream]:
@@ -568,7 +641,7 @@ class StreamManager:
             if stream.alive:
                 return stream
             await stream.stop()
-        stream = DeviceStream(serial, self._settings)
+        stream = DeviceStream(serial, self._settings, self._start_sem)
         self._streams[serial] = stream
         await stream.start()
         return stream

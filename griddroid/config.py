@@ -44,6 +44,7 @@ class StreamSettings(BaseModel):
     max_size: int = Field(default=1080, ge=240, le=1920)
     bit_rate: int = Field(default=8_000_000, ge=500_000, le=20_000_000)
     video_codec: str = Field(default="h264")
+    max_concurrent_stream_starts: int = Field(default=4, ge=1, le=32)
 
 
 class AppSettings(BaseSettings):
