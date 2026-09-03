@@ -1,0 +1,91 @@
+name: Build and release Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versione (es. 0.1.2) - lascia vuoto per usare griddroid.__version__'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Determine version
+        id: ver
+        shell: powershell
+        run: |
+          $ver = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($ver)) {
+            $ver = (python -c "import griddroid; print(griddroid.__version__)")
+          }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Update setup.iss version
+        shell: powershell
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          (Get-Content setup.iss) -replace '#define MyAppVersion "[\d.]+"', "#define MyAppVersion `"$ver`"" | Set-Content setup.iss
+
+      - name: Build GridDroid.exe
+        run: python -m PyInstaller griddroid.spec --clean --noconfirm
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss'
+
+      - name: Generate version.json
+        shell: powershell
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          $json = @{
+            version = $ver
+            windows = @{
+              download_url = "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe"
+              silent_args = @()
+            }
+            linux = @{
+              download_url = "https://raw.githubusercontent.com/outs3t/GridDroid/main/install_linux.sh"
+              silent_args = @()
+            }
+          } | ConvertTo-Json -Depth 3
+          $json | Set-Content -Path version.json -Encoding utf8
+
+      - name: Push installer to gh-pages
+        shell: powershell
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          git config user.email "ci@griddroid.dev"
+          git config user.name "GridDroid CI"
+          git fetch origin gh-pages:gh-pages
+          git worktree add .gh-pages-work gh-pages
+          Copy-Item -Path dist\GridDroid_Setup.exe -Destination .gh-pages-work\GridDroid_Setup.exe -Force
+          Copy-Item -Path version.json -Destination .gh-pages-work\version.json -Force
+          Push-Location .gh-pages-work
+          git add -A
+          git commit -m "release: GridDroid_Setup.exe v$ver"
+          git push origin gh-pages
+          Pop-Location
