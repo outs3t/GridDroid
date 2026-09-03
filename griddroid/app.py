@@ -131,6 +131,17 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                             pass
                         continue
 
+                    # Dispositivi segnati come giocati vengono nascosti e non riavviati
+                    if dev.played:
+                        if dev.streaming:
+                            logs.info("Dispositivo giocato, interrompo stream", serial=serial)
+                            dev.streaming = False
+                            try:
+                                await streams.stop_stream(serial)
+                            except Exception:
+                                pass
+                        continue
+
                     if dev.status == DeviceStatus.ONLINE and not dev.streaming:
                         if now < dev.next_stream_attempt:
                             continue

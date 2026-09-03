@@ -12,6 +12,7 @@ const state = {
     logCount: 0,
     ws: null,
     gridCols: 20,
+    gridGap: 14,
     feedZoom: 1.0,
     sortBy: false,
     searchText: "",
@@ -1372,7 +1373,7 @@ function initHeaderButtons() {
         });
     }
 
-    // Max colonne (il numero effettivo si adatta a zoom e larghezza)
+    // Max colonne e distanza tra le celle
     const gridColsInput = document.getElementById("gridCols");
     if (gridColsInput) {
         state.gridCols = parseInt(gridColsInput.value) || 20;
@@ -1385,6 +1386,18 @@ function initHeaderButtons() {
         });
     }
 
+    const gridGapInput = document.getElementById("gridGap");
+    if (gridGapInput) {
+        state.gridGap = parseInt(gridGapInput.value) || 14;
+        gridGapInput.addEventListener("change", (e) => {
+            state.gridGap = parseInt(e.target.value) || 14;
+            if (state.gridGap < 0) state.gridGap = 0;
+            if (state.gridGap > 100) state.gridGap = 100;
+            e.target.value = state.gridGap;
+            updateGridColumns();
+        });
+    }
+
     // Adatta colonne al ridimensionamento finestra / multi-schermo
     const gridContainer = document.getElementById("gridContainer");
     if (gridContainer && "ResizeObserver" in window) {
@@ -1392,14 +1405,21 @@ function initHeaderButtons() {
         resizeObserver.observe(gridContainer);
     }
 
-    // Zoom con Ctrl + rotellina del mouse
+    // Ctrl + rotellina = zoom; Ctrl + Shift + rotellina = distanza
     if (gridContainer) {
         gridContainer.addEventListener("wheel", (e) => {
             if (!e.ctrlKey && !e.metaKey) return;
             e.preventDefault();
-            const delta = e.deltaY > 0 ? -0.05 : 0.05;
-            state.feedZoom = Math.min(3.0, Math.max(0.25, state.feedZoom + delta));
-            applyZoom();
+            if (e.shiftKey) {
+                const delta = e.deltaY > 0 ? -2 : 2;
+                state.gridGap = Math.min(100, Math.max(0, state.gridGap + delta));
+                if (gridGapInput) gridGapInput.value = state.gridGap;
+                updateGridColumns();
+            } else {
+                const delta = e.deltaY > 0 ? -0.05 : 0.05;
+                state.feedZoom = Math.min(3.0, Math.max(0.25, state.feedZoom + delta));
+                applyZoom();
+            }
         }, { passive: false });
     }
 
@@ -1514,11 +1534,13 @@ function updateGridColumns() {
     const grid = document.getElementById("deviceGrid");
     const container = document.getElementById("gridContainer");
     if (!grid || !container) return;
-    const baseWidth = 260 * (state.feedZoom || 1);
+    const gap = state.gridGap || 14;
+    const baseWidth = 260 * (state.feedZoom || 1) + gap;
     const maxCols = Math.max(2, state.gridCols || 10);
     const width = container.clientWidth;
-    let cols = Math.max(2, Math.min(maxCols, Math.round(width / baseWidth)));
+    let cols = Math.max(2, Math.min(maxCols, Math.floor(width / baseWidth)));
     grid.style.setProperty("--grid-cols", cols);
+    grid.style.setProperty("--grid-gap", gap + "px");
 }
 
 function applyZoom() {

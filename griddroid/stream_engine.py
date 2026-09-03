@@ -95,6 +95,7 @@ class DeviceStream:
         self._last_keyframe: Optional[bytes] = None
         self._subscribers: Set[asyncio.Queue] = set()
         self._task: Optional[asyncio.Task] = None
+        self._log_task: Optional[asyncio.Task] = None
         self._native_width: int = 0
         self._native_height: int = 0
         self._tcp_port: int = 0
@@ -295,7 +296,7 @@ class DeviceStream:
                     )
                     self._server_ready.clear()
                     self._server_error = None
-                    asyncio.create_task(self._log_proc_output(self._server_proc, "server"))
+                    self._log_task = asyncio.create_task(self._log_proc_output(self._server_proc, "server"))
                     logs.info(f"scrcpy-server avviato (porta {self._tcp_port})", serial=self.serial)
 
                     # Attende che il server logghi "INFO: Device:"
@@ -367,11 +368,12 @@ class DeviceStream:
                 logs.info(f"Riconnessione stream tra {delay:.1f}s...", serial=self.serial)
                 await asyncio.sleep(delay)
 
-    async def _stream_h264(self, tcp_reader: asyncio.StreamReader) -> None:
+    async def _stream_h264(self, tcp_reader: asyncio.StreamReader) -> int:
         """Legge H264 Annex-B dal socket TCP, lo divide in access unit e le
         distribuisce ai subscriber. Il browser decodifica in hardware via WebCodecs.
 
         Formato messaggio: 1 byte flag (1 = keyframe, 0 = delta) + dati Annex-B.
+        Ritorna il numero di access unit inviate.
         """
         buf = bytearray()
         pending = bytearray()   # NAL non-VCL (SPS/PPS/SEI) in attesa del frame
@@ -477,6 +479,16 @@ class DeviceStream:
         self._tcp_port = 0
 
     async def _cleanup_server(self) -> None:
+        if self._log_task:
+            try:
+                self._log_task.cancel()
+                try:
+                    await asyncio.wait_for(self._log_task, timeout=0.5)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            self._log_task = None
         if self._control:
             try:
                 self._control.close()

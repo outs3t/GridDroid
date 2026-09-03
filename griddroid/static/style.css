@@ -336,7 +336,7 @@ body::before {
 .device-grid {
     display: grid;
     grid-template-columns: repeat(var(--grid-cols, 5), 1fr);
-    gap: 14px;
+    gap: var(--grid-gap, 14px);
 }
 
 /* ===== DEVICE CELL ===== */
