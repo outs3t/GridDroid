@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Set
 
 from PIL import Image
 
-from .adb_manager import adb_cmd_lock
+from .adb_manager import adb_cmd_sem
 from .config import AppSettings
 from .control_channel import ControlChannel
 from .log_manager import logs
@@ -220,7 +220,7 @@ class DeviceStream:
 
     async def _is_device_online(self) -> bool:
         adb = self._settings.adb_path or "adb"
-        async with adb_cmd_lock():
+        async with adb_cmd_sem():
             try:
                 proc = await asyncio.create_subprocess_exec(
                     adb, "-s", self.serial, "get-state",
@@ -442,7 +442,7 @@ class DeviceStream:
     # ------------------------------------------------------------------
 
     async def _adb_exec(self, adb: str, *args: str, timeout: float = 15.0) -> str:
-        async with adb_cmd_lock():
+        async with adb_cmd_sem():
             proc = await asyncio.create_subprocess_exec(
                 adb, "-s", self.serial, *args,
                 stdout=asyncio.subprocess.PIPE,
