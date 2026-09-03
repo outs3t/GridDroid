@@ -43,6 +43,10 @@ _DEVICE_RE = re.compile(
     re.MULTILINE,
 )
 
+# Fallback per `adb devices` senza -l: alcune versioni ADB troncano l'output -l
+# con molti dispositivi
+_DEVICE_RE_PLAIN = re.compile(r"^(?P<serial>\S+)\s+(?P<state>\S+)", re.MULTILINE)
+
 
 class AdbManager:
     """Worker asincrono per il monitoraggio dei dispositivi ADB."""
@@ -164,10 +168,70 @@ class AdbManager:
                 logs.error(f"Errore nel polling ADB: {exc}")
             await asyncio.sleep(self._settings.poll_interval_s)
 
+    def _upsert_device(
+        self,
+        serial: str,
+        state_str: str,
+        *,
+        model: str = "",
+        product: str = "",
+        usb: str = "",
+        tid: str = "",
+    ) -> None:
+        """Aggiorna o crea lo stato di un dispositivo da un rigo adb devices."""
+        status = {
+            "device": DeviceStatus.ONLINE,
+            "offline": DeviceStatus.OFFLINE,
+            "unauthorized": DeviceStatus.UNAUTHORIZED,
+        }.get(state_str, DeviceStatus.OFFLINE)
+
+        if serial in self._devices:
+            dev = self._devices[serial]
+            old_status = dev.status
+            # aggiorna le info senza perdere quelle gia' presenti
+            dev.info.model = (model or dev.info.model).replace("_", " ")
+            dev.info.product = product or dev.info.product
+            dev.info.transport_id = tid or dev.info.transport_id
+            dev.info.usb_port = usb or dev.info.usb_port
+            dev.status = status
+            dev.last_seen = time.time()
+            dev.error = ""
+            if old_status != status:
+                logs.info(
+                    f"Stato cambiato: {old_status.value} -> {status.value}",
+                    serial=serial,
+                )
+                if status == DeviceStatus.ONLINE:
+                    dev.stream_failures = 0
+                    dev.next_stream_attempt = 0.0
+        else:
+            info = DeviceInfo(
+                serial=serial,
+                model=(model or "").replace("_", " "),
+                product=product or "",
+                transport_id=tid or "",
+                usb_port=usb or "",
+            )
+            label = self._labels.get(serial, "")
+            tags = self._tags.get(serial, [])
+            dev = DeviceState(info=info, label=label, tags=tags, status=status)
+            self._devices[serial] = dev
+            logs.success(f"Nuovo dispositivo rilevato: {dev.display_name}", serial=serial)
+
+        # Non forziamo mai `adb reconnect` automaticamente.
+        if status == DeviceStatus.OFFLINE:
+            dev.streaming = False
+            dev.error = "offline"
+        elif status == DeviceStatus.UNAUTHORIZED:
+            dev.streaming = False
+            dev.error = "unauthorized"
+        else:
+            dev.error = ""
+
     async def _refresh_devices(self) -> None:
         rc, out, err = await self.adb_command("devices", "-l")
         if rc != 0:
-            logs.warn(f"adb devices fallito: {err}")
+            logs.warn(f"adb devices -l fallito: {err}")
             return
 
         seen_serials: set = set()
@@ -175,58 +239,28 @@ class AdbManager:
             serial = match.group("serial")
             if serial == "List":
                 continue
-            state_str = match.group("state")
             seen_serials.add(serial)
-
-            info = DeviceInfo(
-                serial=serial,
-                model=(match.group("model") or "").replace("_", " "),
-                product=match.group("product") or "",
-                transport_id=match.group("tid") or "",
-                usb_port=match.group("usb") or "",
+            self._upsert_device(
+                serial,
+                match.group("state"),
+                model=match.group("model"),
+                product=match.group("product"),
+                usb=match.group("usb"),
+                tid=match.group("tid"),
             )
 
-            status = {
-                "device": DeviceStatus.ONLINE,
-                "offline": DeviceStatus.OFFLINE,
-                "unauthorized": DeviceStatus.UNAUTHORIZED,
-            }.get(state_str, DeviceStatus.OFFLINE)
+        # Fallback: alcuni client ADB troncano `adb devices -l` con molti
+        # dispositivi, ma `adb devices` (senza -l) e' piu' corto e arriva intero.
+        rc2, out2, _ = await self.adb_command("devices")
+        if rc2 == 0 and out2:
+            for match in _DEVICE_RE_PLAIN.finditer(out2):
+                serial = match.group("serial")
+                if serial == "List" or serial in seen_serials:
+                    continue
+                seen_serials.add(serial)
+                self._upsert_device(serial, match.group("state"))
 
-            if serial in self._devices:
-                dev = self._devices[serial]
-                old_status = dev.status
-                dev.info = info
-                dev.status = status
-                dev.last_seen = time.time()
-                dev.error = ""
-                if old_status != status:
-                    logs.info(
-                        f"Stato cambiato: {old_status.value} -> {status.value}",
-                        serial=serial,
-                    )
-                    # resetta il backoff se il dispositivo torna online
-                    if status == DeviceStatus.ONLINE:
-                        dev.stream_failures = 0
-                        dev.next_stream_attempt = 0.0
-            else:
-                label = self._labels.get(serial, "")
-                tags = self._tags.get(serial, [])
-                dev = DeviceState(info=info, label=label, tags=tags, status=status)
-                self._devices[serial] = dev
-                logs.success(f"Nuovo dispositivo rilevato: {dev.display_name}", serial=serial)
-
-            # Non forziamo mai `adb reconnect` automaticamente: su molti
-            # sistemi/host fa cadere l'intero daemon ADB e disconnette
-            # tutti gli altri dispositivi. Lasciamo che ADB gestisca la
-            # riconnessione da solo.
-            if status == DeviceStatus.OFFLINE:
-                dev.streaming = False
-                dev.error = "offline"
-            elif status == DeviceStatus.UNAUTHORIZED:
-                dev.streaming = False
-                dev.error = "unauthorized"
-            else:
-                dev.error = ""
+        logs.info(f"Dispositivi ADB rilevati: {len(seen_serials)}")
 
         # Segna come disconnessi i dispositivi non più visibili
         for serial, dev in self._devices.items():
