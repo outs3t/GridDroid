@@ -1,0 +1,609 @@
+"""FastAPI application – REST + WebSocket per GridDroid."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import os
+import tempfile
+import time
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from .adb_manager import AdbManager
+from .bulk_actions import BulkActionRunner
+from .config import AppSettings, load_settings, save_settings
+from .device import DeviceStatus
+from .input_relay import InputRelay
+from .log_manager import logs
+from .scripts import ScriptEngine
+from .stream_engine import StreamManager
+
+
+def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
+    if settings is None:
+        settings = load_settings()
+
+    app = FastAPI(title="GridDroid", version="0.1.0")
+
+    # Servizi
+    adb = AdbManager(settings)
+    streams = StreamManager(settings)
+    input_relay = InputRelay(adb, streams)
+    bulk = BulkActionRunner(adb, max_concurrent=settings.max_concurrent_installs)
+    script_engine = ScriptEngine(adb)
+
+    # Salva riferimenti nell'app state
+    app.state.adb = adb
+    app.state.streams = streams
+    app.state.input_relay = input_relay
+    app.state.bulk = bulk
+    app.state.scripts = script_engine
+    app.state.settings = settings
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    @app.on_event("startup")
+    async def startup() -> None:
+        logs.info("GridDroid avviato")
+        await adb.start()
+        asyncio.create_task(_auto_stream_loop())
+
+    async def _auto_stream_loop() -> None:
+        """Avvia automaticamente lo stream per i dispositivi online."""
+        await asyncio.sleep(3)
+        logs.info("Auto-stream loop attivo")
+        while True:
+            try:
+                devices_snapshot = list(adb.devices.items())
+                for serial, dev in devices_snapshot:
+                    if dev.status == DeviceStatus.ONLINE and not dev.streaming:
+                        try:
+                            logs.info("Avvio stream...", serial=serial)
+                            await streams.start_stream(serial)
+                            dev.streaming = True
+                            logs.success("Stream attivo", serial=serial)
+                        except Exception as exc:
+                            logs.error(f"Errore avvio stream: {exc}", serial=serial)
+            except Exception as exc:
+                logs.warn(f"Errore auto-stream loop: {exc}")
+            await asyncio.sleep(3)
+
+    @app.on_event("shutdown")
+    async def shutdown() -> None:
+        await streams.stop_all()
+        await adb.stop()
+        logs.info("GridDroid fermato")
+
+    # ------------------------------------------------------------------
+    # Static files
+    # ------------------------------------------------------------------
+
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index():
+        index_file = static_dir / "index.html"
+        return index_file.read_text(encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # REST API – Dispositivi
+    # ------------------------------------------------------------------
+
+    @app.get("/api/devices")
+    async def get_devices():
+        return [d.to_dict() for d in adb.devices.values()]
+
+    @app.post("/api/devices/{serial}/label")
+    async def set_label(serial: str, label: str = Query(...)):
+        adb.set_label(serial, label)
+        return {"ok": True}
+
+    @app.post("/api/devices/{serial}/select")
+    async def select_device(serial: str, selected: bool = Query(True)):
+        dev = adb.get_device(serial)
+        if dev:
+            dev.selected = selected
+        return {"ok": True}
+
+    @app.post("/api/devices/{serial}/screen-on")
+    async def screen_on(serial: str):
+        await adb.screen_on(serial)
+        return {"ok": True}
+
+    @app.post("/api/devices/{serial}/screen-off")
+    async def screen_off(serial: str):
+        await adb.screen_off(serial)
+        return {"ok": True}
+
+    @app.post("/api/devices/{serial}/reboot")
+    async def reboot_device(serial: str):
+        await adb.reboot(serial)
+        return {"ok": True}
+
+    @app.get("/api/devices/{serial}/screenshot")
+    async def screenshot(serial: str):
+        data = await adb.take_screenshot_raw(serial)
+        if data:
+            return StreamingResponse(
+                iter([data]), media_type="image/png"
+            )
+        return JSONResponse({"error": "screenshot fallito"}, status_code=500)
+
+    # ------------------------------------------------------------------
+    # REST API – Streaming
+    # ------------------------------------------------------------------
+
+    @app.post("/api/stream/{serial}/start")
+    async def start_stream(serial: str):
+        dev = adb.get_device(serial)
+        if not dev or dev.status != DeviceStatus.ONLINE:
+            return JSONResponse({"error": "dispositivo non online"}, status_code=400)
+        stream = await streams.start_stream(serial)
+        dev.streaming = True
+        return {"ok": True}
+
+    @app.post("/api/stream/{serial}/stop")
+    async def stop_stream(serial: str):
+        await streams.stop_stream(serial)
+        dev = adb.get_device(serial)
+        if dev:
+            dev.streaming = False
+        return {"ok": True}
+
+    @app.post("/api/stream/start-all")
+    async def start_all_streams():
+        for serial, dev in adb.devices.items():
+            if dev.status == DeviceStatus.ONLINE:
+                await streams.start_stream(serial)
+                dev.streaming = True
+        return {"ok": True}
+
+    @app.post("/api/stream/stop-all")
+    async def stop_all_streams():
+        await streams.stop_all()
+        for dev in adb.devices.values():
+            dev.streaming = False
+        return {"ok": True}
+
+    @app.get("/api/stream/{serial}/mjpeg")
+    async def mjpeg_feed(serial: str):
+        """Endpoint MJPEG per lo streaming continuo di frame JPEG."""
+        stream = streams.get_stream(serial)
+        if not stream:
+            return JSONResponse({"error": "stream non attivo"}, status_code=404)
+
+        async def generate():
+            q = stream.subscribe()
+            try:
+                while True:
+                    try:
+                        frame = await asyncio.wait_for(q.get(), timeout=10.0)
+                        yield (
+                            b"--frame\r\n"
+                            b"Content-Type: image/jpeg\r\n\r\n"
+                            + frame
+                            + b"\r\n"
+                        )
+                    except asyncio.TimeoutError:
+                        # Invia un frame vuoto per keepalive
+                        yield b"--frame\r\n\r\n"
+            finally:
+                stream.unsubscribe(q)
+
+        return StreamingResponse(
+            generate(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
+
+    @app.get("/api/stream/{serial}/frame")
+    async def last_frame(serial: str):
+        """Ritorna l'ultimo frame JPEG catturato."""
+        stream = streams.get_stream(serial)
+        if stream and stream.last_frame:
+            return StreamingResponse(
+                iter([stream.last_frame]), media_type="image/jpeg"
+            )
+        return JSONResponse({"error": "nessun frame"}, status_code=404)
+
+    # ------------------------------------------------------------------
+    # REST API – Input
+    # ------------------------------------------------------------------
+
+    @app.post("/api/input/focus/{serial}")
+    async def focus_device(serial: str):
+        input_relay.focused_serial = serial
+        return {"ok": True}
+
+    @app.post("/api/input/broadcast")
+    async def toggle_broadcast(enabled: bool = Query(True)):
+        input_relay.broadcast_mode = enabled
+        return {"ok": True, "broadcast": enabled}
+
+    @app.post("/api/input/tap")
+    async def input_tap(x: int = Query(...), y: int = Query(...),
+                        w: int = Query(0), h: int = Query(0)):
+        await input_relay.tap(x, y, w, h)
+        return {"ok": True}
+
+    @app.post("/api/input/swipe")
+    async def input_swipe(x1: int = Query(...), y1: int = Query(...),
+                          x2: int = Query(...), y2: int = Query(...),
+                          duration: int = Query(300)):
+        await input_relay.swipe(x1, y1, x2, y2, duration)
+        return {"ok": True}
+
+    @app.post("/api/input/keyevent")
+    async def input_keyevent(keycode: int = Query(...)):
+        await input_relay.keyevent(keycode)
+        return {"ok": True}
+
+    @app.post("/api/input/text")
+    async def input_text(text: str = Query(...)):
+        await input_relay.text(text)
+        return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # REST API – Bulk Actions
+    # ------------------------------------------------------------------
+
+    @app.post("/api/bulk/install-apk")
+    async def bulk_install_apk(file: UploadFile = File(...)):
+        # Salva il file temporaneamente
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".apk")
+        try:
+            content = await file.read()
+            tmp.write(content)
+            tmp.close()
+            progress = await bulk.install_apk(tmp.name)
+            return progress.to_dict()
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+    @app.post("/api/bulk/shell")
+    async def bulk_shell(command: str = Query(...)):
+        results = await bulk.run_shell(command)
+        return results
+
+    @app.post("/api/bulk/push-file")
+    async def bulk_push_file(
+        file: UploadFile = File(...),
+        remote_path: str = Query("/sdcard/"),
+    ):
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_" + (file.filename or "file"))
+        try:
+            content = await file.read()
+            tmp.write(content)
+            tmp.close()
+            progress = await bulk.push_file(tmp.name, remote_path)
+            return progress.to_dict()
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+    @app.post("/api/bulk/reboot-all")
+    async def bulk_reboot():
+        await bulk.reboot_all()
+        return {"ok": True}
+
+    @app.post("/api/bulk/wake-all")
+    async def bulk_wake():
+        await bulk.wake_all()
+        return {"ok": True}
+
+    @app.post("/api/bulk/sleep-all")
+    async def bulk_sleep():
+        await bulk.sleep_all()
+        return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # REST API – Settings
+    # ------------------------------------------------------------------
+
+    @app.get("/api/settings")
+    async def get_settings():
+        return settings.model_dump()
+
+    @app.post("/api/settings")
+    async def update_settings(data: dict):
+        nonlocal settings
+        for key, value in data.items():
+            if key == "stream" and isinstance(value, dict):
+                for sk, sv in value.items():
+                    if sk == "max_size":
+                        sv = max(240, min(1920, int(sv)))
+                    elif sk == "max_fps":
+                        sv = max(1, min(60, int(sv)))
+                    elif sk == "bit_rate":
+                        sv = max(500_000, min(20_000_000, int(sv)))
+                    setattr(settings.stream, sk, sv)
+            else:
+                setattr(settings, key, value)
+        save_settings(settings)
+        app.state.settings = settings
+        return {"ok": True}
+
+    @app.post("/api/settings/apply-stream")
+    async def apply_stream_settings():
+        await streams.stop_all()
+        for serial in adb.devices:
+            await streams.start_stream(serial)
+        return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # REST API – Logs
+    # ------------------------------------------------------------------
+
+    @app.get("/api/logs")
+    async def get_logs(limit: int = Query(200)):
+        return logs.history(limit)
+
+    # ------------------------------------------------------------------
+    # Script ADB
+    # ------------------------------------------------------------------
+
+    @app.get("/api/scripts")
+    async def elenca_script():
+        """Catalogo degli script disponibili, raggruppati per categoria."""
+        return {"categorie": script_engine.catalogo()}
+
+    @app.post("/api/scripts/{script_id}/esegui")
+    async def esegui_script(script_id: str, body: dict):
+        """Esegue uno script sui dispositivi indicati.
+
+        Body: {"target": "selezionati" | "tutti" | "singolo",
+               "serial": "...", "parametri": {...}}
+        """
+        target = body.get("target", "selezionati")
+        parametri = body.get("parametri", {})
+
+        if target == "singolo":
+            serial = body.get("serial", "")
+            serials = [serial] if serial else []
+        elif target == "tutti":
+            serials = [
+                s for s, d in adb.devices.items()
+                if d.status == DeviceStatus.ONLINE
+            ]
+        else:
+            serials = [
+                s for s, d in adb.devices.items()
+                if d.status == DeviceStatus.ONLINE and d.selected
+            ]
+
+        if not serials:
+            return JSONResponse(
+                {"errore": "Nessun dispositivo disponibile per l'esecuzione"},
+                status_code=400,
+            )
+
+        risultati = await script_engine.esegui(script_id, serials, parametri)
+        return {
+            "risultati": [r.to_dict() for r in risultati],
+            "riusciti": sum(1 for r in risultati if r.ok),
+            "totale": len(risultati),
+        }
+
+    # ------------------------------------------------------------------
+    # WebSocket – Aggiornamenti in tempo reale
+    # ------------------------------------------------------------------
+
+    @app.websocket("/ws/stream/{serial}")
+    async def ws_stream(ws: WebSocket, serial: str):
+        """WebSocket binario per streaming H264: il browser decodifica in hardware.
+
+        Formato: 1 byte flag (1 = keyframe, 0 = delta) + access unit Annex-B.
+        """
+        await ws.accept()
+        stream = streams.get_stream(serial)
+        if not stream:
+            await ws.close(code=1008, reason="stream non attivo")
+            return
+        q = stream.subscribe()
+        try:
+            # Invia subito l'ultimo keyframe così il decoder parte immediatamente
+            keyframe = stream.last_keyframe
+            if keyframe:
+                await ws.send_bytes(keyframe)
+            while True:
+                frame = await q.get()
+                await ws.send_bytes(frame)
+        except (WebSocketDisconnect, Exception):
+            pass
+        finally:
+            stream.unsubscribe(q)
+
+    @app.websocket("/ws")
+    async def websocket_endpoint(ws: WebSocket):
+        await ws.accept()
+        log_queue = logs.subscribe()
+        try:
+            # Task per inviare aggiornamenti periodici
+            async def send_updates():
+                while True:
+                    msg = {
+                        "type": "devices",
+                        "data": [d.to_dict() for d in adb.devices.values()],
+                        "broadcast": input_relay.broadcast_mode,
+                        "focused": input_relay.focused_serial,
+                    }
+                    await ws.send_json(msg)
+                    await asyncio.sleep(1.0)
+
+            # Task per inviare log in tempo reale
+            async def send_logs():
+                while True:
+                    entry = await log_queue.get()
+                    await ws.send_json({
+                        "type": "log",
+                        "data": entry.to_dict(),
+                    })
+
+            # Task per ricevere comandi dal frontend
+            async def receive_commands():
+                while True:
+                    raw = await ws.receive_text()
+                    try:
+                        cmd = json.loads(raw)
+                        await _handle_ws_command(cmd)
+                    except json.JSONDecodeError:
+                        pass
+
+            await asyncio.gather(
+                send_updates(),
+                send_logs(),
+                receive_commands(),
+            )
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            logs.unsubscribe(log_queue)
+
+    async def _handle_ws_command(cmd: dict) -> None:
+        """Gestisce i comandi ricevuti via WebSocket."""
+        action = cmd.get("action")
+        serial = cmd.get("serial", "")
+
+        if action == "focus":
+            input_relay.focused_serial = serial
+
+        elif action == "broadcast":
+            input_relay.broadcast_mode = cmd.get("enabled", False)
+
+        elif action == "touch":
+            # Evento touch grezzo dal browser: down / move / up.
+            # Percorso a latenza minima via control socket scrcpy.
+            await input_relay.touch(
+                cmd.get("touch_action", ""),
+                cmd.get("x", 0), cmd.get("y", 0),
+                cmd.get("w", 0), cmd.get("h", 0),
+                cmd.get("pressure", 1.0),
+            )
+
+        elif action == "scroll":
+            await input_relay.scroll(
+                cmd.get("x", 0), cmd.get("y", 0),
+                cmd.get("w", 0), cmd.get("h", 0),
+                cmd.get("hscroll", 0.0), cmd.get("vscroll", 0.0),
+            )
+
+        elif action == "tap":
+            await input_relay.tap(
+                cmd.get("x", 0), cmd.get("y", 0),
+                cmd.get("w", 0), cmd.get("h", 0),
+            )
+
+        elif action == "swipe":
+            await input_relay.swipe(
+                cmd.get("x1", 0), cmd.get("y1", 0),
+                cmd.get("x2", 0), cmd.get("y2", 0),
+                cmd.get("duration", 300),
+                cmd.get("w", 0), cmd.get("h", 0),
+            )
+
+        elif action == "keyevent":
+            await input_relay.keyevent(cmd.get("keycode", 0))
+
+        elif action == "text":
+            await input_relay.text(cmd.get("text", ""))
+
+        elif action == "macro_record":
+            if cmd.get("recording", False):
+                await input_relay.start_record()
+            else:
+                await input_relay.stop_record(cmd.get("name", ""))
+
+        elif action == "label":
+            adb.set_label(serial, cmd.get("label", ""))
+
+        elif action == "tags":
+            adb.set_tags(serial, cmd.get("tags", []))
+
+        elif action == "select":
+            dev = adb.get_device(serial)
+            if dev:
+                dev.selected = cmd.get("selected", True)
+
+        elif action == "start_stream":
+            dev = adb.get_device(serial)
+            if dev and dev.status == DeviceStatus.ONLINE:
+                await streams.start_stream(serial)
+                dev.streaming = True
+
+        elif action == "stop_stream":
+            await streams.stop_stream(serial)
+            dev = adb.get_device(serial)
+            if dev:
+                dev.streaming = False
+
+        elif action == "start_all_streams":
+            for s, d in adb.devices.items():
+                if d.status == DeviceStatus.ONLINE:
+                    await streams.start_stream(s)
+                    d.streaming = True
+
+        elif action == "screen_on":
+            await adb.screen_on(serial)
+
+        elif action == "screen_off":
+            await adb.screen_off(serial)
+
+        elif action == "rotate":
+            current = await adb.shell(serial, "settings get system accelerometer_rotation")
+            if "1" in current:
+                await adb.shell(serial, "settings put system accelerometer_rotation 0")
+                current_orient = await adb.shell(serial, "settings get system user_rotation")
+                next_orient = (int(current_orient or "0") + 1) % 4
+                await adb.shell(serial, f"settings put system user_rotation {next_orient}")
+            else:
+                current_orient = await adb.shell(serial, "settings get system user_rotation")
+                next_orient = (int(current_orient or "0") + 1) % 4
+                await adb.shell(serial, f"settings put system user_rotation {next_orient}")
+
+            # Riavvia lo stream per far rilevare a scrcpy le nuove dimensioni
+            dev = adb.get_device(serial)
+            if dev and dev.streaming:
+                await streams.stop_stream(serial)
+                await asyncio.sleep(0.5)
+                await streams.start_stream(serial)
+
+    # ------------------------------------------------------------------
+    # Macro recorder
+    # ------------------------------------------------------------------
+
+    @app.get("/api/macros")
+    async def api_list_macros():
+        return {"macros": input_relay.list_macros(), "recording": input_relay.is_recording}
+
+    @app.post("/api/macro/stop")
+    async def api_stop_macro(name: str = Query("")):
+        saved = await input_relay.stop_record(name)
+        return {"ok": saved is not None, "name": saved}
+
+    @app.post("/api/macro/{name}/replay")
+    async def api_replay_macro(name: str):
+        ok = await input_relay.replay_macro(name)
+        return {"ok": ok}
+
+    @app.delete("/api/macro/{name}")
+    async def api_delete_macro(name: str):
+        input_relay.delete_macro(name)
+        return {"ok": True}
+
+    return app

@@ -1,0 +1,116 @@
+"""Configurazione globale dell'applicazione."""
+
+from __future__ import annotations
+
+import json
+import shutil
+import sys
+from pathlib import Path
+from typing import Dict, List
+
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
+
+
+CONFIG_DIR = Path.home() / ".griddroid"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+LABELS_FILE = CONFIG_DIR / "labels.json"
+TAGS_FILE = CONFIG_DIR / "tags.json"
+
+
+def _find_bundled_adb() -> str:
+    """Cerca adb.exe nella cartella tools/ inclusa nel pacchetto."""
+    # PyInstaller: sys._MEIPASS è la cartella temporanea dell'eseguibile
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).parent.parent
+
+    bundled = base / "tools" / "adb.exe"
+    if bundled.exists():
+        return str(bundled)
+
+    # Fallback: cerca nel PATH di sistema
+    found = shutil.which("adb")
+    if found:
+        return found
+
+    return "adb"
+
+
+class StreamSettings(BaseModel):
+    """Parametri di streaming video."""
+    max_fps: int = Field(default=30, ge=1, le=60)
+    max_size: int = Field(default=1080, ge=240, le=1920)
+    bit_rate: int = Field(default=8_000_000, ge=500_000, le=20_000_000)
+    video_codec: str = Field(default="h264")
+
+
+class AppSettings(BaseSettings):
+    """Impostazioni principali dell'applicazione."""
+    host: str = "127.0.0.1"
+    port: int = 8470
+    adb_path: str = Field(default_factory=_find_bundled_adb)
+    scrcpy_server_path: str = ""
+    poll_interval_s: float = 2.0
+    max_concurrent_installs: int = 6
+    grid_columns: int = 5
+    stream: StreamSettings = Field(default_factory=StreamSettings)
+
+    class Config:
+        env_prefix = "GRIDDROID_"
+
+
+def load_settings() -> AppSettings:
+    """Carica le impostazioni dal file di configurazione, se esiste."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if CONFIG_FILE.exists():
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        settings = AppSettings(**data)
+    else:
+        settings = AppSettings()
+
+    # Ricalcola sempre adb_path se quello salvato non è un eseguibile valido
+    if not shutil.which(settings.adb_path):
+        settings.adb_path = _find_bundled_adb()
+
+    save_settings(settings)
+    return settings
+
+
+def save_settings(settings: AppSettings) -> None:
+    """Salva le impostazioni su disco."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(
+        settings.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+
+def load_labels() -> Dict[str, str]:
+    """Carica la mappa seriale -> etichetta personalizzata."""
+    if LABELS_FILE.exists():
+        return json.loads(LABELS_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_labels(labels: Dict[str, str]) -> None:
+    """Salva la mappa etichette su disco."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    LABELS_FILE.write_text(
+        json.dumps(labels, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_tags() -> Dict[str, List[str]]:
+    """Carica la mappa seriale -> tag."""
+    if TAGS_FILE.exists():
+        return json.loads(TAGS_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_tags(tags: Dict[str, List[str]]) -> None:
+    """Salva la mappa tag su disco."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    TAGS_FILE.write_text(
+        json.dumps(tags, indent=2, ensure_ascii=False), encoding="utf-8"
+    )

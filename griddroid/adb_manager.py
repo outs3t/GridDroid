@@ -1,0 +1,268 @@
+"""Gestione asincrona del daemon ADB: discovery, reconnect, stato dispositivi."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import re
+import shutil
+import time
+from typing import Dict, List, Optional, Tuple
+
+# Nessuna finestra di terminale per i processi figli su Windows
+if os.name == "nt":
+    _SUBPROCESS_KW = {"creationflags": 0x08000000}
+else:
+    _SUBPROCESS_KW = {}
+
+from .config import AppSettings, load_labels, save_labels, load_tags, save_tags
+from .device import DeviceInfo, DeviceState, DeviceStatus
+from .log_manager import logs
+
+
+# Regex per parsare l'output di `adb devices -l`
+_DEVICE_RE = re.compile(
+    r"^(?P<serial>\S+)\s+(?P<state>\S+)"
+    r"(?:\s+usb:(?P<usb>\S+))?"
+    r"(?:\s+product:(?P<product>\S+))?"
+    r"(?:\s+model:(?P<model>\S+))?"
+    r"(?:\s+device:(?P<device>\S+))?"
+    r"(?:\s+transport_id:(?P<tid>\S+))?",
+    re.MULTILINE,
+)
+
+
+class AdbManager:
+    """Worker asincrono per il monitoraggio dei dispositivi ADB."""
+
+    def __init__(self, settings: AppSettings) -> None:
+        self._settings = settings
+        self._adb = settings.adb_path or "adb"
+        self._devices: Dict[str, DeviceState] = {}
+        self._labels: Dict[str, str] = load_labels()
+        self._tags: Dict[str, List[str]] = load_tags()
+        self._running = False
+        self._poll_task: Optional[asyncio.Task] = None
+        self._change_callbacks: List = []
+
+    # ------------------------------------------------------------------
+    # Proprietà pubbliche
+    # ------------------------------------------------------------------
+
+    @property
+    def devices(self) -> Dict[str, DeviceState]:
+        return self._devices
+
+    def get_device(self, serial: str) -> Optional[DeviceState]:
+        return self._devices.get(serial)
+
+    # ------------------------------------------------------------------
+    # Etichette
+    # ------------------------------------------------------------------
+
+    def set_label(self, serial: str, label: str) -> None:
+        self._labels[serial] = label
+        if serial in self._devices:
+            self._devices[serial].label = label
+        save_labels(self._labels)
+        logs.info(f"Etichetta '{label}' assegnata a {serial}", serial=serial)
+
+    def set_tags(self, serial: str, tags: List[str]) -> None:
+        self._tags[serial] = tags
+        if serial in self._devices:
+            self._devices[serial].tags = tags
+        save_tags(self._tags)
+        logs.info(f"Tag {tags} assegnati a {serial}", serial=serial)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        if not shutil.which(self._adb):
+            logs.error(f"ADB non trovato nel PATH ({self._adb})")
+            return
+        self._running = True
+        logs.info("ADB Manager avviato")
+        self._poll_task = asyncio.create_task(self._poll_loop())
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+        logs.info("ADB Manager fermato")
+
+    # ------------------------------------------------------------------
+    # Comandi ADB
+    # ------------------------------------------------------------------
+
+    async def adb_command(
+        self, *args: str, serial: Optional[str] = None, timeout: float = 30.0
+    ) -> Tuple[int, str, str]:
+        """Esegue un comando ADB e ritorna (returncode, stdout, stderr)."""
+        cmd = [self._adb]
+        if serial:
+            cmd += ["-s", serial]
+        cmd += list(args)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **_SUBPROCESS_KW,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+            return (
+                proc.returncode or 0,
+                stdout.decode("utf-8", errors="replace"),
+                stderr.decode("utf-8", errors="replace"),
+            )
+        except asyncio.TimeoutError:
+            logs.warn(f"Timeout comando ADB: {' '.join(cmd)}")
+            return -1, "", "timeout"
+        except Exception as exc:
+            logs.error(f"Errore ADB: {exc}")
+            return -1, "", str(exc)
+
+    async def shell(self, serial: str, command: str, timeout: float = 30.0) -> str:
+        """Esegue un comando shell su un dispositivo specifico."""
+        rc, out, err = await self.adb_command(
+            "shell", command, serial=serial, timeout=timeout
+        )
+        return out.strip()
+
+    # ------------------------------------------------------------------
+    # Discovery loop
+    # ------------------------------------------------------------------
+
+    async def _poll_loop(self) -> None:
+        while self._running:
+            try:
+                await self._refresh_devices()
+            except Exception as exc:
+                logs.error(f"Errore nel polling ADB: {exc}")
+            await asyncio.sleep(self._settings.poll_interval_s)
+
+    async def _refresh_devices(self) -> None:
+        rc, out, err = await self.adb_command("devices", "-l")
+        if rc != 0:
+            logs.warn(f"adb devices fallito: {err}")
+            return
+
+        seen_serials: set = set()
+        for match in _DEVICE_RE.finditer(out):
+            serial = match.group("serial")
+            if serial == "List":
+                continue
+            state_str = match.group("state")
+            seen_serials.add(serial)
+
+            info = DeviceInfo(
+                serial=serial,
+                model=(match.group("model") or "").replace("_", " "),
+                product=match.group("product") or "",
+                transport_id=match.group("tid") or "",
+                usb_port=match.group("usb") or "",
+            )
+
+            status = {
+                "device": DeviceStatus.ONLINE,
+                "offline": DeviceStatus.OFFLINE,
+                "unauthorized": DeviceStatus.UNAUTHORIZED,
+            }.get(state_str, DeviceStatus.OFFLINE)
+
+            if serial in self._devices:
+                dev = self._devices[serial]
+                old_status = dev.status
+                dev.info = info
+                dev.status = status
+                dev.last_seen = time.time()
+                dev.error = ""
+                if old_status != status:
+                    logs.info(
+                        f"Stato cambiato: {old_status.value} → {status.value}",
+                        serial=serial,
+                    )
+            else:
+                label = self._labels.get(serial, "")
+                tags = self._tags.get(serial, [])
+                dev = DeviceState(info=info, label=label, tags=tags, status=status)
+                self._devices[serial] = dev
+                logs.success(f"Nuovo dispositivo rilevato: {dev.display_name}", serial=serial)
+
+            # Tentativo di riconnessione per dispositivi offline
+            if status == DeviceStatus.OFFLINE:
+                asyncio.create_task(self._try_reconnect(serial))
+
+        # Segna come disconnessi i dispositivi non più visibili
+        for serial, dev in self._devices.items():
+            if serial not in seen_serials and dev.status != DeviceStatus.DISCONNECTED:
+                dev.status = DeviceStatus.DISCONNECTED
+                dev.streaming = False
+                logs.warn(f"Dispositivo disconnesso", serial=serial)
+
+    async def _try_reconnect(self, serial: str) -> None:
+        """Prova a riconnettere un dispositivo offline."""
+        logs.info("Tentativo di riconnessione...", serial=serial)
+        await self.adb_command("reconnect", serial=serial, timeout=10.0)
+
+    # ------------------------------------------------------------------
+    # Comandi utili
+    # ------------------------------------------------------------------
+
+    async def screen_on(self, serial: str) -> None:
+        await self.shell(serial, "input keyevent KEYCODE_WAKEUP")
+        if serial in self._devices:
+            self._devices[serial].screen_on = True
+        logs.info("Schermo acceso", serial=serial)
+
+    async def screen_off(self, serial: str) -> None:
+        await self.shell(serial, "input keyevent KEYCODE_SLEEP")
+        if serial in self._devices:
+            self._devices[serial].screen_on = False
+        logs.info("Schermo spento", serial=serial)
+
+    async def reboot(self, serial: str) -> None:
+        logs.info("Riavvio in corso...", serial=serial)
+        await self.adb_command("reboot", serial=serial)
+
+    async def get_battery(self, serial: str) -> int:
+        out = await self.shell(serial, "dumpsys battery | grep level")
+        try:
+            return int(out.split(":")[-1].strip())
+        except (ValueError, IndexError):
+            return -1
+
+    async def screenshot(self, serial: str) -> Optional[bytes]:
+        """Cattura uno screenshot e ritorna i bytes PNG."""
+        rc, out, err = await self.adb_command(
+            "exec-out", "screencap", "-p", serial=serial, timeout=15.0
+        )
+        if rc == 0 and out:
+            return out.encode("latin-1")
+        return None
+
+    async def take_screenshot_raw(self, serial: str) -> Optional[bytes]:
+        """Screenshot come bytes raw via subprocess."""
+        cmd = [self._adb, "-s", serial, "exec-out", "screencap", "-p"]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **_SUBPROCESS_KW,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+            if proc.returncode == 0 and stdout:
+                return stdout
+        except Exception:
+            pass
+        return None

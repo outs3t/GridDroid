@@ -1,0 +1,9 @@
+dist/
+build/
+*.pyc
+__pycache__/
+.venv/
+venv/
+.devin/
+.windsurf/
+landing/
