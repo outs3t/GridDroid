@@ -1,0 +1,5 @@
+# Tratta automaticamente i file di testo per evitare problemi di CRLF/LF
+* text=auto
+
+# Gli script shell devono avere sempre LF, altrimenti non funzionano su Linux
+*.sh text eol=lf
