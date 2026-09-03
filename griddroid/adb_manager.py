@@ -130,10 +130,16 @@ class AdbManager:
             return
         self._running = True
         logs.info("ADB Manager avviato")
-        # Sveglia il daemon ADB: con molti device il primo polling puo' essere incompleto
+        # Kill + restart ADB server per forzare re-enumerazione USB di tutti i dispositivi
         try:
-            await self.adb_command("start-server")
+            await self.adb_command("kill-server", timeout=10.0)
             await asyncio.sleep(0.5)
+        except Exception:
+            pass
+        try:
+            await self.adb_command("start-server", timeout=15.0)
+            await asyncio.sleep(1.0)
+            logs.info("ADB server riavviato (kill+start per re-enumerazione USB)")
         except Exception as exc:
             logs.warn(f"Impossibile avviare ADB server: {exc}")
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -295,10 +301,8 @@ class AdbManager:
                     if serial not in seen_serials:
                         seen_serials.add(serial)
                         self._upsert_device(serial, match.group("state"))
-                if len(seen_serials) >= 15:
-                    break
             if attempt < 2:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.3)
 
         # Arricchisce con i dettagli di `adb devices -l` per i seriali gia' trovati
         rc_l, out_l, _ = await self.adb_command("devices", "-l")
@@ -347,19 +351,16 @@ class AdbManager:
         await self.adb_command("reboot", serial=serial)
 
     async def restart_adb_server(self) -> bool:
-        """Riavvia il daemon ADB: utile per forzare un nuovo handshake RSA.
-
-        ATTENZIONE: non aggira l'autorizzazione sul telefono, ma obbliga il
-        dispositivo a richiedere la fingerprint se l'utente ha revocato le
-        autorizzazioni debug USB dalle impostazioni Android.
-        """
+        """Riavvia il daemon ADB: kill + start per forzare re-enumerazione USB."""
         logs.warn("Riavvio daemon ADB richiesto dall'utente")
         try:
             await self.adb_command("kill-server", timeout=10.0)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
             rc, out, err = await self.adb_command("start-server", timeout=15.0)
             if rc == 0:
                 logs.success("Daemon ADB riavviato")
+                await asyncio.sleep(1.0)
+                await self._refresh_devices()
                 return True
             logs.error(f"Start ADB fallito: {err}")
             return False

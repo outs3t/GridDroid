@@ -112,6 +112,10 @@ function renderGrid() {
             cell = createDeviceCell(dev);
             const card = wrapDeviceCard(cell, dev);
             grid.appendChild(card);
+        } else {
+            // Riordina il DOM per matchare l'ordinamento dell'array
+            const card = cell.parentElement;
+            grid.appendChild(card);
         }
 
         updateDeviceCell(cell, dev);
@@ -1432,6 +1436,100 @@ function initHeaderButtons() {
             renderGrid();
         });
     }
+
+    // Restart ADB dall'header
+    const btnRestartAdbHeader = document.getElementById("btnRestartAdbHeader");
+    if (btnRestartAdbHeader) {
+        btnRestartAdbHeader.addEventListener("click", async () => {
+            btnRestartAdbHeader.disabled = true;
+            toast("Riavvio server ADB in corso...");
+            try {
+                const r = await fetch("/api/adb/restart", { method: "POST" });
+                const data = await r.json();
+                if (r.ok && data.ok) {
+                    toast("Server ADB riavviato. Rilevamento dispositivi in corso.", "success");
+                } else {
+                    toast(data.error || "Errore riavvio ADB", "error");
+                }
+            } catch (e) {
+                toast("Errore riavvio ADB", "error");
+            }
+            btnRestartAdbHeader.disabled = false;
+        });
+    }
+
+    // Update manuale
+    const btnCheckUpdate = document.getElementById("btnCheckUpdate");
+    if (btnCheckUpdate) {
+        btnCheckUpdate.addEventListener("click", async () => {
+            btnCheckUpdate.disabled = true;
+            toast("Controllo aggiornamenti...");
+            try {
+                const res = await fetch("/api/check-update");
+                const data = await res.json();
+                if (data.available) {
+                    const modal = document.getElementById("updateModal");
+                    const title = document.getElementById("updateTitle");
+                    const text = document.getElementById("updateText");
+                    const bar = document.getElementById("updateProgressBar");
+                    const btnOk = document.getElementById("btnUpdateOk");
+                    const btnCancel = document.getElementById("btnUpdateCancel");
+
+                    title.textContent = "Aggiornamento disponibile";
+                    text.textContent = `Versione ${data.new_version} pronta. Clicca OK per scaricare e installare automaticamente.`;
+                    bar.style.width = "0%";
+                    btnOk.disabled = false;
+                    btnCancel.disabled = false;
+                    modal.style.display = "flex";
+
+                    btnCancel.onclick = () => { modal.style.display = "none"; };
+                    btnOk.onclick = async () => {
+                        btnOk.disabled = true;
+                        btnCancel.disabled = true;
+                        text.textContent = "Preparazione download...";
+                        const start = await fetch("/api/update/start", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                download_url: data.download_url,
+                                version: data.new_version,
+                                silent_args: data.silent_args,
+                            }),
+                        });
+                        if (!start.ok) { text.textContent = "Errore avvio aggiornamento."; return; }
+                        const poll = setInterval(async () => {
+                            try {
+                                const p = await fetch("/api/update/progress");
+                                const s = await p.json();
+                                bar.style.width = `${s.percent || 0}%`;
+                                if (s.status === "downloading") {
+                                    text.textContent = `Download in corso... ${s.percent || 0}%`;
+                                } else if (s.status === "error") {
+                                    clearInterval(poll);
+                                    text.textContent = "Errore: " + (s.error || "sconosciuto");
+                                    btnOk.disabled = false;
+                                    btnCancel.disabled = false;
+                                } else if (s.status === "ready") {
+                                    clearInterval(poll);
+                                    text.textContent = "Installazione in corso, GridDroid si riavvierà...";
+                                    bar.style.width = "100%";
+                                    await fetch("/api/update/apply", { method: "POST" });
+                                }
+                            } catch {
+                                clearInterval(poll);
+                                text.textContent = "Riavvio in corso...";
+                            }
+                        }, 600);
+                    };
+                } else {
+                    toast("GridDroid è aggiornato all'ultima versione.", "success");
+                }
+            } catch (e) {
+                toast("Errore controllo aggiornamenti", "error");
+            }
+            btnCheckUpdate.disabled = false;
+        });
+    }
 }
 
 // =====================================================================
@@ -2185,4 +2283,9 @@ document.addEventListener("DOMContentLoaded", () => {
     initGroups();
     initSelection();
     initResultModal();
+    // Carica la versione dell'app
+    fetch("/api/version").then(r => r.json()).then(d => {
+        const el = document.getElementById("versionBadge");
+        if (el && d.version) el.textContent = `v${d.version}`;
+    }).catch(() => {});
 });

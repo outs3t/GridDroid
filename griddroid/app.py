@@ -192,6 +192,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     # REST API – Dispositivi
     # ------------------------------------------------------------------
 
+    @app.get("/api/version")
+    async def get_version():
+        return {"version": __version__}
+
     @app.get("/api/devices")
     async def get_devices():
         return [d.to_dict() for d in adb.devices.values()]
