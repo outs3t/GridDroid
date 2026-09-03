@@ -89,12 +89,22 @@ class ControlChannel:
             self._closed = True
             return False
 
-    def close(self) -> None:
+    async def close(self) -> None:
+        """Chiude il canale di controllo e attende la liberazione del socket."""
+        if self._closed:
+            return
         self._closed = True
         try:
-            self._writer.close()
+            if not self._writer.is_closing():
+                self._writer.close()
+                try:
+                    await asyncio.wait_for(self._writer.wait_closed(), timeout=1.0)
+                except Exception:
+                    pass
         except Exception:
             pass
+        finally:
+            self._writer = None
 
     # ------------------------------------------------------------------
     # Touch

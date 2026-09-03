@@ -138,7 +138,7 @@ class DeviceStream:
         self._running = False
         if self._control:
             try:
-                self._control.close()
+                await self._control.close()
             except Exception:
                 pass
             self._control = None
@@ -491,7 +491,7 @@ class DeviceStream:
             self._log_task = None
         if self._control:
             try:
-                self._control.close()
+                await self._control.close()
             except Exception:
                 pass
             self._control = None

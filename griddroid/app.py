@@ -83,7 +83,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     async def startup() -> None:
         logs.info("GridDroid avviato")
         await adb.start()
-        asyncio.create_task(_auto_stream_loop())
+        app.state.auto_stream_task = asyncio.create_task(_auto_stream_loop())
 
         # Proactor Windows: evita crash da OSError non gestiti su socket chiusi
         def _proactor_exc_handler(loop, context):
@@ -165,6 +165,12 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
+        if hasattr(app.state, "auto_stream_task"):
+            app.state.auto_stream_task.cancel()
+            try:
+                await asyncio.wait_for(app.state.auto_stream_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         await streams.stop_all()
         await adb.stop()
         logs.info("GridDroid fermato")
