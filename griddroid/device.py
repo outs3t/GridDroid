@@ -39,6 +39,7 @@ class DeviceState:
     stream_pid: Optional[int] = None
     last_seen: float = field(default_factory=time.time)
     selected: bool = True  # selezionato per broadcast di default
+    played: bool = False  # nascosto dalla griglia come "giocato"
     error: str = ""
     stream_failures: int = 0
     next_stream_attempt: float = 0.0
@@ -65,6 +66,7 @@ class DeviceState:
             "battery_level": self.battery_level,
             "streaming": self.streaming,
             "selected": self.selected,
+            "played": self.played,
             "display_name": self.display_name,
             "error": self.error,
         }

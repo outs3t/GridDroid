@@ -88,6 +88,9 @@ function renderGrid() {
         devices.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || ""));
     }
 
+    // Nascondi i dispositivi segnati come "giocati"
+    devices = devices.filter((dev) => !dev.played);
+
     // Aggiorna colonne CSS in base a zoom e larghezza container
     updateGridColumns();
 
@@ -113,9 +116,11 @@ function renderGrid() {
         updateDeviceCell(cell, dev);
     });
 
-    // Rimuovi celle di dispositivi non più presenti
+    // Rimuovi celle di dispositivi non più presenti o giocati
     existingCells.forEach((cell) => {
         if (!seenSerials.has(cell.dataset.serial)) {
+            const feed = cell.querySelector(".device-feed");
+            if (feed) stopStreamWs(feed);
             cell.parentElement?.remove();
         }
     });
@@ -214,6 +219,16 @@ function wrapDeviceCard(cell, dev) {
 
     card.appendChild(label);
     card.appendChild(cell);
+
+    // Tasto destro sul telefono → segna come giocato (con conferma)
+    card.addEventListener("contextmenu", (e) => {
+        if (e.target.closest(".device-feed")) return;
+        e.preventDefault();
+        if (window.confirm(`Segnare "${dev.display_name || dev.serial}" come giocato?`)) {
+            wsSend({ action: "set_played", serial: dev.serial, played: true });
+        }
+    });
+
     return card;
 }
 
@@ -796,10 +811,19 @@ document.addEventListener("keydown", (e) => {
 function updateHeader() {
     const online = state.devices.filter((d) => d.status === "online").length;
     const total = state.devices.length;
-    document.getElementById("deviceCount").textContent = `${online}/${total} dispositivi`;
+    const played = state.devices.filter((d) => d.played).length;
+    const countEl = document.getElementById("deviceCount");
+    if (countEl) {
+        let text = `${online}/${total} dispositivi`;
+        if (played > 0) text += ` (${played} giocati)`;
+        countEl.textContent = text;
+    }
 
     const btnBroadcast = document.getElementById("btnBroadcast");
-    btnBroadcast.classList.toggle("active", state.broadcastMode);
+    if (btnBroadcast) btnBroadcast.classList.toggle("active", state.broadcastMode);
+
+    const btnResetPlayed = document.getElementById("btnResetPlayed");
+    if (btnResetPlayed) btnResetPlayed.style.display = played > 0 ? "" : "none";
 }
 
 // =====================================================================
@@ -1337,6 +1361,16 @@ function initHeaderButtons() {
         fetch("/api/stream/stop-all", { method: "POST" });
         toast("Stream fermati");
     });
+
+    // Ripristina i dispositivi segnati come giocati
+    const btnResetPlayed = document.getElementById("btnResetPlayed");
+    if (btnResetPlayed) {
+        btnResetPlayed.addEventListener("click", () => {
+            if (confirm("Ripristinare tutti i dispositivi giocati?")) {
+                wsSend({ action: "reset_played" });
+            }
+        });
+    }
 
     // Max colonne (il numero effettivo si adatta a zoom e larghezza)
     const gridColsInput = document.getElementById("gridCols");

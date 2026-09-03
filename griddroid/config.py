@@ -16,6 +16,7 @@ CONFIG_DIR = Path.home() / ".griddroid"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LABELS_FILE = CONFIG_DIR / "labels.json"
 TAGS_FILE = CONFIG_DIR / "tags.json"
+PLAYED_FILE = CONFIG_DIR / "played.json"
 
 
 def _find_bundled_adb() -> str:
@@ -115,4 +116,21 @@ def save_tags(tags: Dict[str, List[str]]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     TAGS_FILE.write_text(
         json.dumps(tags, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_played() -> List[str]:
+    """Carica la lista di seriali segnati come giocati."""
+    if PLAYED_FILE.exists():
+        data = json.loads(PLAYED_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    return []
+
+
+def save_played(serials: List[str]) -> None:
+    """Salva la lista di seriali giocati su disco."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    PLAYED_FILE.write_text(
+        json.dumps(serials, indent=2, ensure_ascii=False), encoding="utf-8"
     )

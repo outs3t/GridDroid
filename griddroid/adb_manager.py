@@ -15,7 +15,15 @@ if os.name == "nt":
 else:
     _SUBPROCESS_KW = {}
 
-from .config import AppSettings, load_labels, save_labels, load_tags, save_tags
+from .config import (
+    AppSettings,
+    load_labels,
+    save_labels,
+    load_tags,
+    save_tags,
+    load_played,
+    save_played,
+)
 from .device import DeviceInfo, DeviceState, DeviceStatus
 from .log_manager import logs
 
@@ -57,6 +65,7 @@ class AdbManager:
         self._devices: Dict[str, DeviceState] = {}
         self._labels: Dict[str, str] = load_labels()
         self._tags: Dict[str, List[str]] = load_tags()
+        self._played_serials: set = set(load_played())
         self._running = False
         self._poll_task: Optional[asyncio.Task] = None
         self._change_callbacks: List = []
@@ -71,6 +80,25 @@ class AdbManager:
 
     def get_device(self, serial: str) -> Optional[DeviceState]:
         return self._devices.get(serial)
+
+    def set_played(self, serial: str, played: bool = True) -> None:
+        """Segna un dispositivo come giocato e lo salva su disco."""
+        if played:
+            self._played_serials.add(serial)
+        else:
+            self._played_serials.discard(serial)
+        if serial in self._devices:
+            self._devices[serial].played = played
+        save_played(sorted(self._played_serials))
+        logs.info("Dispositivo segnato come giocato" if played else "Dispositivo rimosso dai giocati", serial=serial)
+
+    def reset_played(self) -> None:
+        """Ripristina tutti i dispositivi giocati."""
+        self._played_serials.clear()
+        for dev in self._devices.values():
+            dev.played = False
+        save_played([])
+        logs.info("Ripristinati tutti i dispositivi giocati")
 
     # ------------------------------------------------------------------
     # Etichette
@@ -194,6 +222,7 @@ class AdbManager:
             dev.info.transport_id = tid or dev.info.transport_id
             dev.info.usb_port = usb or dev.info.usb_port
             dev.status = status
+            dev.played = serial in self._played_serials
             dev.last_seen = time.time()
             dev.error = ""
             if old_status != status:
@@ -214,7 +243,13 @@ class AdbManager:
             )
             label = self._labels.get(serial, "")
             tags = self._tags.get(serial, [])
-            dev = DeviceState(info=info, label=label, tags=tags, status=status)
+            dev = DeviceState(
+                info=info,
+                label=label,
+                tags=tags,
+                status=status,
+                played=serial in self._played_serials,
+            )
             self._devices[serial] = dev
             logs.success(f"Nuovo dispositivo rilevato: {dev.display_name}", serial=serial)
 
