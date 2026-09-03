@@ -1,0 +1,347 @@
+﻿<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GridDroid â€” Controllo totale della tua Android farm</title>
+  <meta name="description" content="Gestisci 20-30 smartphone Android da un'unica finestra. Streaming, controllo, broadcast e operazioni di massa via USB." />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            orbitron: ['Orbitron', 'sans-serif'],
+          },
+          colors: {
+            jh: {
+              void: '#0a0a0a',
+              dark: '#1f1f1f',
+              gold: {
+                300: '#e5c560',
+                400: '#d4af35',
+                500: '#b8921f',
+                600: '#9a7a18',
+              },
+              red: {
+                300: '#ff7a7a',
+                400: '#ff5c5c',
+                500: '#e04444',
+                600: '#b83030',
+              },
+              blue: {
+                300: '#4d9fff',
+                400: '#1f8fff',
+                500: '#176fc9',
+                600: '#0f4f8f',
+              },
+            },
+          },
+        },
+      },
+    };
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo.png" />
+</head>
+<body class="bg-jh-void text-slate-100 font-sans antialiased selection:bg-jh-gold-500/30 selection:text-jh-gold-300">
+
+  <canvas id="bg-canvas"></canvas>
+
+  <!-- NAV -->
+  <nav class="fixed inset-x-0 top-0 z-50 border-b border-white/5 bg-jh-void/70 backdrop-blur-md">
+    <div class="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
+      <a href="#" class="flex items-center gap-2 text-xl font-bold tracking-tight">
+        <img src="logo.png" alt="GridDroid" class="h-8 w-8 rounded-lg object-contain" />
+        GridDroid
+      </a>
+      <div class="hidden items-center gap-8 text-sm font-medium text-slate-300 md:flex">
+        <a href="#features" class="hover:text-jh-gold-400 transition-colors">FunzionalitÃ </a>
+        <a href="#how" class="hover:text-jh-gold-400 transition-colors">Come funziona</a>
+        <a href="#docs" class="hover:text-jh-gold-400 transition-colors">Docs</a>
+        <a href="#download" class="hover:text-jh-gold-400 transition-colors">Download</a>
+        <a href="#donate" class="hover:text-jh-gold-400 transition-colors">Dona</a>
+      </div>
+      <div class="hidden items-center gap-3 md:flex">
+        <a href="#download" class="rounded-full bg-jh-gold-500 px-5 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-jh-gold-500/20 transition hover:bg-jh-gold-400 hover:shadow-jh-gold-500/40">
+          Scarica gratis
+        </a>
+      </div>
+      <button id="mobile-menu-btn" class="md:hidden p-2 text-slate-300 hover:text-white">
+        <i data-lucide="menu" class="h-6 w-6"></i>
+      </button>
+    </div>
+    <div id="mobile-menu" class="hidden border-t border-white/5 px-6 py-4 md:hidden">
+      <a href="#features" class="block py-2 text-slate-300 hover:text-jh-gold-400">FunzionalitÃ </a>
+      <a href="#how" class="block py-2 text-slate-300 hover:text-jh-gold-400">Come funziona</a>
+      <a href="#docs" class="block py-2 text-slate-300 hover:text-jh-gold-400">Docs</a>
+      <a href="#download" class="block py-2 text-slate-300 hover:text-jh-gold-400">Download</a>
+      <a href="#donate" class="block py-2 text-slate-300 hover:text-jh-gold-400">Dona</a>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <section class="relative overflow-hidden pt-32 pb-20 lg:pt-48 lg:pb-32">
+    <div class="pointer-events-none absolute inset-0 -z-10">
+      <div class="absolute -top-40 -left-40 h-[600px] w-[600px] rounded-full bg-jh-gold-500/20 blur-[120px]"></div>
+      <div class="absolute top-1/2 left-1/2 h-[500px] w-[500px] -translate-y-1/2 -translate-x-1/2 rounded-full bg-jh-blue-500/10 blur-[140px]"></div>
+      <div class="absolute -bottom-40 -right-40 h-[600px] w-[600px] rounded-full bg-jh-red-500/20 blur-[120px]"></div>
+    </div>
+
+    <div class="mx-auto max-w-7xl px-6">
+      <div class="grid gap-12 lg:grid-cols-2 lg:items-center">
+        <div class="text-center lg:text-left">
+          <div class="inline-flex items-center gap-2 rounded-full border border-jh-gold-500/30 bg-jh-gold-500/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-jh-gold-300">
+            <span class="h-2 w-2 animate-pulse rounded-full bg-jh-gold-400"></span>
+            Gratuito e open source
+          </div>
+          <h1 class="mt-6 text-5xl font-extrabold tracking-tight lg:text-7xl font-orbitron">
+            La tua <span class="bg-gradient-to-r from-jh-gold-400 via-jh-blue-400 to-jh-red-400 bg-clip-text text-transparent">Android farm</span><br />in una sola finestra.
+          </h1>
+          <p class="mt-6 text-lg text-slate-300 leading-relaxed max-w-2xl mx-auto lg:mx-0">
+            Collega 20, 30 o piÃ¹ smartphone via USB e gestiscili tutti da un'unica interfaccia: streaming, controllo mouse/tastiera, broadcast di azioni e operazioni di massa in pochi click.
+          </p>
+          <div class="mt-8 flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4">
+            <a href="#download" class="w-full sm:w-auto rounded-full bg-jh-gold-500 px-8 py-3.5 text-center font-bold text-slate-950 shadow-xl shadow-jh-gold-500/25 transition hover:bg-jh-gold-400 hover:shadow-jh-gold-500/50">
+              Provalo gratis
+            </a>
+            <a href="#donate" class="w-full sm:w-auto rounded-full border border-white/10 bg-white/5 px-8 py-3.5 text-center font-semibold backdrop-blur-sm transition hover:bg-white/10 hover:border-white/20">
+              Sostieni il progetto
+            </a>
+          </div>
+          <div class="mt-8 flex items-center justify-center lg:justify-start gap-6 text-sm text-slate-400">
+            <span class="flex items-center gap-2"><i data-lucide="check-circle-2" class="h-4 w-4 text-jh-gold-400"></i> Windows</span>
+            <span class="flex items-center gap-2"><i data-lucide="check-circle-2" class="h-4 w-4 text-jh-gold-400"></i> Linux</span>
+            <span class="flex items-center gap-2"><i data-lucide="check-circle-2" class="h-4 w-4 text-jh-gold-400"></i> Locale & sicuro</span>
+          </div>
+        </div>
+
+        <div class="relative">
+          <div class="absolute inset-0 rounded-3xl bg-gradient-to-tr from-jh-gold-500/20 to-jh-red-500/20 blur-2xl"></div>
+          <div class="relative overflow-hidden rounded-3xl border border-white/10 bg-jh-dark/60 p-4 shadow-2xl backdrop-blur-xl">
+            <div class="flex items-center gap-2 border-b border-white/5 pb-3">
+              <div class="h-3 w-3 rounded-full bg-jh-red-500"></div>
+              <div class="h-3 w-3 rounded-full bg-jh-gold-500"></div>
+              <div class="h-3 w-3 rounded-full bg-jh-gold-500"></div>
+              <span class="ml-2 text-xs text-slate-500">GridDroid</span>
+            </div>
+            <div class="grid grid-cols-3 gap-3 p-3" id="mock-grid"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" class="py-24">
+    <div class="mx-auto max-w-7xl px-6">
+      <div class="text-center max-w-3xl mx-auto mb-16">
+        <h2 class="text-3xl font-bold lg:text-4xl">Tutto ciÃ² che serve per automatizzare i test</h2>
+        <p class="mt-4 text-slate-400">Un'interfaccia minimale, reattiva e pensata per sessioni lunghe. Costruita per chi gestisce tanti dispositivi contemporaneamente.</p>
+      </div>
+      <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="monitor-play" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Streaming in tempo reale</h3>
+          <p class="mt-2 text-slate-400 text-sm leading-relaxed">Scrcpy-server H.264 a bassa latenza direttamente nel browser. Decodifica hardware via WebCodecs.</p>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="mouse-pointer-2" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Controllo mouse e tastiera</h3>
+          <p class="mt-2 text-slate-400 text-sm leading-relaxed">Click, swipe, scroll e digitazione a bassa latenza attraverso il canale di controllo nativo.</p>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="cast" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Broadcast mode</h3>
+          <p class="mt-2 text-slate-400 text-sm leading-relaxed">Seleziona piÃ¹ dispositivi e replica ogni azione su tutti in contemporanea: tap, swipe, testi.</p>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="package-check" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Operazioni di massa</h3>
+          <p class="mt-2 text-slate-400 text-sm leading-relaxed">Installazione APK, riavvio, shell custom, push/pull file e comandi bulk con pochi click.</p>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="tags" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Ricerca, etichette e tag</h3>
+          <p class="mt-2 text-slate-400 text-sm leading-relaxed">Trova i dispositivi per nome o tag. Assegna etichette personalizzate per organizzare la farm.</p>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="shield-check" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Solo locale</h3>
+          <p class="mt-2 text-slate-400 text-sm leading-relaxed">Il server gira su 127.0.0.1 di default. Nessun cloud, nessun account, nessun dato esterno.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how" class="py-24 border-y border-white/5 bg-slate-900/40">
+    <div class="mx-auto max-w-7xl px-6">
+      <div class="text-center max-w-3xl mx-auto mb-16">
+        <h2 class="text-3xl font-bold lg:text-4xl">Pronto in 3 passi</h2>
+        <p class="mt-4 text-slate-400">Nessuna configurazione complessa: collega, avvia e controlla.</p>
+      </div>
+      <div class="grid gap-8 md:grid-cols-3">
+        <div class="step-card">
+          <div class="step-number">1</div>
+          <h3 class="mt-6 text-xl font-semibold">Collega i dispositivi</h3>
+          <p class="mt-2 text-slate-400 text-sm">USB + Debug USB attivo. Consigliato un hub alimentato per grandi farm.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-number">2</div>
+          <h3 class="mt-6 text-xl font-semibold">Avvia GridDroid</h3>
+          <p class="mt-2 text-slate-400 text-sm">Doppio click su Windows o <code>./install_linux.sh</code> su Arch/Debian.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-number">3</div>
+          <h3 class="mt-6 text-xl font-semibold">Controlla tutto</h3>
+          <p class="mt-2 text-slate-400 text-sm">Streaming, tap, broadcast e automazioni dalla dashboard unificata.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DOCS -->
+  <section id="docs" class="py-24 border-y border-white/5 bg-slate-900/40">
+    <div class="mx-auto max-w-7xl px-6">
+      <div class="text-center max-w-3xl mx-auto mb-16">
+        <h2 class="text-3xl font-bold lg:text-4xl">Documentazione</h2>
+        <p class="mt-4 text-slate-400">Tutto quello che devi sapere per collegare i telefoni e usare GridDroid in sicurezza.</p>
+      </div>
+      <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="download" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Installazione</h3>
+          <ul class="mt-3 space-y-2 text-sm text-slate-400 list-disc pl-4">
+            <li>Scarica <code class="text-jh-gold-400">GridDroid_Setup.exe</code> e avvia l'installer, oppure usa la versione portatile <code class="text-jh-gold-400">GridDroid.exe</code>.</li>
+            <li>Non serve essere amministratori: l'installer copia l'app in <code class="text-jh-gold-400">%LOCALAPPDATA%\Programs\GridDroid</code> e crea le scorciatoie.</li>
+          </ul>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="smartphone" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Debug USB e autorizzazione</h3>
+          <ul class="mt-3 space-y-2 text-sm text-slate-400 list-disc pl-4">
+            <li>Attiva <strong>Opzioni sviluppatore</strong> sul telefono e abilita <strong>Debug USB</strong>.</li>
+            <li>Collega il cavo USB e accetta la chiave RSA/ADB che compare sul display.</li>
+            <li>Non selezionare "Non chiedere piÃ¹" se condividi il PC: la chiave protegge l'accesso.</li>
+          </ul>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="shield-alert" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Sicurezza ADB avanzata</h3>
+          <ul class="mt-3 space-y-2 text-sm text-slate-400 list-disc pl-4">
+            <li>Su Xiaomi/Redmi abilita anche <strong>Debug USB (Impostazioni di sicurezza)</strong> per permettere l'input nativo.</li>
+            <li>GridDroid gira in locale su <code class="text-jh-gold-400">127.0.0.1</code>: non esporre il server su Internet.</li>
+            <li>Disattiva Debug USB quando non lo usi per evitare accessi indesiderati.</li>
+          </ul>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="monitor-play" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Streaming e controllo</h3>
+          <ul class="mt-3 space-y-2 text-sm text-slate-400 list-disc pl-4">
+            <li>Clicca su un dispositivo per metterlo in <strong>focus</strong> e avviare lo stream.</li>
+            <li>Usa il mouse come sul telefono: click, drag, scroll, tastiera e tasto destro come BACK.</li>
+            <li>Fullscreen e rotazione sono supportati; lo stream si riadatta automaticamente.</li>
+          </ul>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="users" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Gruppi e broadcast</h3>
+          <ul class="mt-3 space-y-2 text-sm text-slate-400 list-disc pl-4">
+            <li>Assegna etichette e usa i <strong>gruppi</strong> per filtrare la farm nella sidebar.</li>
+            <li>Seleziona piÃ¹ dispositivi per eseguire tap, swipe, testi e comandi in <strong>broadcast</strong> simultaneo.</li>
+          </ul>
+        </article>
+        <article class="feature-card">
+          <div class="icon-box"><i data-lucide="mouse-pointer-click" class="h-6 w-6"></i></div>
+          <h3 class="mt-5 text-xl font-semibold">Macro</h3>
+          <ul class="mt-3 space-y-2 text-sm text-slate-400 list-disc pl-4">
+            <li>Premi <strong>Registra</strong>, clicca i punti sullo stream, poi <strong>Ferma</strong>.</li>
+            <li>La macro registra i click sul video e li riproduce con il canale scrcpy.</li>
+            <li>Rinomina, cancella e riproduci le macro salvate dalla sidebar.</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- DOWNLOAD -->
+  <section id="download" class="py-24">
+    <div class="mx-auto max-w-5xl px-6">
+      <div class="text-center max-w-3xl mx-auto mb-16">
+        <h2 class="text-3xl font-bold lg:text-4xl">Download gratuito</h2>
+        <p class="mt-4 text-slate-400">Scegli la piattaforma. Entrambe le versioni sono open source e senza pubblicitÃ .</p>
+      </div>
+      <div class="grid gap-6 md:grid-cols-2">
+        <a href="GridDroid_Setup.exe" class="download-card group">
+          <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-jh-blue-500/10 text-jh-blue-400 group-hover:bg-jh-blue-500 group-hover:text-white transition">
+            <i data-lucide="monitor" class="h-7 w-7"></i>
+          </div>
+          <h3 class="text-2xl font-bold">Windows</h3>
+          <p class="mt-2 text-slate-400 text-sm">Installer .exe. Non richiede Python, ADB o installazioni aggiuntive.</p>
+          <span class="mt-6 inline-flex items-center gap-2 font-semibold text-jh-gold-400 group-hover:text-jh-gold-300">
+            Scarica GridDroid_Setup.exe <i data-lucide="arrow-right" class="h-4 w-4 transition group-hover:translate-x-1"></i>
+          </span>
+        </a>
+        <div class="download-card group cursor-default">
+          <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-jh-red-500/10 text-jh-red-400 group-hover:bg-jh-red-500 group-hover:text-white transition">
+            <i data-lucide="terminal" class="h-7 w-7"></i>
+          </div>
+          <h3 class="text-2xl font-bold">Linux</h3>
+          <p class="mt-2 text-slate-400 text-sm">Copia e incolla il comando nel terminale. InstallerÃ  ADB, Python e l'app.</p>
+          <pre class="mt-5 overflow-x-auto rounded-xl bg-black/40 p-3 text-xs text-jh-gold-300 border border-white/5"><code>curl -sL https://raw.githubusercontent.com/outs3t/GridDroid/main/install_linux.sh | bash</code></pre>
+        </div>
+      </div>
+      <p class="mt-8 text-center text-xs text-slate-500">
+        Sostituisci <code class="text-jh-gold-400">outs3t</code> nei link con il tuo utente GitHub o carica i file nelle release.
+      </p>
+    </div>
+  </section>
+
+  <!-- DONATE -->
+  <section id="donate" class="py-24 relative overflow-hidden">
+    <div class="absolute inset-0 -z-10">
+      <div class="absolute bottom-0 left-1/2 h-[500px] w-[800px] -translate-x-1/2 rounded-full bg-jh-gold-600/10 blur-[120px]"></div>
+    </div>
+    <div class="mx-auto max-w-3xl px-6 text-center">
+      <h2 class="text-3xl font-bold lg:text-4xl">Sostieni GridDroid</h2>
+      <p class="mt-4 text-slate-300">GridDroid Ã¨ gratuito e senza pubblicitÃ . Una donazione aiuta a mantenerlo aggiornato, a migliorare le prestazioni e a aggiungere nuove funzionalitÃ .</p>
+      <div class="mt-10 grid gap-4 sm:grid-cols-3">
+        <a href="https://paypal.me/NDecristofaro/5EUR" target="_blank" class="donate-btn">
+          <i data-lucide="heart" class="h-5 w-5"></i> Dona â‚¬5
+        </a>
+        <a href="https://paypal.me/NDecristofaro/10EUR" target="_blank" class="donate-btn highlighted">
+          <i data-lucide="sparkles" class="h-5 w-5"></i> Dona â‚¬10
+        </a>
+        <a href="https://paypal.me/NDecristofaro/25EUR" target="_blank" class="donate-btn">
+          <i data-lucide="star" class="h-5 w-5"></i> Dona â‚¬25
+        </a>
+      </div>
+      <p class="mt-6 text-sm text-slate-500">
+        Oppure <a href="https://paypal.me/NDecristofaro" target="_blank" class="text-jh-gold-400 hover:underline">paypal.me/NDecristofaro</a>
+      </p>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="border-t border-white/5 py-10">
+    <div class="mx-auto max-w-7xl px-6 flex flex-col md:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-2 font-bold text-lg">
+        <img src="logo.png" alt="GridDroid" class="h-7 w-7 rounded-md object-contain" />
+        GridDroid
+      </div>
+      <p class="text-sm text-slate-500">Â© 2026 GridDroid. Progetto open source. Realizzato con passione.</p>
+      <div class="flex gap-4">
+        <a href="https://github.com/outs3t/GridDroid" target="_blank" class="text-slate-400 hover:text-jh-gold-400 transition"><i data-lucide="github" class="h-5 w-5"></i></a>
+        <a href="mailto:hello@griddroid.dev" class="text-slate-400 hover:text-jh-gold-400 transition"><i data-lucide="mail" class="h-5 w-5"></i></a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
