@@ -30,7 +30,7 @@ ID_LOWER="${ID:-unknown}"
 ID_LIKE_LOWER="${ID_LIKE:-}"
 
 is_debian() { [ "$ID_LOWER" = "debian" ] || [ "$ID_LOWER" = "ubuntu" ] || [[ "$ID_LIKE_LOWER" == *"debian"* ]] || [[ "$ID_LIKE_LOWER" == *"ubuntu"* ]]; }
-is_arch()   { [ "$ID_LOWER" = "arch" ] || [ "$ID_LOWER" = "manjaro" ] || [[ "$ID_LIKE_LOWER" == *"arch"* ]]; }
+is_arch()   { [ "$ID_LOWER" = "arch" ] || [ "$ID_LOWER" = "manjaro" ] || [ "$ID_LOWER" = "omarchy" ] || [[ "$ID_LIKE_LOWER" == *"arch"* ]]; }
 
 # --- dipendenze di sistema --------------------------------------------------
 echo "Controllo dipendenze di sistema..."
@@ -49,8 +49,9 @@ install_debian() {
 }
 
 install_arch() {
-  echo "Rilevata derivata Arch/Manjaro. Installo pacchetti..."
-  $SUDO pacman -Syu --noconfirm
+  echo "Rilevata derivata Arch/Manjaro/Omarchy. Installo pacchetti..."
+  # Nota: non eseguiamo pacman -Syu per evitare aggiornamenti di sistema forzati.
+  # Se mancano pacchetti, aggiorna prima il sistema con il gestore della tua distro.
   $SUDO pacman -S --needed --noconfirm \
     python python-pip python-virtualenv python-pygobject \
     android-tools libjpeg-turbo zlib pkgconf gcc || true
