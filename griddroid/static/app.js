@@ -1467,6 +1467,10 @@ function initHeaderButtons() {
             try {
                 const res = await fetch("/api/check-update");
                 const data = await res.json();
+                if (!res.ok || data.error) {
+                    toast(data.error || "Errore connessione server aggiornamenti", "error");
+                    return;
+                }
                 if (data.available) {
                     const modal = document.getElementById("updateModal");
                     const title = document.getElementById("updateTitle");
@@ -1522,12 +1526,13 @@ function initHeaderButtons() {
                         }, 600);
                     };
                 } else {
-                    toast("GridDroid è aggiornato all'ultima versione.", "success");
+                    toast(`GridDroid ${data.version} è aggiornato.`, "success");
                 }
             } catch (e) {
                 toast("Errore controllo aggiornamenti", "error");
+            } finally {
+                btnCheckUpdate.disabled = false;
             }
-            btnCheckUpdate.disabled = false;
         });
     }
 }

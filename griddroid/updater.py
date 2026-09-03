@@ -37,22 +37,28 @@ def is_newer(remote: str, local: str) -> bool:
 async def fetch_remote_info(
     url: str = DEFAULT_REMOTE, timeout: float = 10.0,
 ) -> Optional[Dict[str, Any]]:
-    """Scarica il file `version.json` remoto con cache-buster."""
+    """Scarica il file `version.json` remoto con cache-buster robusto."""
 
     def _fetch():
         try:
-            cache_bust = f"{url}?_={int(__import__('time').time() * 1000)}"
+            import time
+            cache_bust = f"{url}?_={int(time.time() * 1000)}"
             req = urllib.request.Request(
                 cache_bust,
                 headers={
                     "User-Agent": "GridDroid-Updater",
-                    "Cache-Control": "no-cache",
+                    "Cache-Control": "no-store, must-revalidate",
                     "Pragma": "no-cache",
+                    "Expires": "0",
                 },
             )
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except Exception:
+                data = r.read().decode("utf-8")
+                return json.loads(data)
+        except Exception as exc:
+            # Logga l'errore per debug
+            import sys
+            print(f"[updater] fetch error: {exc}", file=sys.stderr)
             return None
 
     return await asyncio.to_thread(_fetch)
