@@ -126,6 +126,12 @@ def _show_message(text: str) -> None:
             return
         except Exception:
             pass
+    # Su Linux/macOS stampa anche su console, perche' il file di log
+    # potrebbe non essere controllato dall'utente.
+    try:
+        print(text, flush=True)
+    except Exception:
+        pass
     _log(text)
 
 
@@ -265,7 +271,9 @@ def _run_with_webview(url: str) -> None:
     except Exception as exc:
         _log(f"Webview non disponibile: {exc}")
         _log(traceback.format_exc())
-        _show_message(f"Finestra nativa non disponibile.\nApri il browser e incolla:\n{url}")
+        _show_message(f"Finestra nativa non disponibile, apro il browser:\n{url}")
+        _open_browser(url)
+        _wait_for_user_interrupt()
 
 
 def main() -> None:
@@ -296,6 +304,12 @@ def main() -> None:
         help="Porta su cui ascoltare",
     )
     args = parser.parse_args()
+
+    # Su Linux/macOS, se non c'e' una sessione grafica, usa direttamente il browser.
+    if os.name != "nt" and not args.browser and not args.message:
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            _log("Nessun display rilevato, uso il browser di default")
+            args.browser = True
 
     try:
         settings = load_settings()
