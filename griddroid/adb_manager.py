@@ -204,7 +204,8 @@ class AdbManager:
         """Panda-style: connessione persistente ADB track-devices.
 
         `adb track-devices` notifica real-time ogni cambiamento di stato,
-        evitando il polling ogni 2 secondi.
+        evitando il polling ogni 2 secondi. Se pero' il processo non emette
+        linee per 5 secondi, forziamo un refresh classico per sicurezza.
         """
         track_tried = False
         while self._running:
@@ -218,14 +219,31 @@ class AdbManager:
                 )
                 logs.info("ADB track-devices avviato")
                 track_tried = True
+
+                # Refresh iniziale: mostra subito i dispositivi gia' connessi
+                try:
+                    await self._refresh_devices()
+                except Exception as exc:
+                    logs.error(f"Errore refresh iniziale: {exc}")
+
                 while self._running:
-                    line = await proc.stdout.readline()
+                    try:
+                        line = await asyncio.wait_for(
+                            proc.stdout.readline(), timeout=5.0
+                        )
+                    except asyncio.TimeoutError:
+                        # track-devices silenzioso: forziamo un refresh classico
+                        try:
+                            await self._refresh_devices()
+                        except Exception as exc:
+                            logs.error(f"Errore refresh da timeout: {exc}")
+                        continue
                     if not line:
                         break
                     text = line.decode("utf-8", errors="replace").strip()
                     if not text or text.startswith("List"):
                         continue
-                    # Qualsiasi riga significa che la lista ADB è cambiata:
+                    # Qualsiasi riga significa che la lista ADB e' cambiata:
                     # forziamo un refresh completo
                     try:
                         await self._refresh_devices()
