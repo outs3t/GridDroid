@@ -20,7 +20,13 @@ PLAYED_FILE = CONFIG_DIR / "played.json"
 
 
 def _find_bundled_adb() -> str:
-    """Cerca adb.exe nella cartella tools/ inclusa nel pacchetto."""
+    """Cerca adb.exe: preferisce il sistema se disponibile, altrimenti bundled."""
+    # Se c'è un adb nel PATH di sistema (es. Android SDK) usiamo quello:
+    # è più aggiornato e vede meglio grandi farm già autorizzate.
+    found = shutil.which("adb")
+    if found:
+        return found
+
     # PyInstaller: sys._MEIPASS è la cartella temporanea dell'eseguibile
     if getattr(sys, "frozen", False):
         base = Path(sys._MEIPASS)
@@ -30,11 +36,6 @@ def _find_bundled_adb() -> str:
     bundled = base / "tools" / "adb.exe"
     if bundled.exists():
         return str(bundled)
-
-    # Fallback: cerca nel PATH di sistema
-    found = shutil.which("adb")
-    if found:
-        return found
 
     return "adb"
 
