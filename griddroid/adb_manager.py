@@ -130,7 +130,8 @@ class AdbManager:
             return
         self._running = True
         logs.info("ADB Manager avviato")
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        # Panda-style: connessione persistente ADB track-devices
+        self._poll_task = asyncio.create_task(self._track_loop())
 
     async def stop(self) -> None:
         self._running = False
@@ -198,6 +199,63 @@ class AdbManager:
     # ------------------------------------------------------------------
     # Discovery loop
     # ------------------------------------------------------------------
+
+    async def _track_loop(self) -> None:
+        """Panda-style: connessione persistente ADB track-devices.
+
+        `adb track-devices` notifica real-time ogni cambiamento di stato,
+        evitando il polling ogni 2 secondi.
+        """
+        track_tried = False
+        while self._running:
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    self._adb, "track-devices",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    **_SUBPROCESS_KW,
+                )
+                logs.info("ADB track-devices avviato")
+                track_tried = True
+                while self._running:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    text = line.decode("utf-8", errors="replace").strip()
+                    if not text or text.startswith("List"):
+                        continue
+                    # Qualsiasi riga significa che la lista ADB è cambiata:
+                    # forziamo un refresh completo
+                    try:
+                        await self._refresh_devices()
+                    except Exception as exc:
+                        logs.error(f"Errore refresh da track-devices: {exc}")
+                await proc.wait()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logs.error(f"ADB track-devices errore: {exc}")
+            finally:
+                if proc and proc.returncode is None:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except Exception:
+                        pass
+            if not self._running:
+                break
+            if not track_tried:
+                # track-devices non e' mai partito, usa il polling classico
+                logs.warn("ADB track-devices non disponibile, passo a polling")
+                while self._running:
+                    try:
+                        await self._refresh_devices()
+                    except Exception as exc:
+                        logs.error(f"Errore nel polling ADB: {exc}")
+                    await asyncio.sleep(self._settings.poll_interval_s)
+            # Se track-devices si e' chiuso (crash/disconnect), riavvia
+            await asyncio.sleep(1.0)
 
     async def _poll_loop(self) -> None:
         while self._running:
