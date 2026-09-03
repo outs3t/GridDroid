@@ -40,6 +40,8 @@ class DeviceState:
     last_seen: float = field(default_factory=time.time)
     selected: bool = True  # selezionato per broadcast di default
     error: str = ""
+    stream_failures: int = 0
+    next_stream_attempt: float = 0.0
 
     @property
     def serial(self) -> str:

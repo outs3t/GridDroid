@@ -204,6 +204,10 @@ class AdbManager:
                         f"Stato cambiato: {old_status.value} -> {status.value}",
                         serial=serial,
                     )
+                    # resetta il backoff se il dispositivo torna online
+                    if status == DeviceStatus.ONLINE:
+                        dev.stream_failures = 0
+                        dev.next_stream_attempt = 0.0
             else:
                 label = self._labels.get(serial, "")
                 tags = self._tags.get(serial, [])

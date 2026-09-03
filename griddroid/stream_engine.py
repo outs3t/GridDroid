@@ -293,7 +293,7 @@ class DeviceStream:
                     )
                     self._running = False
                     break
-                delay = min(2.0 * (1.5 ** consecutive_failures), 30.0)
+                delay = min(2.0 * (1.5 ** consecutive_failures), 60.0) * random.uniform(0.8, 1.2)
                 logs.info(f"Riconnessione stream tra {delay:.1f}s...", serial=self.serial)
                 await asyncio.sleep(delay)
 
@@ -369,7 +369,7 @@ class DeviceStream:
     # Helpers
     # ------------------------------------------------------------------
 
-    async def _adb_exec(self, adb: str, *args: str) -> str:
+    async def _adb_exec(self, adb: str, *args: str, timeout: float = 15.0) -> str:
         async with adb_cmd_lock():
             proc = await asyncio.create_subprocess_exec(
                 adb, "-s", self.serial, *args,
@@ -377,9 +377,20 @@ class DeviceStream:
                 stderr=asyncio.subprocess.PIPE,
                 **_SUBPROCESS_KW,
             )
-            stdout, _ = await proc.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise RuntimeError("timeout ADB")
             if proc.returncode != 0:
                 text = stdout.decode("utf-8", errors="replace").strip()
+                if not text:
+                    text = stderr.decode("utf-8", errors="replace").strip()
                 if not text:
                     text = "errore ADB"
                 raise RuntimeError(text)
@@ -397,21 +408,35 @@ class DeviceStream:
 
     async def _cleanup_server(self) -> None:
         if self._control:
-            self._control.close()
+            try:
+                self._control.close()
+            except Exception:
+                pass
             self._control = None
         if self._writer:
             try:
-                self._writer.close()
+                if not self._writer.is_closing():
+                    self._writer.close()
+                    try:
+                        await asyncio.wait_for(
+                            self._writer.wait_closed(), timeout=0.5
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
             self._writer = None
         if self._server_proc:
             try:
-                self._server_proc.terminate()
-                try:
-                    await asyncio.wait_for(self._server_proc.wait(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    self._server_proc.kill()
+                if self._server_proc.returncode is None:
+                    self._server_proc.terminate()
+                    try:
+                        await asyncio.wait_for(self._server_proc.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        try:
+                            self._server_proc.kill()
+                        except Exception:
+                            pass
             except ProcessLookupError:
                 pass
             except Exception:

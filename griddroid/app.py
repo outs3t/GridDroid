@@ -92,6 +92,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         while True:
             try:
                 devices_snapshot = list(adb.devices.items())
+                now = time.time()
                 for serial, dev in devices_snapshot:
                     # Se il frontend pensa che lo stream sia attivo ma il motore
                     # e morto, resettiamo lo stato cosi il loop lo riavvia.
@@ -99,6 +100,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                         stream = streams.get_stream(serial)
                         if stream is None or not stream.alive:
                             dev.streaming = False
+                            dev.stream_failures += 1
+                            dev.next_stream_attempt = now + min(
+                                2 ** dev.stream_failures, 120
+                            )
                             if stream is not None:
                                 try:
                                     await streams.stop_stream(serial)
@@ -117,13 +122,21 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                         continue
 
                     if dev.status == DeviceStatus.ONLINE and not dev.streaming:
+                        if now < dev.next_stream_attempt:
+                            continue
                         try:
                             logs.info("Avvio stream...", serial=serial)
                             await streams.start_stream(serial)
                             dev.streaming = True
+                            dev.stream_failures = 0
+                            dev.next_stream_attempt = 0.0
                             logs.success("Stream attivo", serial=serial)
                         except Exception as exc:
                             dev.streaming = False
+                            dev.stream_failures += 1
+                            dev.next_stream_attempt = now + min(
+                                2 ** dev.stream_failures, 120
+                            )
                             logs.error(f"Errore avvio stream: {exc}", serial=serial)
             except Exception as exc:
                 logs.warn(f"Errore auto-stream loop: {exc}")
