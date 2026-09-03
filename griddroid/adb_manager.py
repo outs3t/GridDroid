@@ -130,17 +130,6 @@ class AdbManager:
             return
         self._running = True
         logs.info("ADB Manager avviato")
-        # Avvia il daemon ADB (idempotente: se gia' attivo non fa nulla)
-        try:
-            await self.adb_command("start-server", timeout=15.0)
-            await asyncio.sleep(0.5)
-        except Exception as exc:
-            logs.warn(f"Impossibile avviare ADB server: {exc}")
-        # Forza reconnect dei dispositivi offline senza killare il server
-        try:
-            await self.adb_command("reconnect", "offline", timeout=10.0)
-        except Exception:
-            pass
         self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def stop(self) -> None:
@@ -286,12 +275,10 @@ class AdbManager:
             dev.error = ""
 
     async def _refresh_devices(self) -> None:
-        # Rilevazione robusta per grandi farm: `adb devices -l` puo' troncare con
-        # molti dispositivi, quindi usiamo `adb devices` per lo stato e fondiamo
-        # piu' tentativi; poi arricchiamo con `adb devices -l`.
+        # Rilevazione: piu' tentativi di `adb devices` per raccogliere tutti
+        # i seriali, poi arricchiamo con `adb devices -l`.
         seen_serials: set = set()
-        has_offline = False
-        for attempt in range(5):
+        for attempt in range(3):
             rc, out, _ = await self.adb_command("devices")
             if rc == 0 and out:
                 for match in _DEVICE_RE_PLAIN.finditer(out):
@@ -301,16 +288,8 @@ class AdbManager:
                     if serial not in seen_serials:
                         seen_serials.add(serial)
                         self._upsert_device(serial, match.group("state"))
-                    if match.group("state") == "offline":
-                        has_offline = True
-            # Se ci sono dispositivi offline, prova a forzare il reconnect
-            if has_offline and attempt == 1:
-                try:
-                    await self.adb_command("reconnect", "offline", timeout=10.0)
-                except Exception:
-                    pass
-            if attempt < 4:
-                await asyncio.sleep(0.5)
+            if attempt < 2:
+                await asyncio.sleep(0.3)
 
         # Arricchisce con i dettagli di `adb devices -l` per i seriali gia' trovati
         rc_l, out_l, _ = await self.adb_command("devices", "-l")
