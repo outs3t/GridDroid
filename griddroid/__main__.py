@@ -237,7 +237,22 @@ def _run_with_webview(url: str) -> None:
     try:
         import webview
         _log("Apertura finestra nativa")
-        webview.create_window(
+
+        def _on_closing() -> None:
+            """Forza la chiusura del processo quando l'utente chiude la finestra."""
+            _log("Chiusura finestra richiesta")
+            try:
+                _stop_server(3.0)
+            except Exception:
+                pass
+            try:
+                _cleanup_children()
+            except Exception:
+                pass
+            _log("GridDroid chiuso")
+            os._exit(0)
+
+        window = webview.create_window(
             "GridDroid",
             url,
             width=1600,
@@ -245,6 +260,7 @@ def _run_with_webview(url: str) -> None:
             min_size=(1200, 800),
             background_color="#0a0a0a",
         )
+        window.events.closing += _on_closing
         webview.start()
     except Exception as exc:
         _log(f"Webview non disponibile: {exc}")
