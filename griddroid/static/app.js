@@ -11,7 +11,7 @@ const state = {
     fullscreenSerial: null,
     logCount: 0,
     ws: null,
-    gridCols: 20,
+    gridCols: 10,
     gridGap: 14,
     feedZoom: 1.0,
     sortBy: false,
@@ -227,7 +227,6 @@ function wrapDeviceCard(cell, dev) {
 
     // Tasto destro sul telefono → segna come giocato (con conferma)
     card.addEventListener("contextmenu", (e) => {
-        if (e.target.closest(".device-feed")) return;
         e.preventDefault();
         if (window.confirm(`Segnare "${dev.display_name || dev.serial}" come giocato?`)) {
             wsSend({ action: "set_played", serial: dev.serial, played: true });
@@ -287,15 +286,11 @@ function updateDeviceCell(cell, dev) {
         if (!feed.dataset.wsActive || feed.dataset.wsActive !== dev.serial) {
             startStreamWs(feed, dev.serial);
         }
-        feed.style.display = "block";
-        placeholder.style.display = "none";
 
         const streamBtn = cell.querySelector('[data-action="stream_toggle"]');
         if (streamBtn) streamBtn.textContent = "⏹";
     } else {
         stopStreamWs(feed);
-        feed.style.display = "none";
-        placeholder.style.display = "flex";
 
         const streamBtn = cell.querySelector('[data-action="stream_toggle"]');
         if (streamBtn) streamBtn.textContent = "▶";
@@ -409,7 +404,18 @@ function startStreamWs(feedEl, serial) {
     }
 
     const ctx = feedEl.getContext("2d", { alpha: false, desynchronized: true });
-    const session = { ws: null, decoder: null, gotKey: false, configured: false, ts: 0, description: null, frameCount: 0 };
+    const placeholder = feedEl.parentElement.querySelector('.device-feed-placeholder');
+    const iconEl = placeholder ? placeholder.querySelector('.icon') : null;
+    const textEl = placeholder ? placeholder.querySelector('span') : null;
+    function setPlaceholder(text, icon, show = true) {
+        if (iconEl) iconEl.textContent = icon;
+        if (textEl) textEl.textContent = text;
+        if (placeholder) placeholder.style.display = show ? 'flex' : 'none';
+    }
+    feedEl.style.display = 'none';
+    setPlaceholder('Connessione in corso...', '⏳');
+
+    const session = { ws: null, decoder: null, gotKey: false, configured: false, ts: 0, description: null, frameCount: 0, hasFrame: false };
 
     const decoder = new VideoDecoder({
         output: (frame) => {
@@ -422,6 +428,11 @@ function startStreamWs(feedEl, serial) {
                 }
             }
             ctx.drawImage(frame, 0, 0);
+            if (!session.hasFrame) {
+                session.hasFrame = true;
+                feedEl.style.display = 'block';
+                setPlaceholder('', '', false);
+            }
             frame.close();
         },
         error: (err) => {
@@ -436,6 +447,10 @@ function startStreamWs(feedEl, serial) {
     const ws = new WebSocket(`${protocol}//${location.host}/ws/stream/${serial}`);
     ws.binaryType = "arraybuffer";
     session.ws = ws;
+
+    ws.onopen = () => {
+        setPlaceholder('Connessione in corso...', '⏳');
+    };
 
     ws.onmessage = (event) => {
         const data = new Uint8Array(event.data);
@@ -508,13 +523,18 @@ function startStreamWs(feedEl, serial) {
     };
 
     ws.onclose = () => {
+        setPlaceholder('Connessione persa', '📵');
         if (streamSessions[serial] === session) {
             feedEl.dataset.wsActive = "";
             delete streamSessions[serial];
         }
     };
 
-    ws.onerror = (e) => { console.error(`WS stream ${serial}:`, e); ws.close(); };
+    ws.onerror = (e) => {
+        console.error(`WS stream ${serial}:`, e);
+        setPlaceholder('Errore connessione', '⚠️');
+        ws.close();
+    };
 
     feedEl.dataset.wsActive = serial;
     streamSessions[serial] = session;
@@ -531,6 +551,15 @@ function stopStreamWs(feedEl) {
         delete streamSessions[serial];
     }
     feedEl.dataset.wsActive = "";
+    feedEl.style.display = 'none';
+    const placeholder = feedEl.parentElement.querySelector('.device-feed-placeholder');
+    if (placeholder) {
+        const iconEl = placeholder.querySelector('.icon');
+        const textEl = placeholder.querySelector('span');
+        if (iconEl) iconEl.textContent = '📱';
+        if (textEl) textEl.textContent = 'Nessuno stream';
+        placeholder.style.display = 'flex';
+    }
 }
 
 // =====================================================================
@@ -1525,6 +1554,8 @@ function initHeaderButtons() {
                             }
                         }, 600);
                     };
+                } else if (data.message) {
+                    toast(data.message, "info");
                 } else {
                     toast(`GridDroid ${data.version} è aggiornato.`, "success");
                 }
@@ -2055,6 +2086,12 @@ function renderGroups() {
     if (!list) return;
     const groups = getAllGroups();
     const stored = new Set(loadStoredGroups());
+    const counts = state.devices.reduce((acc, d) => {
+        (d.tags || []).forEach((t) => {
+            acc[t] = (acc[t] || 0) + 1;
+        });
+        return acc;
+    }, {});
     if (!groups.length) {
         list.innerHTML = `<div class="group-empty">Nessun gruppo. Crea il primo sopra.</div>`;
         return;
@@ -2063,7 +2100,7 @@ function renderGroups() {
         .map(
             (g) => `
         <div class="group-row">
-            <span class="group-name">${escapeHtml(g)}</span>
+            <span class="group-name">${escapeHtml(g)} <span class="group-count">(${counts[g] || 0})</span></span>
             <div class="group-actions">
                 <button class="group-btn" data-action="select" data-group="${escapeHtml(g)}">Seleziona</button>
                 <button class="group-btn" data-action="filter" data-group="${escapeHtml(g)}">Filtra</button>

@@ -10,6 +10,7 @@ import random
 import shutil
 import socket
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -85,7 +86,9 @@ class DeviceStream:
     ) -> None:
         self.serial = serial
         self._settings = settings
-        self._start_sem = start_sem
+        # Limite avvii concorrenti per non sovraccaricare ADB (default 4)
+        self._start_sem: Optional[asyncio.Semaphore] = start_sem
+        self._last_heartbeat = time.monotonic()
         self._server_proc: Optional[asyncio.subprocess.Process] = None
         self._running = False
         self._current_frame: Optional[bytes] = None
@@ -106,7 +109,12 @@ class DeviceStream:
 
     @property
     def alive(self) -> bool:
-        return self._running
+        if not self._running or self._task is None:
+            return False
+        # Se la task e' morta o non batte da troppo tempo, consideriamo lo stream morto
+        if self._task.done():
+            return False
+        return (time.monotonic() - self._last_heartbeat) < 180.0
 
     @property
     def last_frame(self) -> Optional[bytes]:
@@ -132,6 +140,7 @@ class DeviceStream:
         if self._running:
             return
         self._running = True
+        self._last_heartbeat = time.monotonic()
         self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -228,7 +237,7 @@ class DeviceStream:
                     stderr=asyncio.subprocess.PIPE,
                     **_SUBPROCESS_KW,
                 )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30.0)
                 return stdout.decode("utf-8", errors="replace").strip() == "device"
             except Exception:
                 return False
@@ -242,6 +251,7 @@ class DeviceStream:
         consecutive_failures = 0
 
         while self._running:
+            self._last_heartbeat = time.monotonic()
             if not await self._is_device_online():
                 logs.warn(
                     "Dispositivo non più raggiungibile, interrompo stream",
@@ -253,9 +263,10 @@ class DeviceStream:
             reader: Optional[asyncio.StreamReader] = None
             try:
                 async with self._start_sem_cm():
+                    self._last_heartbeat = time.monotonic()
                     # 1. Push server jar
                     remote_jar = "/data/local/tmp/scrcpy-server.jar"
-                    await self._adb_exec(adb, "push", server_jar, remote_jar)
+                    await self._adb_exec(adb, "push", server_jar, remote_jar, timeout=60.0)
 
                     # 2. Setup forward con porta libera (evita collisioni)
                     async with _port_lock():
@@ -275,15 +286,14 @@ class DeviceStream:
                         )
 
                     # 3. Avvia server sul dispositivo.
-                    #    control=true abilita il control socket (input nativi).
-                    #    I meta sono disattivati: il socket video porta H264 puro.
+                    #    raw_stream=true produce un flusso H.264 puro (senza meta).
                     server_cmd = (
                         f"CLASSPATH={remote_jar} "
                         f"app_process / com.genymobile.scrcpy.Server {_SCRCPY_VERSION} "
                         f"tunnel_forward=true "
-                        f"audio=false control=true cleanup=true "
-                        f"send_device_meta=false send_frame_meta=false "
-                        f"send_dummy_byte=false "
+                        f"audio=false control=true cleanup=false "
+                        f"show_touches=true stay_awake=true power_off_on_close=true "
+                        f"raw_stream=true "
                         f"max_size={s.max_size} max_fps={s.max_fps} "
                         f"video_bit_rate={s.bit_rate} "
                         f"scid={scid_hex}"
@@ -307,39 +317,41 @@ class DeviceStream:
                     if self._server_error:
                         raise RuntimeError(f"scrcpy-server: {self._server_error}")
 
-                    # 4. Connessione video con retry (evita WinError 1225 per avvio troppo rapido)
+                    # 4. Connessione video con retry (evita WinError 1225 e l'EOF
+                    #    che si riceve se il socket remoto di scrcpy non e' ancora attivo).
                     last_exc: Optional[Exception] = None
-                    for attempt in range(3):
+                    await asyncio.sleep(0.3)  # aspetta che il ServerSocket si bindi
+                    for attempt in range(10):
                         try:
                             reader, self._writer = await asyncio.wait_for(
                                 asyncio.open_connection("127.0.0.1", self._tcp_port),
                                 timeout=3.0,
                             )
+                            # Se il socket non ha ancora dati, scrcpy ha appena bindato,
+                            # ma la connessione remota e' ancora in corso. Richiudiamo e riproviamo.
+                            if not self._running:
+                                break
                             break
                         except (ConnectionRefusedError, OSError, asyncio.TimeoutError) as exc:
                             last_exc = exc
-                            if attempt < 2:
-                                await asyncio.sleep(0.5)
+                            if attempt < 9:
+                                await asyncio.sleep(0.3)
                     if reader is None or self._writer is None:
                         raise last_exc or RuntimeError("Connessione video TCP rifiutata")
                     logs.success("Connesso al video socket TCP", serial=self.serial)
 
-                    # 5. Control socket: input nativi a latenza ~1ms.
-                    for attempt in range(3):
-                        try:
-                            _, ctrl_writer = await asyncio.wait_for(
-                                asyncio.open_connection("127.0.0.1", self._tcp_port),
-                                timeout=3.0,
-                            )
-                            self._control = ControlChannel(self.serial, ctrl_writer)
-                            logs.success("Canale di controllo attivo (input nativi)", serial=self.serial)
-                            break
-                        except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
-                            if attempt == 2:
-                                logs.warn("Canale di controllo non disponibile", serial=self.serial)
-                                self._control = None
-                                break
-                            await asyncio.sleep(0.3)
+                    # 5. Connessione al canale di controllo (input nativi)
+                    try:
+                        await asyncio.sleep(0.2)
+                        _, ctrl_writer = await asyncio.wait_for(
+                            asyncio.open_connection("127.0.0.1", self._tcp_port),
+                            timeout=3.0,
+                        )
+                        self._control = ControlChannel(self.serial, ctrl_writer)
+                        logs.success("Canale di controllo attivo", serial=self.serial)
+                    except Exception as ctrl_exc:
+                        logs.warn(f"Canale di controllo non attivo: {ctrl_exc}", serial=self.serial)
+                        self._control = None
 
                 # 6. Passthrough H264 → browser (decodifica hardware WebCodecs)
                 au_count = await self._stream_h264(reader)
@@ -441,7 +453,7 @@ class DeviceStream:
     # Helpers
     # ------------------------------------------------------------------
 
-    async def _adb_exec(self, adb: str, *args: str, timeout: float = 15.0) -> str:
+    async def _adb_exec(self, adb: str, *args: str, timeout: float = 30.0) -> str:
         async with adb_cmd_lock():
             proc = await asyncio.create_subprocess_exec(
                 adb, "-s", self.serial, *args,
@@ -619,6 +631,7 @@ class DeviceStream:
             await asyncio.sleep(0.05)
 
     def _distribute_frame(self, frame: bytes) -> None:
+        self._last_heartbeat = time.monotonic()
         dead: List[asyncio.Queue] = []
         for q in self._subscribers:
             try:

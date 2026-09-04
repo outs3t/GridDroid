@@ -546,10 +546,11 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     async def check_update():
         remote = await updater.fetch_remote_info(settings.update_url)
         if not remote:
-            return JSONResponse(
-                {"error": "impossibile contattare il server degli aggiornamenti"},
-                status_code=503,
-            )
+            return {
+                "available": False,
+                "version": __version__,
+                "message": "Impossibile contattare il server degli aggiornamenti (offline).",
+            }
         remote_version = remote.get("version", "0.0.0")
         if not updater.is_newer(remote_version, __version__):
             return {"available": False, "version": __version__}

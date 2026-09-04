@@ -285,7 +285,7 @@ class AdbManager:
         # i seriali, poi arricchiamo con `adb devices -l`.
         seen_serials: set = set()
         for attempt in range(3):
-            rc, out, _ = await self.adb_command("devices")
+            rc, out, _ = await self.adb_command("devices", timeout=15.0)
             if rc == 0 and out:
                 for match in _DEVICE_RE_PLAIN.finditer(out):
                     serial = match.group("serial")
@@ -298,7 +298,7 @@ class AdbManager:
                 await asyncio.sleep(0.3)
 
         # Arricchisce con i dettagli di `adb devices -l` per i seriali gia' trovati
-        rc_l, out_l, _ = await self.adb_command("devices", "-l")
+        rc_l, out_l, _ = await self.adb_command("devices", "-l", timeout=15.0)
         if rc_l == 0 and out_l:
             for match in _DEVICE_RE.finditer(out_l):
                 serial = match.group("serial")
