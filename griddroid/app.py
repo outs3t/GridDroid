@@ -106,7 +106,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         _allowed_hosts.add(settings.host)
     _allowed_origins = {f"http://{h}:{settings.port}" for h in _allowed_hosts}
 
-    def _origin_allowed(origin: Optional[str], host: Optional[str]) -> bool:
+    def _origin_allowed(origin: Optional[str], host: Optional[str] = None) -> bool:
         if not origin:
             return True
         if origin in _allowed_origins:
@@ -588,7 +588,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     async def get_devices():
         """Restituisce la lista corrente dei dispositivi (fallback per polling)."""
         return {
-            "devices": [d.to_dict() for d in list(adb.devices.values())],
+            "type": "devices",
+            "data": [d.to_dict() for d in list(adb.devices.values())],
             "broadcast": input_relay.broadcast_mode,
             "focused": input_relay.focused_serial,
         }
