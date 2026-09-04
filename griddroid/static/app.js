@@ -1416,6 +1416,63 @@ async function initSettings() {
 }
 
 // =====================================================================
+// Server info + firewall
+// =====================================================================
+
+function initServerInfo() {
+    const banner = document.getElementById("serverBanner");
+    const addressEl = document.getElementById("serverAddress");
+    const fwBtn = document.getElementById("btnOpenFirewall");
+    const msgEl = document.getElementById("firewallMessage");
+    if (!banner || !addressEl) return;
+
+    fetch("/api/server-info")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((info) => {
+            if (!info) return;
+            let text = `GridDroid in esecuzione su <a href="${info.current_url}" target="_blank">${info.current_url}</a>`;
+            const local = (info.local_urls || []).filter((u) => u !== info.current_url);
+            if (info.host === "0.0.0.0" && local.length) {
+                const urls = local.map((u) => `<a href="${u}" target="_blank">${u}</a>`).join(", ");
+                text += ` — accesso LAN: ${urls}`;
+            } else if (info.host === "127.0.0.1" || info.host === "localhost") {
+                text += ` (solo locale; per la LAN avvia con --host 0.0.0.0)`;
+            }
+            addressEl.innerHTML = text;
+            banner.style.display = "";
+
+            if (fwBtn && info.host === "0.0.0.0") {
+                fwBtn.style.display = "";
+                fwBtn.addEventListener("click", () => {
+                    fwBtn.disabled = true;
+                    if (msgEl) {
+                        msgEl.textContent = "Richiesta in corso...";
+                        msgEl.style.color = "";
+                    }
+                    fetch("/api/open-firewall", { method: "POST" })
+                        .then((r) => r.json())
+                        .then((res) => {
+                            if (msgEl) {
+                                msgEl.textContent = res.message || "";
+                                msgEl.style.color = res.ok ? "#4ade80" : "#f87171";
+                            }
+                        })
+                        .catch(() => {
+                            if (msgEl) {
+                                msgEl.textContent = "Errore richiesta";
+                                msgEl.style.color = "#f87171";
+                            }
+                        })
+                        .finally(() => {
+                            fwBtn.disabled = false;
+                        });
+                });
+            }
+        })
+        .catch(() => {});
+}
+
+// =====================================================================
 // Header Buttons
 // =====================================================================
 
@@ -2364,6 +2421,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initGroups();
     initSelection();
     initResultModal();
+    initServerInfo();
     // Carica la versione dell'app
     fetch("/api/version").then(r => r.json()).then(d => {
         const el = document.getElementById("versionBadge");

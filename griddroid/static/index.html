@@ -17,6 +17,9 @@
         .update-actions .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
         .btn-update-ok { background: #22c55e; color: #000; }
         .btn-update-cancel { background: #333; color: #fff; }
+        .server-banner { display: flex; align-items: center; gap: 12px; padding: 6px 16px; background: #141414; border-bottom: 1px solid var(--border, #2a2a2a); font-size: 13px; color: #aaa; }
+        .server-banner a { color: #4ade80; text-decoration: none; }
+        .server-banner button { padding: 4px 10px; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -70,6 +73,12 @@
             </button>
         </div>
     </header>
+
+    <div id="serverBanner" class="server-banner" style="display:none">
+        <span id="serverAddress">...</span>
+        <button id="btnOpenFirewall" class="btn btn-accent" title="Apri la porta sul firewall di Windows" style="display:none">Apri porta firewall</button>
+        <span id="firewallMessage"></span>
+    </div>
 
     <!-- MAIN -->
     <div class="main-layout">

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ctypes
 import json
 import os
 import re
+import socket
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
@@ -25,6 +29,65 @@ from .log_manager import logs
 from . import __version__, updater
 from .scripts import ScriptEngine
 from .stream_engine import StreamManager
+
+
+def _get_local_ips() -> List[str]:
+    """Restituisce gli indirizzi IPv4 locali (escluso loopback)."""
+    try:
+        host = socket.gethostname()
+        infos = socket.getaddrinfo(host, None, socket.AF_INET)
+        ips = {info[4][0] for info in infos if not info[4][0].startswith("127.")}
+        return sorted(ips)
+    except Exception:
+        return []
+
+
+def _add_firewall_rule(port: int) -> tuple[bool, str]:
+    """Crea una regola firewall in ingresso per la porta TCP data.
+
+    Se l'app non e' in esecuzione come amministratore, tenta di
+    elevare tramite UAC con ShellExecute + powershell.
+    """
+    if sys.platform != "win32":
+        return True, "Solo Windows richiede regole firewall"
+
+    rule_name = "GridDroid"
+    add_cmd = (
+        f'netsh advfirewall firewall add rule name={rule_name} '
+        f'dir=in action=allow protocol=tcp localport={port}'
+    )
+    delete_cmd = f'netsh advfirewall firewall delete rule name={rule_name}'
+
+    # Prova diretta (funziona se gia' admin)
+    combined = f"{delete_cmd}; {add_cmd}"
+    try:
+        proc = subprocess.run(
+            ["powershell", "-WindowStyle", "Hidden", "-Command", combined],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if proc.returncode == 0:
+            return True, "Regola firewall aggiunta"
+    except Exception as exc:
+        return False, f"Errore: {exc}"
+
+    # Se non abbiamo i permessi, prova a chiedere l'elevazione UAC
+    try:
+        command = f"{delete_cmd}; {add_cmd}"
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            "powershell.exe",
+            f'-WindowStyle Hidden -Command "{command}"',
+            None,
+            0,
+        )
+        if result <= 32:
+            return False, "Impossibile richiedere privilegi amministratore"
+        return True, "Richiesta UAC inviata. Clicca 'Sì' su Windows, poi aggiorna."
+    except Exception as exc:
+        return False, f"Errore UAC: {exc}"
 
 
 def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
@@ -492,6 +555,36 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                     dev.streaming = False
                     logs.error(f"Errore riavvio stream: {exc}", serial=serial)
         return {"ok": True}
+
+    @app.get("/api/server-info")
+    async def server_info(request: Request):
+        """Restituisce host, porta e URL raggiungibili dalla LAN."""
+        port = settings.port
+        bind_host = settings.host
+        local_ips = _get_local_ips()
+        if bind_host == "0.0.0.0":
+            urls = [f"http://{ip}:{port}" for ip in local_ips]
+        else:
+            urls = [f"http://{bind_host}:{port}"]
+        host_header = request.headers.get("host")
+        if host_header:
+            current_url = f"http://{host_header}"
+        else:
+            current_url = f"http://{bind_host}:{port}"
+        return {
+            "host": bind_host,
+            "port": port,
+            "local_urls": urls,
+            "current_url": current_url,
+        }
+
+    @app.post("/api/open-firewall")
+    async def open_firewall():
+        """Crea/apre una regola firewall in ingresso per la porta dell'app."""
+        ok, message = await asyncio.get_event_loop().run_in_executor(
+            None, _add_firewall_rule, settings.port
+        )
+        return {"ok": ok, "message": message}
 
     # ------------------------------------------------------------------
     # REST API – Logs
