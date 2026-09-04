@@ -321,7 +321,7 @@
             const commit = data[0];
             const date = new Date(commit.commit.committer.date);
             const sha = (commit.sha || '').substring(0, 7);
-            el.textContent = date.toLocaleDateString('it-IT') + (sha ? ' (' + sha + ')' : '');
+            el.textContent = date.toLocaleString('it-IT') + (sha ? ' (' + sha + ')' : '');
           } catch (e) {
             el.textContent = 'controlla su GitHub';
           }
