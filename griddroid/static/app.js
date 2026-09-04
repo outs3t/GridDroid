@@ -1430,12 +1430,39 @@ async function initSettings() {
     const maxFps = document.getElementById("maxFps");
     const maxSize = document.getElementById("maxSize");
 
+    const chkStartWithWindows = document.getElementById("chkStartWithWindows");
+    const chkStartMinimized = document.getElementById("chkStartMinimized");
+    const chkMinimizeToTray = document.getElementById("chkMinimizeToTray");
+    const btnSaveStartup = document.getElementById("btnSaveStartup");
+
     try {
         const r = await fetch("/api/settings");
         const data = await r.json();
         if (maxFps) maxFps.value = data.stream?.max_fps ?? 30;
         if (maxSize) maxSize.value = data.stream?.max_size ?? 1080;
+        if (chkStartWithWindows) chkStartWithWindows.checked = data.start_with_windows ?? false;
+        if (chkStartMinimized) chkStartMinimized.checked = data.start_minimized ?? false;
+        if (chkMinimizeToTray) chkMinimizeToTray.checked = data.minimize_to_tray ?? false;
     } catch (e) {}
+
+    if (btnSaveStartup) {
+        btnSaveStartup.addEventListener("click", async () => {
+            try {
+                await fetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        start_with_windows: chkStartWithWindows?.checked ?? false,
+                        start_minimized: chkStartMinimized?.checked ?? false,
+                        minimize_to_tray: chkMinimizeToTray?.checked ?? false,
+                    }),
+                });
+                toast("Impostazioni avvio salvate", "success");
+            } catch (e) {
+                toast("Errore salvataggio avvio", "error");
+            }
+        });
+    }
 
     async function saveStream() {
         try {

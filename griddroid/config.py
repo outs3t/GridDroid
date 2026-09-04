@@ -64,6 +64,9 @@ class AppSettings(BaseSettings):
     poll_interval_s: float = 5.0
     max_concurrent_installs: int = 6
     grid_columns: int = 5
+    start_with_windows: bool = False
+    start_minimized: bool = False
+    minimize_to_tray: bool = False
     stream: StreamSettings = Field(default_factory=StreamSettings)
 
     class Config:

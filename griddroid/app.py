@@ -27,7 +27,7 @@ from .config import AppSettings, load_settings, save_settings, load_labels, load
 from .device import DeviceStatus
 from .input_relay import InputRelay
 from .log_manager import logs
-from . import __version__, updater
+from . import __version__, startup, updater
 from .scripts import ScriptEngine
 from .stream_engine import StreamManager
 
@@ -517,7 +517,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     @app.post("/api/settings")
     async def update_settings(data: dict):
         nonlocal settings
-        ALLOWED = {"poll_interval_s", "grid_columns", "max_concurrent_installs"}
+        ALLOWED = {"poll_interval_s", "grid_columns", "max_concurrent_installs",
+                   "start_with_windows", "start_minimized", "minimize_to_tray"}
         STREAM_KEYS = {"max_fps", "max_size", "bit_rate", "video_codec"}
         for key, value in data.items():
             if key in ALLOWED:
@@ -525,6 +526,13 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                     value = max(1, int(value))
                 elif key == "grid_columns":
                     value = max(1, min(20, int(value)))
+                elif key in ("start_with_windows", "start_minimized", "minimize_to_tray"):
+                    value = bool(value)
+                    if key == "start_with_windows":
+                        try:
+                            startup.set_run_at_boot(value)
+                        except Exception as exc:
+                            logs.warn(f"Errore impostazione avvio Windows: {exc}", throttle_s=30)
                 setattr(settings, key, value)
             elif key == "stream" and isinstance(value, dict):
                 for sk, sv in value.items():

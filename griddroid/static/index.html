@@ -270,6 +270,22 @@
                         </p>
                         <button class="btn btn-accent" id="btnExportConfig" style="width:100%;">Esporta configurazione</button>
                     </div>
+                    <div class="sidebar-section">
+                        <h4>Avvio</h4>
+                        <div class="input-group" style="align-items:flex-start;gap:6px;">
+                            <input type="checkbox" id="chkStartWithWindows" style="margin-top:2px;" />
+                            <label for="chkStartWithWindows" style="font-weight:normal;cursor:pointer;">Avvia con Windows</label>
+                        </div>
+                        <div class="input-group" style="align-items:flex-start;gap:6px;">
+                            <input type="checkbox" id="chkStartMinimized" style="margin-top:2px;" />
+                            <label for="chkStartMinimized" style="font-weight:normal;cursor:pointer;">Avvia minimizzato</label>
+                        </div>
+                        <div class="input-group" style="align-items:flex-start;gap:6px;">
+                            <input type="checkbox" id="chkMinimizeToTray" style="margin-top:2px;" />
+                            <label for="chkMinimizeToTray" style="font-weight:normal;cursor:pointer;">Icona di notifica (tray)</label>
+                        </div>
+                        <button class="btn btn-accent" id="btnSaveStartup" style="width:100%;margin-top:8px;">Salva avvio</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -325,7 +341,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=43"></script>
+    <script src="/static/app.js?v=44"></script>
     <script>
     (async () => {
         try {

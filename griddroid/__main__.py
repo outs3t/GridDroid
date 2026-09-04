@@ -20,8 +20,11 @@ from urllib.request import urlopen
 
 import uvicorn
 
+from . import startup
 from .config import load_settings
 from .log_manager import logs
+
+_tray_icon = None
 
 # Configurazione logging che funziona anche senza console (console=False)
 LOGGING_CONFIG = {
@@ -270,6 +273,45 @@ def _cleanup_children() -> None:
             _log(f"Errore taskkill: {exc}")
 
 
+def _start_tray(url: str, window) -> None:
+    """Avvia l'icona di notifica in un thread separato."""
+    global _tray_icon
+    try:
+        def show_window():
+            try:
+                window.show()
+            except Exception as exc:
+                _log(f"Errore mostra finestra da tray: {exc}")
+                _open_browser(url)
+
+        def exit_app():
+            try:
+                window.destroy()
+            except Exception:
+                pass
+            _log("Uscita richiesta da tray")
+            os._exit(0)
+
+        _tray_icon = startup.create_tray_icon(url, show_window, exit_app)
+        if _tray_icon:
+            tray_thread = threading.Thread(target=_tray_icon.run, daemon=True)
+            tray_thread.start()
+            _log("Icona di notifica avviata")
+    except Exception as exc:
+        _log(f"Errore avvio icona tray: {exc}")
+
+
+def _destroy_tray() -> None:
+    """Ferma l'icona di notifica, se attiva."""
+    global _tray_icon
+    try:
+        if _tray_icon:
+            _tray_icon.stop()
+            _tray_icon = None
+    except Exception:
+        pass
+
+
 def _wait_for_user_interrupt() -> None:
     """Mantiene il processo vivo in modalita console fino a Ctrl+C."""
     try:
@@ -286,7 +328,7 @@ def _open_browser_when_ready(host: str, port: int) -> None:
         _log("Timeout: impossibile aprire browser, server non raggiungibile")
 
 
-def _run_with_webview(url: str) -> None:
+def _run_with_webview(url: str, settings, no_tray: bool = False) -> None:
     """Apre una finestra webview nativa; se non disponibile, apre il browser."""
     try:
         import webview
@@ -295,6 +337,7 @@ def _run_with_webview(url: str) -> None:
         def _on_closing() -> None:
             """Forza la chiusura del processo quando l'utente chiude la finestra."""
             _log("Chiusura finestra richiesta")
+            _destroy_tray()
             try:
                 _stop_server(3.0)
             except Exception:
@@ -320,7 +363,50 @@ def _run_with_webview(url: str) -> None:
             background_color="#0a0a0a",
         )
         window.events.closing += _on_closing
+
+        # Impostazioni di avvio finestra
+        start_minimized = (
+            settings.start_minimized or settings.minimize_to_tray
+        )
+        minimize_to_tray = not no_tray and settings.minimize_to_tray
+
+        def _on_loaded():
+            try:
+                if minimize_to_tray:
+                    window.hide()
+                elif start_minimized:
+                    window.minimize()
+            except Exception as exc:
+                _log(f"Errore durante inizializzazione finestra: {exc}")
+
+        # pystray potrebbe non supportare loaded, usiamo anche un timer di sicurezza
+        def _apply_startup_later():
+            try:
+                if minimize_to_tray:
+                    try:
+                        window.hide()
+                    except Exception:
+                        pass
+                elif start_minimized:
+                    try:
+                        window.minimize()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        try:
+            window.events.loaded += _on_loaded
+        except Exception:
+            _log("Evento 'loaded' di pywebview non disponibile")
+        threading.Timer(1.0, _apply_startup_later).start()
+
+        # Icona di notifica
+        if minimize_to_tray:
+            _start_tray(url, window)
+
         webview.start()
+        _destroy_tray()
     except Exception as exc:
         _log(f"Webview non disponibile: {exc}")
         _log(traceback.format_exc())
@@ -360,6 +446,14 @@ def main() -> None:
         "--port", type=int, default=None,
         help="Porta su cui ascoltare",
     )
+    parser.add_argument(
+        "--start-minimized", action="store_true",
+        help="Avvia la finestra minimizzata",
+    )
+    parser.add_argument(
+        "--no-tray", action="store_true",
+        help="Disabilita l'icona di notifica",
+    )
     args = parser.parse_args()
 
     # Su Linux/macOS, se non c'e' una sessione grafica, usa direttamente il browser.
@@ -397,6 +491,12 @@ def main() -> None:
     url = f"http://{ui_host}:{port}"
     _log(f"URL finale: {url}")
 
+    # Applica le preferenze di avvio di Windows
+    try:
+        startup.set_run_at_boot(settings.start_with_windows)
+    except Exception as exc:
+        _log(f"Errore impostazione avvio Windows: {exc}")
+
     server_thread = threading.Thread(
         target=_server_thread,
         args=(bind_host, port),
@@ -422,7 +522,7 @@ def main() -> None:
         elif args.message:
             _show_message(f"GridDroid e in esecuzione su:\n{url}\n\nApri il browser e incolla l'indirizzo.")
         else:
-            _run_with_webview(url)
+            _run_with_webview(url, settings, args.no_tray)
     except KeyboardInterrupt:
         pass
     finally:
