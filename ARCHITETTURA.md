@@ -281,3 +281,12 @@ tools/
 - Se l'app non vede i dispositivi, controlla prima `adb devices -l` manualmente.
 - Se gli stream restano neri, verifica che `scrcpy-server.jar` esista in `tools/` e che la porta TCP forward funzioni.
 - Il mutex impedisce due istanze di GridDroid contemporaneamente.
+
+## 10. Hardware consigliato: hub USB
+
+Per farm grandi (20-30+ dispositivi) la topologia USB conta più del numero di porte.
+
+- **Distribuire i dispositivi su più controller/root hub**: anche 15+15 porte dello stesso modello possono sovraccaricare lo stesso controller USB del PC e farlo "tiltare".
+- **Hub di buona qualità con alimentazione autonoma**: evitare hub bus-powered; ogni telefono richiede corrente anche in ricarica lenta.
+- **Esempio funzionante**: 11 dispositivi su hub A, 6 su hub B (stesso modello di A), 5 su hub C di marca diversa, 2 direttamente sulle porte posteriori del PC. Questa distribuzione separa i carichi su diversi controller e funziona stabilmente.
+- **Regola empirica**: se si superano ~16-17 dispositivi concentrati su un unico controller/hub, Windows inizia a perdere enumerazione o i processi ADB vanno in timeout. Distribuire prima di aumentare.
