@@ -148,11 +148,20 @@ function createDeviceCell(dev) {
             <span>Nessuno stream</span>
         </div>
         <div class="device-toolbar">
-            <button class="toolbar-btn" data-action="fullscreen" title="Schermo intero">⛶</button>
-            <button class="toolbar-btn" data-action="screen_toggle" title="Accendi/Spegni schermo">💡</button>
-            <button class="toolbar-btn" data-action="screenshot" title="Screenshot">📷</button>
-            <button class="toolbar-btn" data-action="rotate" title="Rotazione">🔄</button>
-            <button class="toolbar-btn" data-action="stream_toggle" title="Avvia/Ferma stream">▶</button>
+            <div class="toolbar-left">
+                <button class="toolbar-btn" data-action="screenshot" title="Screenshot">📷</button>
+                <button class="toolbar-btn" data-action="screen_toggle" title="Accendi/Spegni schermo">💡</button>
+            </div>
+            <div class="toolbar-center">
+                <button class="toolbar-btn nav-btn" data-action="recent_apps" title="App recenti">▣</button>
+                <button class="toolbar-btn nav-btn" data-action="home" title="Home">⌂</button>
+                <button class="toolbar-btn nav-btn" data-action="back" title="Indietro">←</button>
+            </div>
+            <div class="toolbar-right">
+                <button class="toolbar-btn" data-action="rotate" title="Rotazione">🔄</button>
+                <button class="toolbar-btn" data-action="fullscreen" title="Schermo intero">⛶</button>
+                <button class="toolbar-btn" data-action="stream_toggle" title="Avvia/Ferma stream">▶</button>
+            </div>
         </div>
     `;
 
@@ -422,10 +431,7 @@ function startStreamWs(feedEl, serial) {
             if (feedEl.width !== frame.displayWidth || feedEl.height !== frame.displayHeight) {
                 feedEl.width = frame.displayWidth;
                 feedEl.height = frame.displayHeight;
-                const cell = feedEl.closest(".device-cell");
-                if (cell) {
-                    cell.style.setProperty("--cell-aspect", `${frame.displayWidth} / ${frame.displayHeight}`);
-                }
+                // Proporzione fissa dal CSS, indipendente dalla risoluzione
             }
             ctx.drawImage(frame, 0, 0);
             if (!session.hasFrame) {
@@ -794,6 +800,15 @@ function handleToolbarAction(action, serial, cell) {
             }
             break;
         }
+        case "home":
+            wsSend({ action: "keyevent", serial, keycode: 3 });
+            break;
+        case "back":
+            wsSend({ action: "keyevent", serial, keycode: 4 });
+            break;
+        case "recent_apps":
+            wsSend({ action: "keyevent", serial, keycode: 187 });
+            break;
     }
 }
 

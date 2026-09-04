@@ -358,7 +358,7 @@ body::before {
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
     overflow: hidden;
-    aspect-ratio: var(--cell-aspect, 9 / 16);
+    aspect-ratio: 9 / 19;
     cursor: pointer;
     transition: all var(--dur-slow) var(--ease-out);
     box-shadow:
@@ -582,13 +582,29 @@ body::before {
     height: 28px;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
     gap: 4px;
-    padding: 0 8px;
+    padding: 0 6px;
     background: linear-gradient(180deg, #1a1d23, #0b0c0f);
     border-top: 1px solid #2a2e35;
     z-index: 3;
     box-shadow: 0 -1px 0 rgba(255,255,255,0.03) inset;
+}
+
+.toolbar-left,
+.toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.toolbar-center {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
 }
 
 .toolbar-btn {
@@ -606,6 +622,15 @@ body::before {
 }
 .toolbar-btn:hover { background: #1e2229; color: #fff; border-color: #3e444d; transform: scale(1.08); }
 .toolbar-btn:active { background: #0b0c0f; transform: scale(0.95); }
+
+.nav-btn {
+    width: 26px;
+    height: 24px;
+    font-size: 14px;
+    background: #0d0f12;
+    border-color: #353a42;
+    color: #b0b7bf;
+}
 
 /* Checkbox */
 .device-select {
