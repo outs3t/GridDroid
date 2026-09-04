@@ -1,17 +1,10 @@
 document.addEventListener("DOMContentLoaded", () => {
+  // Icone Lucide
   lucide.createIcons();
   initMockGrid();
   initBgCanvas();
-  initCursorGlow();
-  initHeroTilt();
-  initReveal();
-  initMobileMenu();
-});
 
-// =====================================================================
-// Mobile menu
-// =====================================================================
-function initMobileMenu() {
+  // Menu mobile
   const menuBtn = document.getElementById("mobile-menu-btn");
   const mobileMenu = document.getElementById("mobile-menu");
 
@@ -19,6 +12,7 @@ function initMobileMenu() {
     menuBtn.addEventListener("click", () => {
       mobileMenu.classList.toggle("hidden");
     });
+    // Chiudi menu al click su un link
     mobileMenu.querySelectorAll("a").forEach((link) => {
       link.addEventListener("click", () => {
         mobileMenu.classList.add("hidden");
@@ -26,6 +20,7 @@ function initMobileMenu() {
     });
   }
 
+  // Header ombra al scroll
   const nav = document.querySelector("nav");
   if (nav) {
     const updateNav = () => {
@@ -38,99 +33,32 @@ function initMobileMenu() {
     window.addEventListener("scroll", updateNav, { passive: true });
     updateNav();
   }
-}
 
-// =====================================================================
-// Cursor glow
-// =====================================================================
-function initCursorGlow() {
-  let ticking = false;
-  const update = (x, y) => {
-    document.body.style.setProperty('--cursor-x', x + 'px');
-    document.body.style.setProperty('--cursor-y', y + 'px');
-  };
+  // Animazione reveal al scroll
+  const reveal = () => {
+    const elements = document.querySelectorAll(
+      "h2, h3, .feature-card, .step-card, .download-card, .donate-btn"
+    );
+    elements.forEach((el) => el.classList.add("reveal"));
 
-  window.addEventListener('mousemove', (e) => {
-    if (!ticking) {
-      window.requestAnimationFrame(() => {
-        update(e.clientX, e.clientY);
-        ticking = false;
-      });
-      ticking = true;
-    }
-  }, { passive: true });
-
-  if (window.matchMedia('(pointer: coarse)').matches) {
-    document.getElementById('cursor-glow').style.display = 'none';
-  }
-}
-
-// =====================================================================
-// Hero 3D tilt + parallax
-// =====================================================================
-function initHeroTilt() {
-  const grid = document.getElementById('mock-grid');
-  const hero = document.querySelector('.hero-tilt');
-  if (!grid) return;
-
-  const wrapper = grid.closest('.hero-tilt') || grid.parentElement;
-  let raf = null;
-  let targetX = 0, targetY = 0;
-  let currentX = 0, currentY = 0;
-
-  const update = () => {
-    currentX += (targetX - currentX) * 0.08;
-    currentY += (targetY - currentY) * 0.08;
-    grid.style.transform = `rotateY(${currentX * 8}deg) rotateX(${-currentY * 8}deg) translateZ(20px)`;
-    raf = null;
-  };
-
-  document.addEventListener('mousemove', (e) => {
-    const rect = wrapper.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width - 0.5;
-    const y = (e.clientY - rect.top) / rect.height - 0.5;
-    targetX = Math.max(-1, Math.min(1, x));
-    targetY = Math.max(-1, Math.min(1, y));
-    if (raf === null) raf = requestAnimationFrame(update);
-  }, { passive: true });
-}
-
-// =====================================================================
-// Scroll reveal with stagger
-// =====================================================================
-function initReveal() {
-  const elements = document.querySelectorAll(
-    "h2, h3, .feature-card, .step-card, .download-card, .donate-btn"
-  );
-
-  elements.forEach((el) => {
-    el.classList.add("reveal");
-  });
-
-  const observer = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          const parent = entry.target.parentElement;
-          const siblings = parent ? Array.from(parent.querySelectorAll('.reveal')) : [];
-          const index = siblings.indexOf(entry.target);
-          const delay = Math.max(0, (index >= 0 ? index : 0) * 80);
-          setTimeout(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
             entry.target.classList.add("visible");
-          }, delay);
-          observer.unobserve(entry.target);
-        }
-      });
-    },
-    { threshold: 0.12, rootMargin: "0px 0px -40px 0px" }
-  );
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -40px 0px" }
+    );
 
-  elements.forEach((el) => observer.observe(el));
-}
+    elements.forEach((el) => observer.observe(el));
+  };
 
-// =====================================================================
-// Mock device grid
-// =====================================================================
+  reveal();
+});
+
 function initMockGrid() {
   const grid = document.getElementById("mock-grid");
   if (!grid) return;
@@ -155,6 +83,7 @@ function initMockGrid() {
     "Broadcast",
   ];
 
+  // Genera 9 dispositivi con app casuali
   for (let i = 0; i < 9; i++) {
     const apps = [];
     const pool = [...appIcons].sort(() => Math.random() - 0.5);
@@ -184,6 +113,7 @@ function initMockGrid() {
     grid.appendChild(device);
   }
 
+  // Ciclo di animazione: ogni ~1.4s un telefono "apre" un'app
   setInterval(() => {
     const devices = grid.querySelectorAll(".mock-device");
     if (!devices.length) return;
@@ -205,9 +135,6 @@ function initMockGrid() {
   }, 1400);
 }
 
-// =====================================================================
-// Interactive background canvas (particles + mouse)
-// =====================================================================
 function initBgCanvas() {
   const canvas = document.getElementById("bg-canvas");
   if (!canvas) return;
@@ -216,13 +143,12 @@ function initBgCanvas() {
   let width = 0;
   let height = 0;
   let particles = [];
+  const count = 40;
   const colors = [
-    "rgba(212, 175, 53, 0.55)",
-    "rgba(31, 143, 255, 0.45)",
-    "rgba(255, 92, 92, 0.45)",
-    "rgba(255, 255, 255, 0.35)",
+    "rgba(212, 175, 53, 0.45)",
+    "rgba(31, 143, 255, 0.35)",
+    "rgba(255, 92, 92, 0.35)",
   ];
-  let mouse = { x: -9999, y: -9999 };
 
   function resize() {
     width = window.innerWidth;
@@ -233,36 +159,20 @@ function initBgCanvas() {
     canvas.style.width = width + "px";
     canvas.style.height = height + "px";
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const area = (width * height) / 1000000;
-    const count = Math.min(80, Math.max(30, Math.floor(area * 22)));
-    particles = [];
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        x: Math.random() * width,
-        y: Math.random() * height,
-        vx: (Math.random() - 0.5) * 0.45,
-        vy: (Math.random() - 0.5) * 0.45,
-        size: Math.random() * 1.8 + 0.6,
-        color: colors[Math.floor(Math.random() * colors.length)],
-        pulse: Math.random() * Math.PI * 2,
-      });
-    }
   }
 
   resize();
 
-  window.addEventListener("resize", resize);
-
-  document.addEventListener('mousemove', (e) => {
-    mouse.x = e.clientX;
-    mouse.y = e.clientY;
-  }, { passive: true });
-
-  document.addEventListener('mouseleave', () => {
-    mouse.x = -9999;
-    mouse.y = -9999;
-  });
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x: Math.random() * width,
+      y: Math.random() * height,
+      vx: (Math.random() - 0.5) * 0.35,
+      vy: (Math.random() - 0.5) * 0.35,
+      size: Math.random() * 1.6 + 0.7,
+      color: colors[Math.floor(Math.random() * colors.length)],
+    });
+  }
 
   function draw() {
     ctx.clearRect(0, 0, width, height);
@@ -270,26 +180,15 @@ function initBgCanvas() {
     for (const p of particles) {
       p.x += p.vx;
       p.y += p.vy;
-      p.pulse += 0.03;
 
       if (p.x < 0 || p.x > width) p.vx *= -1;
       if (p.y < 0 || p.y > height) p.vy *= -1;
 
-      const dx = mouse.x - p.x;
-      const dy = mouse.y - p.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist < 180 && dist > 0) {
-        const force = (180 - dist) / 180;
-        p.x -= (dx / dist) * force * 0.8;
-        p.y -= (dy / dist) * force * 0.8;
-      }
-
-      const pulseSize = p.size + Math.sin(p.pulse) * 0.3;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, Math.max(0.2, pulseSize), 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
       ctx.fillStyle = p.color;
       ctx.shadowColor = p.color;
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 8;
       ctx.fill();
       ctx.shadowBlur = 0;
     }
@@ -302,27 +201,12 @@ function initBgCanvas() {
         const dy = a.y - b.y;
         const dist = Math.hypot(dx, dy);
 
-        if (dist < 140) {
+        if (dist < 130) {
           ctx.beginPath();
           ctx.moveTo(a.x, a.y);
           ctx.lineTo(b.x, b.y);
-          ctx.strokeStyle = `rgba(212, 175, 53, ${0.10 * (1 - dist / 140)})`;
-          ctx.lineWidth = 0.5;
-          ctx.stroke();
-        }
-      }
-
-      if (mouse.x > -9000) {
-        const a = particles[i];
-        const dx = a.x - mouse.x;
-        const dy = a.y - mouse.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist < 220) {
-          ctx.beginPath();
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(mouse.x, mouse.y);
-          ctx.strokeStyle = `rgba(212, 175, 53, ${0.12 * (1 - dist / 220)})`;
-          ctx.lineWidth = 0.6;
+          ctx.strokeStyle = `rgba(255, 255, 255, ${0.05 * (1 - dist / 130)})`;
+          ctx.lineWidth = 0.4;
           ctx.stroke();
         }
       }
@@ -331,5 +215,6 @@ function initBgCanvas() {
     requestAnimationFrame(draw);
   }
 
+  window.addEventListener("resize", resize);
   draw();
 }

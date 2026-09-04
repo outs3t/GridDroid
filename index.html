@@ -51,7 +51,6 @@
 <body class="bg-jh-void text-slate-100 font-sans antialiased selection:bg-jh-gold-500/30 selection:text-jh-gold-300">
 
   <canvas id="bg-canvas"></canvas>
-  <div id="cursor-glow" aria-hidden="true"></div>
 
   <!-- NAV -->
   <nav class="fixed inset-x-0 top-0 z-50 border-b border-white/5 bg-jh-void/70 backdrop-blur-md">
@@ -61,11 +60,11 @@
         GridDroid
       </a>
       <div class="hidden items-center gap-8 text-sm font-medium text-slate-300 md:flex">
-        <a href="#features" class="nav-link hover:text-jh-gold-400 transition-colors">Funzionalit&agrave;</a>
-        <a href="#how" class="nav-link hover:text-jh-gold-400 transition-colors">Come funziona</a>
-        <a href="docs.html" class="nav-link hover:text-jh-gold-400 transition-colors">Docs</a>
-        <a href="#download" class="nav-link hover:text-jh-gold-400 transition-colors">Download</a>
-        <a href="#donate" class="nav-link hover:text-jh-gold-400 transition-colors">Dona</a>
+        <a href="#features" class="hover:text-jh-gold-400 transition-colors">Funzionalit&agrave;</a>
+        <a href="#how" class="hover:text-jh-gold-400 transition-colors">Come funziona</a>
+        <a href="docs.html" class="hover:text-jh-gold-400 transition-colors">Docs</a>
+        <a href="#download" class="hover:text-jh-gold-400 transition-colors">Download</a>
+        <a href="#donate" class="hover:text-jh-gold-400 transition-colors">Dona</a>
       </div>
       <div class="hidden items-center gap-3 md:flex">
         <a href="#download" class="rounded-full bg-jh-gold-500 px-5 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-jh-gold-500/20 transition hover:bg-jh-gold-400 hover:shadow-jh-gold-500/40">
@@ -77,11 +76,11 @@
       </button>
     </div>
     <div id="mobile-menu" class="hidden border-t border-white/5 px-6 py-4 md:hidden">
-      <a href="#features" class="nav-link block py-2 text-slate-300 hover:text-jh-gold-400">Funzionalit&agrave;</a>
-      <a href="#how" class="nav-link block py-2 text-slate-300 hover:text-jh-gold-400">Come funziona</a>
-      <a href="docs.html" class="nav-link block py-2 text-slate-300 hover:text-jh-gold-400">Docs</a>
-      <a href="#download" class="nav-link block py-2 text-slate-300 hover:text-jh-gold-400">Download</a>
-      <a href="#donate" class="nav-link block py-2 text-slate-300 hover:text-jh-gold-400">Dona</a>
+      <a href="#features" class="block py-2 text-slate-300 hover:text-jh-gold-400">Funzionalit&agrave;</a>
+      <a href="#how" class="block py-2 text-slate-300 hover:text-jh-gold-400">Come funziona</a>
+      <a href="docs.html" class="block py-2 text-slate-300 hover:text-jh-gold-400">Docs</a>
+      <a href="#download" class="block py-2 text-slate-300 hover:text-jh-gold-400">Download</a>
+      <a href="#donate" class="block py-2 text-slate-300 hover:text-jh-gold-400">Dona</a>
     </div>
   </nav>
 
@@ -101,13 +100,13 @@
             Gratuito e open source
           </div>
           <h1 class="mt-6 text-5xl font-extrabold tracking-tight lg:text-7xl font-orbitron">
-            La tua <span class="glow-text bg-gradient-to-r from-jh-gold-400 via-jh-blue-400 to-jh-red-400 bg-clip-text text-transparent">Android farm</span><br />in una sola finestra.
+            La tua <span class="bg-gradient-to-r from-jh-gold-400 via-jh-blue-400 to-jh-red-400 bg-clip-text text-transparent">Android farm</span><br />in una sola finestra.
           </h1>
           <p class="mt-6 text-lg text-slate-300 leading-relaxed max-w-2xl mx-auto lg:mx-0">
             Collega 20, 30 o pi&ugrave; smartphone via USB e gestiscili tutti da un'unica interfaccia: streaming, controllo mouse/tastiera, broadcast di azioni e operazioni di massa in pochi click.
           </p>
           <div class="mt-8 flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4">
-            <a href="#download" class="btn-shimmer w-full sm:w-auto rounded-full bg-jh-gold-500 px-8 py-3.5 text-center font-bold text-slate-950 shadow-xl shadow-jh-gold-500/25 transition hover:bg-jh-gold-400 hover:shadow-jh-gold-500/50">
+            <a href="#download" class="w-full sm:w-auto rounded-full bg-jh-gold-500 px-8 py-3.5 text-center font-bold text-slate-950 shadow-xl shadow-jh-gold-500/25 transition hover:bg-jh-gold-400 hover:shadow-jh-gold-500/50">
               Provalo gratis
             </a>
             <a href="#donate" class="w-full sm:w-auto rounded-full border border-white/10 bg-white/5 px-8 py-3.5 text-center font-semibold backdrop-blur-sm transition hover:bg-white/10 hover:border-white/20">
@@ -121,7 +120,7 @@
           </div>
         </div>
 
-        <div class="relative hero-tilt">
+        <div class="relative">
           <div class="absolute inset-0 rounded-3xl bg-gradient-to-tr from-jh-gold-500/20 to-jh-red-500/20 blur-2xl"></div>
           <div class="relative overflow-hidden rounded-3xl border border-white/10 bg-jh-dark/60 p-4 shadow-2xl backdrop-blur-xl">
             <div class="flex items-center gap-2 border-b border-white/5 pb-3">
@@ -218,7 +217,7 @@
           <div class="icon-box"><i data-lucide="download" class="h-6 w-6"></i></div>
           <h3 class="mt-5 text-xl font-semibold">Installazione</h3>
           <ul class="mt-3 space-y-2 text-sm text-slate-400 list-disc pl-4">
-            <li>Scarica <code class="text-jh-gold-400">GridDroid_Setup.exe</code> e avvia l'installer, oppure usa la versione portatile <code class="text-jh-gold-400">GridDroid.exe</code>.</li>
+            <li>Scarica <code class="text-jh-gold-400">GridDroid.exe</code> e avvia l'installer, oppure usa la versione portatile <code class="text-jh-gold-400">GridDroid.exe</code>.</li>
             <li>Non serve essere amministratori: l'installer copia l'app in <code class="text-jh-gold-400">%LOCALAPPDATA%\Programs\GridDroid</code> e crea le scorciatoie.</li>
           </ul>
         </article>
@@ -283,16 +282,16 @@
         <p class="mt-4 text-slate-400">Scegli la piattaforma. Entrambe le versioni sono open source e senza pubblicit&agrave;.</p>
       </div>
       <div class="grid gap-6 md:grid-cols-2">
-        <a href="https://outs3t.github.io/GridDroid/GridDroid_Setup.exe" class="download-card btn-shimmer group">
+        <a href="https://outs3t.github.io/GridDroid/GridDroid.exe" class="download-card group">
           <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-jh-blue-500/10 text-jh-blue-400 group-hover:bg-jh-blue-500 group-hover:text-white transition">
             <i data-lucide="monitor" class="h-7 w-7"></i>
           </div>
           <h3 class="text-2xl font-bold">Windows</h3>
-          <p class="mt-2 text-slate-400 text-sm">Installer .exe. Non richiede Python, ADB o installazioni aggiuntive.</p>
+          <p class="mt-2 text-slate-400 text-sm">Versione portatile .exe. Non richiede installazione, basta avviarla.</p>
           <span class="mt-6 inline-flex items-center gap-2 font-semibold text-jh-gold-400 group-hover:text-jh-gold-300">
-            Scarica GridDroid_Setup.exe <i data-lucide="arrow-right" class="h-4 w-4 transition group-hover:translate-x-1"></i>
+            Scarica GridDroid.exe <i data-lucide="arrow-right" class="h-4 w-4 transition group-hover:translate-x-1"></i>
           </span>
-          <p class="mt-3 text-xs text-slate-500">Versione: <span id="latestVersion" class="text-jh-gold-400 font-semibold">...</span> &middot; Aggiornamento: <span id="lastUpdate" class="text-jh-gold-400">caricamento...</span></p>
+          <p class="mt-3 text-xs text-slate-500">Ultimo aggiornamento: <span id="lastUpdate" class="text-jh-gold-400">caricamento...</span></p>
         </a>
         <div class="download-card group cursor-default">
           <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-jh-red-500/10 text-jh-red-400 group-hover:bg-jh-red-500 group-hover:text-white transition">
@@ -313,28 +312,16 @@
       </div>
       <script>
         (async function () {
-          // Versione
-          const verEl = document.getElementById('latestVersion');
-          if (verEl) {
-            try {
-              const vr = await fetch('version.json?t=' + Date.now());
-              const vdata = await vr.json();
-              verEl.textContent = 'v' + (vdata.version || '?');
-            } catch (e) {
-              verEl.textContent = '?';
-            }
-          }
-          // Data ultimo aggiornamento
           const el = document.getElementById('lastUpdate');
           if (!el) return;
           try {
-            const r = await fetch('https://api.github.com/repos/outs3t/GridDroid/commits?path=GridDroid_Setup.exe&sha=gh-pages&per_page=1');
+            const r = await fetch('https://api.github.com/repos/outs3t/GridDroid/commits?per_page=1');
             if (!r.ok) throw new Error('non disponibile');
             const data = await r.json();
             const commit = data[0];
             const date = new Date(commit.commit.committer.date);
             const sha = (commit.sha || '').substring(0, 7);
-            el.textContent = date.toLocaleString('it-IT') + (sha ? ' (' + sha + ')' : '');
+            el.textContent = date.toLocaleDateString('it-IT') + (sha ? ' (' + sha + ')' : '');
           } catch (e) {
             el.textContent = 'controlla su GitHub';
           }
