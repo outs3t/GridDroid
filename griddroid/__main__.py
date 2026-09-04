@@ -21,6 +21,7 @@ from urllib.request import urlopen
 import uvicorn
 
 from .config import load_settings
+from .log_manager import logs
 
 # Configurazione logging che funziona anche senza console (console=False)
 LOGGING_CONFIG = {
@@ -302,6 +303,11 @@ def _run_with_webview(url: str) -> None:
                 _cleanup_children()
             except Exception:
                 pass
+            try:
+                path = logs.save_to_file()
+                _log(f"Log salvato: {path}")
+            except Exception as exc:
+                _log(f"Errore salvataggio log: {exc}")
             _log("GridDroid chiuso")
             os._exit(0)
 
@@ -422,6 +428,11 @@ def main() -> None:
     finally:
         _stop_server()
         _cleanup_children()
+        try:
+            path = logs.save_to_file()
+            _log(f"Log salvato: {path}")
+        except Exception as exc:
+            _log(f"Errore salvataggio log: {exc}")
         _log("GridDroid chiuso")
         os._exit(0)
 

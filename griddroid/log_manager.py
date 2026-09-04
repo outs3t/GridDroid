@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import json
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Deque, List, Optional
 
 
@@ -88,6 +90,22 @@ class LogManager:
     def history(self, limit: int = 200) -> List[dict]:
         entries = list(self._entries)[-limit:]
         return [e.to_dict() for e in entries]
+
+    def save_to_file(self, logs_dir: Optional[Path] = None) -> Optional[Path]:
+        """Salva tutti i log accumulati in un file JSONL datato."""
+        if logs_dir is None:
+            from .config import CONFIG_DIR
+            logs_dir = CONFIG_DIR / "logs"
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            path = logs_dir / f"log-{timestamp}.jsonl"
+            with path.open("w", encoding="utf-8") as f:
+                for entry in self._entries:
+                    f.write(json.dumps(entry.to_dict(), ensure_ascii=False) + "\n")
+            return path
+        except Exception:
+            return None
 
 
 # Singleton globale
