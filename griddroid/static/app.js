@@ -11,7 +11,7 @@ const state = {
     fullscreenSerial: null,
     logCount: 0,
     ws: null,
-    gridCols: 10,
+    gridCols: 15,
     gridGap: 14,
     feedZoom: 1.0,
     sortBy: false,
