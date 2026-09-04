@@ -1460,6 +1460,30 @@ async function initSettings() {
             }
         });
     }
+
+    const btnExportConfig = document.getElementById("btnExportConfig");
+    if (btnExportConfig) {
+        btnExportConfig.addEventListener("click", async () => {
+            try {
+                const r = await fetch("/api/settings/export");
+                if (!r.ok) throw new Error("errore esportazione");
+                const blob = await r.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                const disp = r.headers.get("content-disposition") || "";
+                const m = disp.match(/filename="?([^"]+)"?/);
+                a.download = m ? m[1] : "griddroid-config.json";
+                a.href = url;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+                toast("Configurazione esportata", "success");
+            } catch (e) {
+                toast("Errore esportazione configurazione", "error");
+            }
+        });
+    }
 }
 
 // =====================================================================

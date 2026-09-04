@@ -13,16 +13,17 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .adb_manager import AdbManager
 from .bulk_actions import BulkActionRunner
-from .config import AppSettings, load_settings, save_settings
+from .config import AppSettings, load_settings, save_settings, load_labels, load_tags, load_played, load_known
 from .device import DeviceStatus
 from .input_relay import InputRelay
 from .log_manager import logs
@@ -555,6 +556,25 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                     dev.streaming = False
                     logs.error(f"Errore riavvio stream: {exc}", serial=serial)
         return {"ok": True}
+
+    @app.get("/api/settings/export")
+    async def export_settings():
+        payload = {
+            "version": __version__,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "settings": settings.model_dump(),
+            "labels": load_labels(),
+            "tags": load_tags(),
+            "played": load_played(),
+            "known": load_known(),
+        }
+        data = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+        filename = f"griddroid-config-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+        return Response(
+            content=data,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/api/server-info")
     async def server_info(request: Request):
