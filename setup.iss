@@ -1,5 +1,5 @@
 #define MyAppName "GridDroid"
-#define MyAppVersion "0.1.27"
+#define MyAppVersion "0.1.28"
 #define MyAppPublisher "GridDroid"
 #define MyAppExeName "GridDroid.exe"
 
