@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import traceback
+from typing import Optional
 import webbrowser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -97,6 +98,52 @@ def _wait_for_server(host: str, port: int, timeout: float = 20.0) -> bool:
             pass
         time.sleep(0.25)
     return False
+
+
+def _find_chrome_edge() -> Optional[str]:
+    """Trova Edge o Chrome su Windows."""
+    candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def _open_dual(url: str) -> None:
+    """Apre Edge/Chrome in app mode su tutti i monitor (Windows)."""
+    if os.name != "nt":
+        _open_browser(url)
+        return
+    try:
+        user32 = ctypes.windll.user32
+        x = user32.GetSystemMetrics(76)
+        y = user32.GetSystemMetrics(77)
+        w = user32.GetSystemMetrics(78)
+        h = user32.GetSystemMetrics(79)
+    except Exception as exc:
+        _log(f"GetSystemMetrics dual fallito: {exc}")
+        _open_browser(url)
+        return
+    browser = _find_chrome_edge()
+    if not browser:
+        _open_browser(url)
+        return
+    try:
+        subprocess.Popen(
+            [browser, f"--app={url}", f"--window-size={w},{h}", f"--window-position={x},{y}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=0x08000000,
+        )
+        _log(f"Dual monitor aperto: {w}x{h} @ {x},{y}")
+    except Exception as exc:
+        _log(f"Apertura dual fallita: {exc}")
+        _open_browser(url)
 
 
 def _open_browser(url: str) -> None:
@@ -292,6 +339,10 @@ def main() -> None:
         help="Apre automaticamente il browser",
     )
     parser.add_argument(
+        "--dual", action="store_true",
+        help="Apre Edge/Chrome in app mode su tutti i monitor (Windows)",
+    )
+    parser.add_argument(
         "--message", action="store_true",
         help="Mostra solo l'URL in una finestra di messaggio",
     )
@@ -356,7 +407,10 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        if args.browser:
+        if args.dual:
+            _open_dual(url)
+            _wait_for_user_interrupt()
+        elif args.browser:
             _open_browser(url)
             _wait_for_user_interrupt()
         elif args.message:
