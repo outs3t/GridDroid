@@ -513,7 +513,7 @@ body::before {
     background: transparent;
     border: 1px solid transparent;
     border-radius: var(--r-xs);
-    padding: 2px 4px;
+    padding: 2px 22px 2px 8px;
     pointer-events: auto;
     cursor: text;
     outline: none;
@@ -526,16 +526,31 @@ body::before {
     box-sizing: border-box;
 }
 
-.device-name:focus {
-    background: rgba(0,0,0,0.4);
-    border-color: var(--accent);
-}
-
 .device-label-row {
     display: flex;
     align-items: center;
     gap: 8px;
     width: 100%;
+    position: relative;
+}
+
+.status-dot,
+.device-status-label {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.device-status-label {
+    right: 20px;
+    font-size: 9px;
+    text-transform: uppercase;
+}
+
+.device-name:focus {
+    background: rgba(0,0,0,0.4);
+    border-color: var(--accent);
 }
 
 .status-dot {

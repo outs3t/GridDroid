@@ -564,6 +564,14 @@ function startStreamWs(feedEl, serial) {
                 // Frame senza slice VCL (es. solo SPS/PPS/SEI)
                 return;
             }
+            // Se il decoder e' in ritardo, salta qualche frame per non accumulare lag
+            if (decoder.decodeQueueSize > 2) {
+                if (isKey) {
+                    session.gotKey = false;
+                    session.configured = false;
+                }
+                return;
+            }
             decoder.decode(new EncodedVideoChunk({
                 type: isKey ? "key" : "delta",
                 timestamp: session.ts,
