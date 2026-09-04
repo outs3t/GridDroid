@@ -33,21 +33,30 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     app = FastAPI(title="GridDroid", version="0.1.0")
 
-    # Protezione CSRF / Origin: accettiamo solo richieste dalla stessa origine.
+    # Protezione CSRF / Origin: accettiamo richieste dalla stessa origine.
+    # L'origine valida e' dedotta dall'header Host della richiesta, cosi'
+    # funziona sia in locale (127.0.0.1/localhost) sia da un altro PC
+    # che accede tramite l'IP del server.
     _allowed_hosts = {"127.0.0.1", "localhost"}
     if settings.host and settings.host not in ("0.0.0.0", "::"):
         _allowed_hosts.add(settings.host)
     _allowed_origins = {f"http://{h}:{settings.port}" for h in _allowed_hosts}
 
-    def _origin_allowed(origin: Optional[str]) -> bool:
+    def _origin_allowed(origin: Optional[str], host: Optional[str]) -> bool:
         if not origin:
             return True
-        return origin in _allowed_origins
+        if origin in _allowed_origins:
+            return True
+        if host:
+            if origin == f"http://{host}" or origin == f"https://{host}":
+                return True
+        return False
 
     @app.middleware("http")
     async def _origin_middleware(request: Request, call_next):
         origin = request.headers.get("origin")
-        if origin and not _origin_allowed(origin):
+        host = request.headers.get("host")
+        if origin and not _origin_allowed(origin, host):
             return JSONResponse({"error": "origine non consentita"}, status_code=403)
         return await call_next(request)
 
