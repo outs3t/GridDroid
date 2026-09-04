@@ -21,19 +21,23 @@ KNOWN_FILE = CONFIG_DIR / "known.json"
 
 
 def _find_bundled_adb() -> str:
-    """Cerca adb.exe: preferisce il sistema se disponibile, altrimenti bundled."""
-    # Se c'è un adb nel PATH di sistema (es. Android SDK) usiamo quello:
-    # è più aggiornato e vede meglio grandi farm già autorizzate.
+    """Cerca adb.exe: preferisce il bundled nel .exe portatile, altrimenti sistema."""
+    # Nel .exe PyInstaller usiamo SEMPRE l'adb bundled, altrimenti sui PC
+    # clienti puo' capitare un adb di sistema vecchio/non funzionante e
+    # risultare "0 dispositivi".
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)
+        bundled = base / "tools" / "adb.exe"
+        if bundled.exists():
+            return str(bundled)
+
+    # In sviluppo: se c'è un adb nel PATH (es. Android SDK) usiamo quello
     found = shutil.which("adb")
     if found:
         return found
 
-    # PyInstaller: sys._MEIPASS è la cartella temporanea dell'eseguibile
-    if getattr(sys, "frozen", False):
-        base = Path(sys._MEIPASS)
-    else:
-        base = Path(__file__).parent.parent
-
+    # Fallback sorgente
+    base = Path(__file__).parent.parent
     bundled = base / "tools" / "adb.exe"
     if bundled.exists():
         return str(bundled)
