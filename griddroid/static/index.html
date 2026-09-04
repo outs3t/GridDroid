@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
-    <link rel="stylesheet" href="/static/style.css?v=34">
+    <link rel="stylesheet" href="/static/style.css?v=35">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -41,36 +41,17 @@
                 </select>
                 <input type="text" id="deviceSearchInput" placeholder="Cerca..." />
             </div>
-            <button class="btn" id="btnRestartAdbHeader" title="Riavvia server ADB per forzare rilevamento dispositivi">
-                ⟳ ADB
+            <button class="btn btn-toggle" id="btnSort" title="Ordina A-Z">A-Z</button>
+            <button class="btn btn-accent has-badge" id="btnResetPlayed" title="Ripristina dispositivi giocati" style="display:none">
+                Ripristina giocati <span class="badge" id="resetPlayedBadge">0</span>
             </button>
-            <button class="btn" id="btnCheckUpdate" title="Controlla aggiornamenti">
-                ⬇ Aggiorna
-            </button>
-            <button class="btn btn-toggle" id="btnBroadcast" title="Modalità Broadcast">
-                Broadcast
-            </button>
-            <button class="btn btn-toggle" id="btnSort" title="Ordina A-Z">
-                A-Z
-            </button>
-            <button class="btn" id="btnStartAll" title="Avvia tutti gli stream">
-                Avvia Stream
-            </button>
-            <button class="btn" id="btnStopAll" title="Ferma tutti gli stream">
-                Ferma Stream
-            </button>
-            <button class="btn btn-accent" id="btnResetPlayed" title="Ripristina dispositivi giocati" style="display:none">
-                Ripristina giocati
-            </button>
+            <button class="btn" id="btnCheckUpdate" title="Controlla aggiornamenti">⬇ Aggiorna</button>
             <div class="zoom-controls">
                 <button class="btn-icon" id="btnZoomOut" title="Riduci zoom -5%">−</button>
                 <span class="zoom-label" id="zoomLabel">100%</span>
                 <button class="btn-icon" id="btnZoomIn" title="Aumenta zoom +5%">+</button>
                 <button class="btn-icon" id="btnZoomReset" title="Reset zoom">⊙</button>
             </div>
-            <button class="btn btn-accent" id="btnSidebar" title="Operazioni di massa">
-                Pannello
-            </button>
         </div>
     </header>
 
@@ -87,179 +68,205 @@
             <div class="device-grid" id="deviceGrid"></div>
         </div>
 
-        <!-- SIDEBAR -->
-        <aside class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <h3>Operazioni di Massa</h3>
-                <button class="btn-icon" id="btnCloseSidebar">✕</button>
+        <!-- DOCK / FLYOUTS -->
+    <aside class="right-dock" id="rightDock">
+        <!-- Stream -->
+        <div class="dock-item" data-target="flyoutStream" tabindex="0" role="button" title="Stream">
+            <span class="dock-icon">▶</span>
+            <span class="dock-label">Stream</span>
+            <div class="flyout" id="flyoutStream">
+                <div class="flyout-header"><span>Stream</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
+                <div class="flyout-body">
+                    <div class="sidebar-section active">
+                        <h4>Controllo</h4>
+                        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                            <button class="btn" id="btnStartAll">Avvia tutti</button>
+                            <button class="btn" id="btnStopAll">Ferma tutti</button>
+                            <button class="btn btn-toggle" id="btnBroadcast">Broadcast</button>
+                        </div>
+                    </div>
+                    <div class="sidebar-section">
+                        <h4>Qualità</h4>
+                        <div class="input-group">
+                            <label>Max FPS</label>
+                            <input type="number" id="maxFps" value="15" min="1" max="60" />
+                        </div>
+                        <div class="input-group">
+                            <label>Risoluzione max (px)</label>
+                            <input type="number" id="maxSize" value="480" min="240" max="1920" step="80" />
+                        </div>
+                        <div class="input-group" style="margin-top:4px;">
+                            <button class="btn btn-accent" id="btnApplyStream" style="width:100%;">Applica qualità stream</button>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="sidebar-content">
-                <!-- Script ADB -->
-                <div class="sidebar-section">
-                    <h4>Script ADB</h4>
-                    <div class="input-group">
-                        <label>Esegui su</label>
-                        <div class="segmented-control" id="scriptTargetGroup" role="group" aria-label="Target esecuzione">
-                            <button type="button" class="segment-btn active" data-value="selezionati" aria-pressed="true">Selezionati</button>
-                            <button type="button" class="segment-btn" data-value="tutti" aria-pressed="false">Tutti</button>
+        </div>
+
+        <!-- Dispositivi -->
+        <div class="dock-item" data-target="flyoutDevices" tabindex="0" role="button" title="Dispositivi">
+            <span class="dock-icon">📱</span>
+            <span class="dock-label">Dispositivi</span>
+            <div class="flyout" id="flyoutDevices">
+                <div class="flyout-header"><span>Dispositivi</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
+                <div class="flyout-body">
+                    <div class="sidebar-section active">
+                        <h4>Azioni Globali</h4>
+                        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                            <button class="btn btn-success" id="btnWakeAll">Accendi Tutti</button>
+                            <button class="btn" id="btnSleepAll">Spegni Tutti</button>
+                            <button class="btn btn-danger" id="btnRebootAll">Riavvia Tutti</button>
                         </div>
-                        <input type="hidden" id="scriptTarget" value="selezionati" />
                     </div>
-                    <div class="input-group">
-                        <input type="text" id="scriptFiltro" placeholder="Cerca uno script..." />
-                    </div>
-                    <div id="scriptLista" class="script-lista"></div>
-                    <div id="scriptOutputWrap" class="script-output-wrap" style="display:none;">
-                        <div class="script-output-header">
-                            <span>Output</span>
-                            <button class="log-action-btn" id="btnCloseScriptOutput" title="Chiudi output">Chiudi</button>
+                    <div class="sidebar-section">
+                        <h4>Selezione</h4>
+                        <div style="display:flex;gap:6px;margin-bottom:10px;">
+                            <button class="btn btn-success" id="btnSelectAll" style="flex:1;">Tutti</button>
+                            <button class="btn" id="btnDeselectAll" style="flex:1;">Nessuno</button>
                         </div>
-                        <pre id="scriptOutput" class="script-output"></pre>
+                        <div id="phoneSelectionList" class="phone-list"></div>
+                    </div>
+                    <div class="sidebar-section">
+                        <h4>Diagnostica ADB</h4>
+                        <p style="font-size:11px;color:var(--text-2);margin:0 0 8px 0;">
+                            Se il telefono non mostra la richiesta di autorizzazione, revoca le autorizzazioni debug USB sul telefono e premi qui.
+                        </p>
+                        <div class="input-group" style="margin-top:4px;">
+                            <button class="btn" id="btnRestartAdb" style="width:100%;">Riavvia daemon ADB</button>
+                        </div>
                     </div>
                 </div>
+            </div>
+        </div>
 
-                <!-- Bookmakers -->
-                <div class="sidebar-section">
-                    <h4>Bookmakers</h4>
-                    <div class="input-group" style="margin-top:0;margin-bottom:10px;">
-                        <input type="text" id="bookmakerSearch" placeholder="Cerca sito..." />
-                        <button class="btn" id="btnToggleBookmakerAdd" style="margin-left:4px;flex:0 0 auto;" title="Aggiungi sito">+</button>
+        <!-- Strumenti -->
+        <div class="dock-item" data-target="flyoutTools" tabindex="0" role="button" title="Strumenti">
+            <span class="dock-icon">🛠</span>
+            <span class="dock-label">Strumenti</span>
+            <div class="flyout" id="flyoutTools">
+                <div class="flyout-header"><span>Strumenti</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
+                <div class="flyout-body">
+                    <div class="sidebar-section active">
+                        <h4>Script ADB</h4>
+                        <div class="input-group">
+                            <label>Esegui su</label>
+                            <div class="segmented-control" id="scriptTargetGroup" role="group" aria-label="Target esecuzione">
+                                <button type="button" class="segment-btn active" data-value="selezionati" aria-pressed="true">Selezionati</button>
+                                <button type="button" class="segment-btn" data-value="tutti" aria-pressed="false">Tutti</button>
+                            </div>
+                            <input type="hidden" id="scriptTarget" value="selezionati" />
+                        </div>
+                        <div class="input-group">
+                            <input type="text" id="scriptFiltro" placeholder="Cerca uno script..." />
+                        </div>
+                        <div id="scriptLista" class="script-lista"></div>
+                        <div id="scriptOutputWrap" class="script-output-wrap" style="display:none;">
+                            <div class="script-output-header">
+                                <span>Output</span>
+                                <button class="log-action-btn" id="btnCloseScriptOutput" title="Chiudi output">Chiudi</button>
+                            </div>
+                            <pre id="scriptOutput" class="script-output"></pre>
+                        </div>
                     </div>
-                    <div id="bookmakerAdd" style="display:none;margin-bottom:10px;">
-                        <input type="text" id="newBookmakerName" placeholder="Nome sito" style="width:100%;margin-bottom:6px;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);" />
-                        <input type="text" id="newBookmakerUrl" placeholder="https://..." style="width:100%;margin-bottom:6px;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);" />
-                        <button class="btn btn-accent" id="btnSaveBookmaker" style="width:100%;">Aggiungi</button>
-                    </div>
-                    <div id="bookmakerGrid" class="bookmaker-grid"></div>
-                    <button class="btn btn-accent" id="btnOpenPayPalApp" style="margin-top:12px;width:100%;">Apri app PayPal</button>
-                </div>
-
-                <!-- APK Install -->
-                <div class="sidebar-section">
-                    <h4>Installazione APK</h4>
-                    <div class="drop-zone" id="apkDropZone">
-                        Trascina un file .apk qui<br>oppure clicca per selezionare
-                        <input type="file" accept=".apk" id="apkFileInput" style="display:none">
-                    </div>
-                    <div class="progress-bar" id="apkProgress" style="display:none">
-                        <div class="progress-bar-fill" id="apkProgressFill"></div>
-                    </div>
-                    <div id="apkStatus" style="font-size:11px;color:var(--text-2);margin-top:4px"></div>
-                </div>
-
-                <!-- Azioni globali -->
-                <div class="sidebar-section">
-                    <h4>Azioni Globali</h4>
-                    <div style="display:flex;flex-wrap:wrap;gap:6px;">
-                        <button class="btn btn-success" id="btnWakeAll">Accendi Tutti</button>
-                        <button class="btn" id="btnSleepAll">Spegni Tutti</button>
-                        <button class="btn btn-danger" id="btnRebootAll">Riavvia Tutti</button>
-                    </div>
-                </div>
-
-                <!-- Gruppi -->
-                <div class="sidebar-section">
-                    <h4>Gruppi</h4>
-                    <div class="input-group" style="margin-top:0;margin-bottom:10px;">
-                        <input type="text" id="newGroupName" placeholder="Nuovo gruppo..." />
-                        <button class="btn btn-accent" id="btnCreateGroup" style="margin-left:4px;flex:0 0 auto;">+</button>
-                    </div>
-                    <div id="groupList" class="group-list" style="margin-bottom:14px;"></div>
-                    <div style="border-top:1px solid var(--border);padding-top:14px;">
+                    <div class="sidebar-section">
+                        <h4>Macro</h4>
+                        <div class="macro-status" id="macroStatus">Pronta</div>
                         <div class="input-group" style="margin-top:0;">
-                            <label class="input-label">Assegna a dispositivo</label>
-                            <select id="assignDevice" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);"></select>
+                            <input type="text" id="macroName" placeholder="Nome macro (opzionale)..." />
                         </div>
-                        <div id="assignGroupList" class="assign-group-list"></div>
-                        <button class="btn btn-accent" id="btnSaveAssignment" style="width:100%;margin-top:8px;">Salva assegnazione</button>
+                        <div style="display:flex;gap:6px;">
+                            <button class="btn btn-danger" id="btnMacroRecord" style="flex:1;">Registra</button>
+                            <button class="btn" id="btnMacroStop" style="flex:1;" disabled>Ferma</button>
+                        </div>
+                        <div id="macroList" class="macro-list"></div>
+                    </div>
+                    <div class="sidebar-section">
+                        <h4>Comando Shell</h4>
+                        <div class="input-group">
+                            <textarea id="shellCommand" placeholder="es: am start -n com.app/.MainActivity"></textarea>
+                        </div>
+                        <button class="btn btn-accent" id="btnRunShell">Esegui su tutti</button>
+                        <pre id="shellOutput" style="font-size:10px;color:var(--text-2);margin-top:8px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
+                    </div>
+                    <div class="sidebar-section">
+                        <h4>Invio File</h4>
+                        <div class="drop-zone" id="fileDropZone">
+                            Trascina un file qui
+                            <input type="file" id="pushFileInput" style="display:none">
+                        </div>
+                        <div class="input-group" style="margin-top:8px">
+                            <label>Percorso remoto</label>
+                            <input type="text" id="remotePath" value="/sdcard/" />
+                        </div>
+                        <div id="pushStatus" style="font-size:11px;color:var(--text-2);margin-top:4px"></div>
+                    </div>
+                    <div class="sidebar-section">
+                        <h4>Installazione APK</h4>
+                        <div class="drop-zone" id="apkDropZone">
+                            Trascina un file .apk qui<br>oppure clicca per selezionare
+                            <input type="file" accept=".apk" id="apkFileInput" style="display:none">
+                        </div>
+                        <div class="progress-bar" id="apkProgress" style="display:none">
+                            <div class="progress-bar-fill" id="apkProgressFill"></div>
+                        </div>
+                        <div id="apkStatus" style="font-size:11px;color:var(--text-2);margin-top:4px"></div>
                     </div>
                 </div>
-
-                <!-- Selezione telefoni -->
-                <div class="sidebar-section">
-                    <h4>Selezione</h4>
-                    <div style="display:flex;gap:6px;margin-bottom:10px;">
-                        <button class="btn btn-success" id="btnSelectAll" style="flex:1;">Tutti</button>
-                        <button class="btn" id="btnDeselectAll" style="flex:1;">Nessuno</button>
-                    </div>
-                    <div id="phoneSelectionList" class="phone-list"></div>
-                </div>
-
-                <!-- Macro -->
-                <div class="sidebar-section">
-                    <h4>Macro</h4>
-                    <div class="macro-status" id="macroStatus">Pronta</div>
-                    <div class="input-group" style="margin-top:0;">
-                        <input type="text" id="macroName" placeholder="Nome macro (opzionale)..." />
-                    </div>
-                    <div style="display:flex;gap:6px;">
-                        <button class="btn btn-danger" id="btnMacroRecord" style="flex:1;">Registra</button>
-                        <button class="btn" id="btnMacroStop" style="flex:1;" disabled>Ferma</button>
-                    </div>
-                    <div id="macroList" class="macro-list"></div>
-                </div>
-
-                <!-- Shell Command -->
-                <div class="sidebar-section">
-                    <h4>Comando Shell</h4>
-                    <div class="input-group">
-                        <textarea id="shellCommand" placeholder="es: am start -n com.app/.MainActivity"></textarea>
-                    </div>
-                    <button class="btn btn-accent" id="btnRunShell">Esegui su tutti</button>
-                    <pre id="shellOutput" style="font-size:10px;color:var(--text-2);margin-top:8px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
-                </div>
-
-                <!-- Push File -->
-                <div class="sidebar-section">
-                    <h4>Invio File</h4>
-                    <div class="drop-zone" id="fileDropZone">
-                        Trascina un file qui
-                        <input type="file" id="pushFileInput" style="display:none">
-                    </div>
-                    <div class="input-group" style="margin-top:8px">
-                        <label>Percorso remoto</label>
-                        <input type="text" id="remotePath" value="/sdcard/" />
-                    </div>
-                    <div id="pushStatus" style="font-size:11px;color:var(--text-2);margin-top:4px"></div>
-                </div>
-
-                <!-- Impostazioni -->
-                <div class="sidebar-section">
-                    <h4>Impostazioni</h4>
-                    <div class="input-group">
-                        <label>Max colonne</label>
-                        <input type="number" id="gridCols" value="15" min="2" max="20" />
-                    </div>
-                    <div class="input-group">
-                        <label>Distanza (px)</label>
-                        <input type="number" id="gridGap" value="14" min="0" max="100" step="2" />
-                    </div>
-                    <div class="input-group">
-                        <label>Max FPS</label>
-                        <input type="number" id="maxFps" value="15" min="1" max="60" />
-                    </div>
-                    <div class="input-group">
-                        <label>Risoluzione max (px)</label>
-                        <input type="number" id="maxSize" value="480" min="240" max="1920" step="80" />
-                    </div>
-                    <div class="input-group" style="margin-top:4px;">
-                        <button class="btn btn-accent" id="btnApplyStream" style="width:100%;">Applica qualità stream</button>
-                    </div>
-                </div>
-
-                <!-- Diagnostica ADB -->
-                <div class="sidebar-section">
-                    <h4>Diagnostica ADB</h4>
-                    <p style="font-size:11px;color:var(--text-2);margin:0 0 8px 0;">
-                        Se il telefono non mostra la richiesta di autorizzazione, revoca le autorizzazioni debug USB sul telefono e premi qui.
-                    </p>
-                    <div class="input-group" style="margin-top:4px;">
-                        <button class="btn" id="btnRestartAdb" style="width:100%;">Riavvia daemon ADB</button>
-                    </div>
-                </div>
-
             </div>
-        </aside>
+        </div>
+
+        <!-- Gestione -->
+        <div class="dock-item" data-target="flyoutManage" tabindex="0" role="button" title="Gestione">
+            <span class="dock-icon">⚙</span>
+            <span class="dock-label">Gestione</span>
+            <div class="flyout" id="flyoutManage">
+                <div class="flyout-header"><span>Gestione</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
+                <div class="flyout-body">
+                    <div class="sidebar-section active">
+                        <h4>Gruppi</h4>
+                        <div class="input-group" style="margin-top:0;margin-bottom:10px;">
+                            <input type="text" id="newGroupName" placeholder="Nuovo gruppo..." />
+                            <button class="btn btn-accent" id="btnCreateGroup" style="margin-left:4px;flex:0 0 auto;">+</button>
+                        </div>
+                        <div id="groupList" class="group-list" style="margin-bottom:14px;"></div>
+                        <div style="border-top:1px solid var(--border);padding-top:14px;">
+                            <div class="input-group" style="margin-top:0;">
+                                <label class="input-label">Assegna a dispositivo</label>
+                                <select id="assignDevice" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);"></select>
+                            </div>
+                            <div id="assignGroupList" class="assign-group-list"></div>
+                            <button class="btn btn-accent" id="btnSaveAssignment" style="width:100%;margin-top:8px;">Salva assegnazione</button>
+                        </div>
+                    </div>
+                    <div class="sidebar-section">
+                        <h4>Bookmakers</h4>
+                        <div class="input-group" style="margin-top:0;margin-bottom:10px;">
+                            <input type="text" id="bookmakerSearch" placeholder="Cerca sito..." />
+                            <button class="btn" id="btnToggleBookmakerAdd" style="margin-left:4px;flex:0 0 auto;" title="Aggiungi sito">+</button>
+                        </div>
+                        <div id="bookmakerAdd" style="display:none;margin-bottom:10px;">
+                            <input type="text" id="newBookmakerName" placeholder="Nome sito" style="width:100%;margin-bottom:6px;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);" />
+                            <input type="text" id="newBookmakerUrl" placeholder="https://..." style="width:100%;margin-bottom:6px;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);" />
+                            <button class="btn btn-accent" id="btnSaveBookmaker" style="width:100%;">Aggiungi</button>
+                        </div>
+                        <div id="bookmakerGrid" class="bookmaker-grid"></div>
+                        <button class="btn btn-accent" id="btnOpenPayPalApp" style="margin-top:12px;width:100%;">Apri app PayPal</button>
+                    </div>
+                    <div class="sidebar-section">
+                        <h4>Impostazioni griglia</h4>
+                        <div class="input-group">
+                            <label>Max colonne</label>
+                            <input type="number" id="gridCols" value="15" min="2" max="20" />
+                        </div>
+                        <div class="input-group">
+                            <label>Distanza (px)</label>
+                            <input type="number" id="gridGap" value="14" min="0" max="100" step="2" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </aside>
     </div>
 
     <!-- LOG TOGGLE BAR -->
@@ -311,7 +318,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=39"></script>
+    <script src="/static/app.js?v=40"></script>
     <script>
     (async () => {
         try {

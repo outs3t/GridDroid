@@ -896,20 +896,67 @@ function updateHeader() {
     if (btnBroadcast) btnBroadcast.classList.toggle("active", state.broadcastMode);
 
     const btnResetPlayed = document.getElementById("btnResetPlayed");
-    if (btnResetPlayed) btnResetPlayed.style.display = played > 0 ? "" : "none";
+    const badgeResetPlayed = document.getElementById("resetPlayedBadge");
+    if (btnResetPlayed) {
+        btnResetPlayed.style.display = played > 0 ? "" : "none";
+        if (badgeResetPlayed) badgeResetPlayed.textContent = String(played);
+    }
 }
 
 // =====================================================================
-// Sidebar
+// Right dock + flyouts
 // =====================================================================
 
-function initSidebar() {
-    const sidebar = document.getElementById("sidebar");
-    const btnOpen = document.getElementById("btnSidebar");
-    const btnClose = document.getElementById("btnCloseSidebar");
+function initDock() {
+    const rightDock = document.getElementById("rightDock");
+    if (!rightDock) return;
 
-    btnOpen.addEventListener("click", () => sidebar.classList.toggle("open"));
-    btnClose.addEventListener("click", () => sidebar.classList.remove("open"));
+    rightDock.querySelectorAll(".dock-item").forEach((item) => {
+        const target = item.dataset.target;
+        const flyout = target ? document.getElementById(target) : item.querySelector(".flyout");
+        if (!flyout) return;
+
+        item.addEventListener("click", (e) => {
+            if (e.target.closest(".flyout")) return;
+            const wasOpen = flyout.classList.contains("active");
+            closeAllFlyouts();
+            if (!wasOpen) {
+                flyout.classList.add("active");
+                item.classList.add("active");
+            }
+        });
+
+        item.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                item.click();
+            }
+        });
+    });
+
+    rightDock.querySelectorAll(".flyout-close").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const flyout = btn.closest(".flyout");
+            if (flyout) closeFlyout(flyout);
+        });
+    });
+
+    document.addEventListener("click", (e) => {
+        if (e.target.closest("#rightDock")) return;
+        closeAllFlyouts();
+    });
+
+    function closeAllFlyouts() {
+        rightDock.querySelectorAll(".flyout.active").forEach((flyout) => closeFlyout(flyout));
+    }
+
+    function closeFlyout(flyout) {
+        flyout.classList.remove("active");
+        const target = flyout.id;
+        const item = rightDock.querySelector(`.dock-item[data-target="${target}"]`);
+        if (item) item.classList.remove("active");
+    }
 }
 
 // =====================================================================
@@ -1559,27 +1606,6 @@ function initHeaderButtons() {
             state.sortBy = !state.sortBy;
             btnSort.classList.toggle("active", state.sortBy);
             renderGrid();
-        });
-    }
-
-    // Restart ADB dall'header
-    const btnRestartAdbHeader = document.getElementById("btnRestartAdbHeader");
-    if (btnRestartAdbHeader) {
-        btnRestartAdbHeader.addEventListener("click", async () => {
-            btnRestartAdbHeader.disabled = true;
-            toast("Riavvio server ADB in corso...");
-            try {
-                const r = await fetch("/api/adb/restart", { method: "POST" });
-                const data = await r.json();
-                if (r.ok && data.ok) {
-                    toast("Server ADB riavviato. Rilevamento dispositivi in corso.", "success");
-                } else {
-                    toast(data.error || "Errore riavvio ADB", "error");
-                }
-            } catch (e) {
-                toast("Errore riavvio ADB", "error");
-            }
-            btnRestartAdbHeader.disabled = false;
         });
     }
 
@@ -2358,23 +2384,24 @@ function initSelection() {
 }
 
 function initAccordion() {
-    const sidebar = document.getElementById("sidebar");
-    if (!sidebar) return;
-    const sections = sidebar.querySelectorAll(".sidebar-section");
-
-    sections.forEach((sec) => {
+    document.querySelectorAll(".flyout .sidebar-section").forEach((sec) => {
         const h4 = sec.querySelector("h4");
         if (!h4) return;
         h4.addEventListener("click", () => {
             const wasActive = sec.classList.contains("active");
-            sections.forEach((s) => s.classList.remove("active"));
+            const flyout = sec.closest(".flyout");
+            const siblings = flyout ? flyout.querySelectorAll(".sidebar-section") : [];
+            siblings.forEach((s) => s.classList.remove("active"));
             if (!wasActive) sec.classList.add("active");
         });
     });
 
-    if (sections.length && !sidebar.querySelector(".sidebar-section.active")) {
-        sections[0].classList.add("active");
-    }
+    document.querySelectorAll(".flyout").forEach((flyout) => {
+        const sections = flyout.querySelectorAll(".sidebar-section");
+        if (sections.length && !flyout.querySelector(".sidebar-section.active")) {
+            sections[0].classList.add("active");
+        }
+    });
 }
 
 // =====================================================================
@@ -2406,7 +2433,7 @@ function initSearch() {
 
 document.addEventListener("DOMContentLoaded", () => {
     connectWebSocket();
-    initSidebar();
+    initDock();
     initAccordion();
     initBulkActions();
     initScriptPanel();

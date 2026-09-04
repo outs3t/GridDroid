@@ -60,6 +60,7 @@
     --dur-slow: 0.40s;
 
     --sidebar-w: 360px;
+    --dock-w: 56px;
     --header-h: 56px;
     --logbar-h: 32px;
 }
@@ -337,6 +338,7 @@ body::before {
     flex: 1;
     overflow-y: auto;
     padding: 16px;
+    padding-right: 72px;
     background-color: #090a0c;
     background-image:
         linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
@@ -1656,7 +1658,147 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
     padding: 3px 7px;
 }
 
+/* ===== RIGHT DOCK / FLYOUTS ===== */
+.right-dock {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: var(--dock-w);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 0;
+    background:
+        linear-gradient(180deg, #13151a, #0f1115),
+        #13151a;
+    border-left: 1px solid rgba(212, 175, 53, 0.10);
+    box-shadow: -6px 0 30px rgba(0,0,0,0.40);
+    z-index: 50;
+}
+
+.dock-item {
+    position: relative;
+    width: 44px;
+    min-height: 44px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: all var(--dur-fast) var(--ease);
+    user-select: none;
+}
+
+.dock-item:hover,
+.dock-item.active {
+    background: rgba(255,255,255,0.05);
+    border-color: var(--border-hover);
+    color: var(--text-0);
+    box-shadow: 0 0 14px rgba(212, 175, 53, 0.10);
+}
+
+.dock-item.active {
+    color: #d4af35;
+    border-color: rgba(212, 175, 53, 0.35);
+    background: rgba(212, 175, 53, 0.08);
+}
+
+.dock-icon {
+    font-size: 18px;
+    line-height: 1;
+    filter: drop-shadow(0 1px 1px rgba(0,0,0,0.4));
+}
+
+.dock-label {
+    font-size: 8px;
+    font-weight: 600;
+    margin-top: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.flyout {
+    position: fixed;
+    top: var(--header-h);
+    right: var(--dock-w);
+    bottom: var(--logbar-h);
+    width: 360px;
+    background: rgba(19, 21, 26, 0.92);
+    backdrop-filter: blur(18px) saturate(1.4);
+    border-left: 1px solid rgba(212, 175, 53, 0.14);
+    box-shadow: -10px 0 40px rgba(0,0,0,0.55);
+    transform: translateX(calc(100% + var(--dock-w)));
+    transition: transform var(--dur) var(--ease);
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.flyout.active {
+    transform: translateX(0);
+}
+
+.flyout-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #1a1d23, #15171c);
+    flex-shrink: 0;
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--text-0);
+    font-family: 'SF Mono', 'Consolas', monospace;
+}
+
+.flyout-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    min-height: 0;
+}
+
+.flyout .sidebar-section {
+    margin-bottom: 10px;
+}
+
+.flyout .sidebar-section:last-child {
+    margin-bottom: 0;
+}
+
+.btn .badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--red);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 800;
+    margin-left: 6px;
+    box-shadow: 0 2px 6px rgba(255, 69, 58, 0.35);
+}
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 1200px) {
-    :root { --sidebar-w: 300px; }
+    .flyout { width: 320px; }
+}
+
+@media (max-width: 900px) {
+    .right-dock { width: 48px; }
+    .flyout { width: 280px; right: var(--dock-w); }
+    .grid-container { padding-right: 64px; }
 }
