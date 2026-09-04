@@ -37,11 +37,7 @@ function connectWebSocket() {
         try {
             const msg = JSON.parse(event.data);
             if (msg.type === "devices") {
-                state.devices = msg.data;
-                state.broadcastMode = msg.broadcast;
-                state.focusedSerial = msg.focused;
-                renderGrid();
-                updateHeader();
+                updateDevicesState(msg);
             } else if (msg.type === "log") {
                 appendLog(msg.data);
             }
@@ -58,6 +54,29 @@ function connectWebSocket() {
     ws.onerror = () => {
         ws.close();
     };
+}
+
+function updateDevicesState(msg) {
+    state.devices = msg.data || [];
+    state.broadcastMode = msg.broadcast;
+    state.focusedSerial = msg.focused;
+    try {
+        renderGrid();
+    } catch (e) {
+        console.error("Errore renderGrid:", e);
+    }
+    updateHeader();
+}
+
+async function pollDevices() {
+    try {
+        const r = await fetch("/api/devices");
+        if (!r.ok) return;
+        const msg = await r.json();
+        updateDevicesState(msg);
+    } catch (e) {
+        console.error("Errore polling devices:", e);
+    }
 }
 
 function wsSend(obj) {
@@ -112,24 +131,28 @@ function renderGrid() {
 
     const activeCard = document.activeElement?.closest(".device-card");
 
-    devices.forEach((dev) => {
-        seenSerials.add(dev.serial);
-        let cell = existingMap[dev.serial];
+    try {
+        devices.forEach((dev) => {
+            seenSerials.add(dev.serial);
+            let cell = existingMap[dev.serial];
 
-        if (!cell) {
-            cell = createDeviceCell(dev);
-            const card = wrapDeviceCard(cell, dev);
-            grid.appendChild(card);
-        } else {
-            // Riordina il DOM solo se non stiamo editando un input nella card
-            const card = cell.parentElement;
-            if (card !== activeCard) {
+            if (!cell) {
+                cell = createDeviceCell(dev);
+                const card = wrapDeviceCard(cell, dev);
                 grid.appendChild(card);
+            } else {
+                // Riordina il DOM solo se non stiamo editando un input nella card
+                const card = cell.parentElement;
+                if (card !== activeCard) {
+                    grid.appendChild(card);
+                }
             }
-        }
 
-        updateDeviceCell(cell, dev);
-    });
+            updateDeviceCell(cell, dev);
+        });
+    } catch (e) {
+        console.error("Errore durante il rendering delle celle:", e);
+    }
 
     // Rimuovi celle di dispositivi non più presenti o giocati
     existingCells.forEach((cell) => {
@@ -2461,6 +2484,7 @@ function initSearch() {
 
 document.addEventListener("DOMContentLoaded", () => {
     connectWebSocket();
+    setInterval(pollDevices, 2000);
     initDock();
     initAccordion();
     initBulkActions();

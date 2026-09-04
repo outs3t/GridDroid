@@ -576,6 +576,15 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @app.get("/api/devices")
+    async def get_devices():
+        """Restituisce la lista corrente dei dispositivi (fallback per polling)."""
+        return {
+            "devices": [d.to_dict() for d in list(adb.devices.values())],
+            "broadcast": input_relay.broadcast_mode,
+            "focused": input_relay.focused_serial,
+        }
+
     @app.get("/api/server-info")
     async def server_info(request: Request):
         """Restituisce host, porta e URL raggiungibili dalla LAN."""
@@ -784,13 +793,17 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             # Task per inviare aggiornamenti periodici
             async def send_updates():
                 while True:
-                    msg = {
-                        "type": "devices",
-                        "data": [d.to_dict() for d in adb.devices.values()],
-                        "broadcast": input_relay.broadcast_mode,
-                        "focused": input_relay.focused_serial,
-                    }
-                    await ws.send_json(msg)
+                    try:
+                        devices = list(adb.devices.values())
+                        msg = {
+                            "type": "devices",
+                            "data": [d.to_dict() for d in devices],
+                            "broadcast": input_relay.broadcast_mode,
+                            "focused": input_relay.focused_serial,
+                        }
+                        await ws.send_json(msg)
+                    except Exception as exc:
+                        logs.warn(f"Errore invio aggiornamenti WS: {exc}", throttle_s=30)
                     await asyncio.sleep(1.0)
 
             # Task per inviare log in tempo reale
@@ -816,6 +829,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 send_updates(),
                 send_logs(),
                 receive_commands(),
+                return_exceptions=True,
             )
         except WebSocketDisconnect:
             pass
