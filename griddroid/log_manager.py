@@ -9,7 +9,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, List, Optional
+from typing import Deque, Dict, List, Optional, Tuple
 
 
 class LogLevel(str, enum.Enum):
@@ -43,13 +43,21 @@ class LogManager:
     def __init__(self) -> None:
         self._entries: Deque[LogEntry] = deque(maxlen=self.MAX_HISTORY)
         self._subscribers: List[asyncio.Queue] = []
+        self._throttle: Dict[Tuple[str, str], float] = {}
 
     def log(
         self,
         message: str,
         level: LogLevel = LogLevel.INFO,
         serial: str = "",
-    ) -> LogEntry:
+        throttle_s: float = 0.0,
+    ) -> Optional[LogEntry]:
+        if throttle_s > 0:
+            key = (message, serial)
+            now = time.time()
+            if key in self._throttle and now - self._throttle[key] < throttle_s:
+                return None
+            self._throttle[key] = now
         entry = LogEntry(
             timestamp=time.time(),
             level=level,
@@ -64,17 +72,17 @@ class LogManager:
                 pass
         return entry
 
-    def info(self, message: str, serial: str = "") -> LogEntry:
-        return self.log(message, LogLevel.INFO, serial)
+    def info(self, message: str, serial: str = "", throttle_s: float = 0.0) -> Optional[LogEntry]:
+        return self.log(message, LogLevel.INFO, serial, throttle_s)
 
-    def warn(self, message: str, serial: str = "") -> LogEntry:
-        return self.log(message, LogLevel.WARN, serial)
+    def warn(self, message: str, serial: str = "", throttle_s: float = 0.0) -> Optional[LogEntry]:
+        return self.log(message, LogLevel.WARN, serial, throttle_s)
 
-    def error(self, message: str, serial: str = "") -> LogEntry:
-        return self.log(message, LogLevel.ERROR, serial)
+    def error(self, message: str, serial: str = "", throttle_s: float = 0.0) -> Optional[LogEntry]:
+        return self.log(message, LogLevel.ERROR, serial, throttle_s)
 
-    def success(self, message: str, serial: str = "") -> LogEntry:
-        return self.log(message, LogLevel.SUCCESS, serial)
+    def success(self, message: str, serial: str = "", throttle_s: float = 0.0) -> Optional[LogEntry]:
+        return self.log(message, LogLevel.SUCCESS, serial, throttle_s)
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=200)

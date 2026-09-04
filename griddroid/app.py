@@ -231,9 +231,9 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                             dev.next_stream_attempt = now + min(
                                 2 ** dev.stream_failures, 120
                             )
-                            logs.error(f"Errore avvio stream: {exc}", serial=serial)
+                            logs.error(f"Errore avvio stream: {exc}", serial=serial, throttle_s=30)
             except Exception as exc:
-                logs.warn(f"Errore auto-stream loop: {exc}")
+                logs.warn(f"Errore auto-stream loop: {exc}", throttle_s=30)
             await asyncio.sleep(3)
 
     @app.on_event("shutdown")

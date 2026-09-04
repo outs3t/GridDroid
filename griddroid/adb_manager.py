@@ -213,7 +213,7 @@ class AdbManager:
             try:
                 await self._refresh_devices()
             except Exception as exc:
-                logs.error(f"Errore nel polling ADB: {exc}")
+                logs.error(f"Errore nel polling ADB: {exc}", throttle_s=30)
             await asyncio.sleep(self._settings.poll_interval_s)
 
     def _upsert_device(
@@ -287,7 +287,7 @@ class AdbManager:
             try:
                 save_known(self._known)
             except Exception as exc:
-                logs.warn(f"Salvataggio known fallito: {exc}")
+                logs.warn(f"Salvataggio known fallito: {exc}", throttle_s=60)
             logs.success(f"Nuovo dispositivo rilevato: {dev.display_name}", serial=serial)
 
         # Non forziamo mai `adb reconnect` automaticamente.
@@ -334,7 +334,7 @@ class AdbManager:
             if attempt < 4:
                 await asyncio.sleep(0.2)
 
-        logs.info(f"Dispositivi ADB rilevati: {len(seen_serials)}")
+        logs.info(f"Dispositivi ADB rilevati: {len(seen_serials)}", throttle_s=30)
 
         # Aggiungi dispositivi gia' visti in passato, ora assenti
         for serial, k in self._known.items():
@@ -373,7 +373,7 @@ class AdbManager:
                 dev.status = DeviceStatus.DISCONNECTED
                 dev.streaming = False
                 dev.error = "non collegato"
-                logs.warn(f"Dispositivo disconnesso", serial=serial)
+                logs.warn(f"Dispositivo disconnesso", serial=serial, throttle_s=30)
 
 
     # ------------------------------------------------------------------

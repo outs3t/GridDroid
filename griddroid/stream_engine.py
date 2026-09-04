@@ -371,7 +371,7 @@ class DeviceStream:
                 break
             except Exception as exc:
                 consecutive_failures += 1
-                logs.warn(f"Errore stream: {exc}", serial=self.serial)
+                logs.warn(f"Errore stream: {exc}", serial=self.serial, throttle_s=30)
             finally:
                 await self._cleanup_server()
 
@@ -384,7 +384,7 @@ class DeviceStream:
                     self._running = False
                     break
                 delay = min(2.0 * (1.5 ** consecutive_failures), 60.0) * random.uniform(0.8, 1.2)
-                logs.info(f"Riconnessione stream tra {delay:.1f}s...", serial=self.serial)
+                logs.info(f"Riconnessione stream tra {delay:.1f}s...", serial=self.serial, throttle_s=30)
                 await asyncio.sleep(delay)
 
     async def _stream_h264(self, tcp_reader: asyncio.StreamReader) -> int:
@@ -559,10 +559,12 @@ class DeviceStream:
                         break
                     text = line.decode("utf-8", errors="replace").strip()
                     if text:
+                        # Logga solo le righe significative per evitare saturazione
                         if tag == "server":
-                            logs.warn(f"{tag}: {text}", serial=self.serial)
+                            if any(k in text for k in ("ERROR", "FATAL", "Exception")):
+                                logs.warn(f"{tag}: {text}", serial=self.serial, throttle_s=30)
                         else:
-                            logs.info(f"{tag}: {text}", serial=self.serial)
+                            logs.info(f"{tag}: {text}", serial=self.serial, throttle_s=30)
                         self._on_server_output(text, tag)
             except Exception:
                 pass
