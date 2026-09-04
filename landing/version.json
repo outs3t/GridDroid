@@ -1,7 +1,7 @@
 {
-  "version": "0.1.1",
+  "version": "0.1.17",
   "windows": {
-    "download_url": "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe",
+    "download_url": "https://outs3t.github.io/GridDroid/GridDroid.exe",
     "silent_args": []
   },
   "linux": {
