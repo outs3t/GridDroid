@@ -56,7 +56,11 @@ function connectWebSocket() {
     };
 }
 
+let lastDevicesJson = "";
 function updateDevicesState(msg) {
+    const json = JSON.stringify(msg);
+    if (json === lastDevicesJson) return;
+    lastDevicesJson = json;
     state.devices = msg.data || [];
     state.broadcastMode = msg.broadcast;
     state.focusedSerial = msg.focused;
@@ -334,8 +338,10 @@ function updateDeviceCell(cell, dev) {
     }
 
     if (dev.streaming) {
-        // Avvia WebSocket binario per stream a latenza minima
-        if (!feed.dataset.wsActive || feed.dataset.wsActive !== dev.serial) {
+        // Avvia WebSocket binario per stream a latenza minima (con cooldown)
+        const retryAt = parseInt(feed.dataset.wsRetryAt, 10) || 0;
+        const ready = !feed.dataset.wsActive || (feed.dataset.wsActive !== dev.serial && Date.now() > retryAt);
+        if (ready) {
             startStreamWs(feed, dev.serial);
         }
 
@@ -575,6 +581,7 @@ function startStreamWs(feedEl, serial) {
         setPlaceholder('Connessione persa', '📵');
         if (streamSessions[serial] === session) {
             feedEl.dataset.wsActive = "";
+            feedEl.dataset.wsRetryAt = Date.now() + 3000;
             delete streamSessions[serial];
         }
     };
@@ -586,6 +593,7 @@ function startStreamWs(feedEl, serial) {
     };
 
     feedEl.dataset.wsActive = serial;
+    feedEl.dataset.wsRetryAt = "";
     streamSessions[serial] = session;
 }
 
@@ -600,6 +608,7 @@ function stopStreamWs(feedEl) {
         delete streamSessions[serial];
     }
     feedEl.dataset.wsActive = "";
+    feedEl.dataset.wsRetryAt = Date.now() + 3000;
     feedEl.style.display = 'none';
     const placeholder = feedEl.parentElement.querySelector('.device-feed-placeholder');
     if (placeholder) {
