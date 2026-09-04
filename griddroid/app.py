@@ -751,7 +751,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if getattr(sys, "frozen", False):
             restart_path = sys.executable
 
-        updater.schedule_install(installer, silent_args, restart_path)
+        updater.schedule_install(installer, silent_args, restart_path, os.getpid())
 
         async def _shutdown():
             await asyncio.sleep(1.0)

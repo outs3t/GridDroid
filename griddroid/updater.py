@@ -109,15 +109,27 @@ async def download_file(
 
 
 def _make_windows_bat(
-    installer: Path, silent_args: List[str], exe_path: Optional[str] = None,
+    installer: Path,
+    silent_args: List[str],
+    exe_path: Optional[str] = None,
+    old_pid: Optional[int] = None,
 ) -> Path:
-    """Crea uno script .bat che esegue l'installer e riavvia GridDroid."""
+    """Crea uno script .bat che chiude GridDroid, esegue l'installer e lo riavvia."""
     bat = Path(tempfile.gettempdir()) / "griddroid_update.bat"
     args = " ".join(silent_args)
     restart = f'start "" "{exe_path}"' if exe_path and exe_path != str(installer) else ""
+    kill_pid = f"taskkill /F /PID {old_pid} 2>nul\n" if old_pid else ""
     text = (
         "@echo off\n"
         "title GridDroid Updater\n"
+        f"{kill_pid}"
+        "taskkill /F /IM GridDroid.exe 2>nul\n"
+        ":wait\n"
+        "tasklist /FI \"IMAGENAME eq GridDroid.exe\" 2>nul | find /I \"GridDroid.exe\" >nul\n"
+        "if %errorlevel%==0 (\n"
+        "    ping -n 2 127.0.0.1 >nul\n"
+        "    goto wait\n"
+        ")\n"
         f"start /wait \"\" \"{installer}\" {args}\n"
         f"{restart}\n"
         f"del /F /Q \"{installer}\" 2>nul\n"
@@ -147,11 +159,12 @@ def schedule_install(
     installer: Path,
     silent_args: List[str] = (),
     restart_path: Optional[str] = None,
+    old_pid: Optional[int] = None,
 ) -> bool:
     """Avvia il processo updater esterno e lo stacca dal padre."""
     system = platform.system()
     if system == "Windows":
-        script = _make_windows_bat(installer, silent_args, restart_path)
+        script = _make_windows_bat(installer, silent_args, restart_path, old_pid)
         flags = 0x00000008  # DETACHED_PROCESS
         subprocess.Popen(
             ["cmd", "/c", "call", str(script)],
