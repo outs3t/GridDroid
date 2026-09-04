@@ -383,7 +383,22 @@ body::before {
         0 14px 40px rgba(0,0,0,0.45);
 }
 
-.device-cell.offline { opacity: 0.35; filter: grayscale(0.6); }
+.device-cell.offline {
+    opacity: 0.4;
+    filter: grayscale(0.8);
+}
+
+.device-cell.offline .device-feed-placeholder {
+    color: #666;
+}
+
+.device-cell.offline .device-name {
+    color: #999;
+}
+
+.device-cell.offline .status-dot.online {
+    background: #555;
+}
 .device-cell.selected {
     border-color: var(--green);
     box-shadow:
@@ -443,6 +458,14 @@ body::before {
     font-size: 36px;
     opacity: 0.2;
     animation: pulse-soft 3s ease-in-out infinite;
+}
+
+.device-feed-placeholder span {
+    max-width: 90%;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 @keyframes pulse-soft {

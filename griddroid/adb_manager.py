@@ -23,6 +23,8 @@ from .config import (
     save_tags,
     load_played,
     save_played,
+    load_known,
+    save_known,
 )
 from .device import DeviceInfo, DeviceState, DeviceStatus
 from .log_manager import logs
@@ -66,6 +68,7 @@ class AdbManager:
         self._labels: Dict[str, str] = load_labels()
         self._tags: Dict[str, List[str]] = load_tags()
         self._played_serials: set = set(load_played())
+        self._known: Dict[str, dict] = load_known()
         self._running = False
         self._poll_task: Optional[asyncio.Task] = None
         self._change_callbacks: List = []
@@ -230,6 +233,9 @@ class AdbManager:
             "unauthorized": DeviceStatus.UNAUTHORIZED,
         }.get(state_str, DeviceStatus.OFFLINE)
 
+        now = time.time()
+        if serial in self._known:
+            self._known[serial]["last_seen"] = now
         if serial in self._devices:
             dev = self._devices[serial]
             old_status = dev.status
@@ -240,7 +246,7 @@ class AdbManager:
             dev.info.usb_port = usb or dev.info.usb_port
             dev.status = status
             dev.played = serial in self._played_serials
-            dev.last_seen = time.time()
+            dev.last_seen = now
             dev.error = ""
             if old_status != status:
                 logs.info(
@@ -268,6 +274,20 @@ class AdbManager:
                 played=serial in self._played_serials,
             )
             self._devices[serial] = dev
+            # Registra il dispositivo nel file persistente
+            self._known[serial] = {
+                "model": dev.info.model,
+                "product": dev.info.product,
+                "transport_id": dev.info.transport_id,
+                "usb_port": dev.info.usb_port,
+                "label": dev.label,
+                "tags": dev.tags,
+                "last_seen": dev.last_seen,
+            }
+            try:
+                save_known(self._known)
+            except Exception as exc:
+                logs.warn(f"Salvataggio known fallito: {exc}")
             logs.success(f"Nuovo dispositivo rilevato: {dev.display_name}", serial=serial)
 
         # Non forziamo mai `adb reconnect` automaticamente.
@@ -281,45 +301,78 @@ class AdbManager:
             dev.error = ""
 
     async def _refresh_devices(self) -> None:
-        # Rilevazione: piu' tentativi di `adb devices` per raccogliere tutti
-        # i seriali, poi arricchiamo con `adb devices -l`.
+        # Rilevazione: alterna `adb devices` e `adb devices -l` perche' con
+        # molti dispositivi uno puo' riuscire dove l'altro tronca.
         seen_serials: set = set()
-        for attempt in range(3):
-            rc, out, _ = await self.adb_command("devices", timeout=15.0)
+        for attempt in range(5):
+            use_long = attempt % 2 == 1  # 1, 3 con -l
+            rc, out, _ = await self.adb_command(
+                "devices",
+                *("-l",) if use_long else (),
+                timeout=15.0,
+            )
             if rc == 0 and out:
-                for match in _DEVICE_RE_PLAIN.finditer(out):
+                regex = _DEVICE_RE if use_long else _DEVICE_RE_PLAIN
+                for match in regex.finditer(out):
                     serial = match.group("serial")
                     if serial == "List":
                         continue
                     if serial not in seen_serials:
                         seen_serials.add(serial)
-                        self._upsert_device(serial, match.group("state"))
-            if attempt < 2:
-                await asyncio.sleep(0.3)
-
-        # Arricchisce con i dettagli di `adb devices -l` per i seriali gia' trovati
-        rc_l, out_l, _ = await self.adb_command("devices", "-l", timeout=15.0)
-        if rc_l == 0 and out_l:
-            for match in _DEVICE_RE.finditer(out_l):
-                serial = match.group("serial")
-                if serial == "List" or serial not in seen_serials:
-                    continue
-                self._upsert_device(
-                    serial,
-                    match.group("state"),
-                    model=match.group("model"),
-                    product=match.group("product"),
-                    usb=match.group("usb"),
-                    tid=match.group("tid"),
-                )
+                        model = match.group("model") if use_long else ""
+                        product = match.group("product") if use_long else ""
+                        usb = match.group("usb") if use_long else ""
+                        tid = match.group("tid") if use_long else ""
+                        self._upsert_device(
+                            serial,
+                            match.group("state"),
+                            model=model,
+                            product=product,
+                            usb=usb,
+                            tid=tid,
+                        )
+            if attempt < 4:
+                await asyncio.sleep(0.2)
 
         logs.info(f"Dispositivi ADB rilevati: {len(seen_serials)}")
 
-        # Segna come disconnessi i dispositivi non piu' visibili
+        # Aggiungi dispositivi gia' visti in passato, ora assenti
+        for serial, k in self._known.items():
+            if serial not in seen_serials:
+                if serial not in self._devices:
+                    info = DeviceInfo(
+                        serial=serial,
+                        model=(k.get("model") or "").replace("_", " "),
+                        product=k.get("product") or "",
+                        transport_id=k.get("transport_id") or "",
+                        usb_port=k.get("usb_port") or "",
+                    )
+                    label = self._labels.get(serial, "")
+                    tags = self._tags.get(serial, [])
+                    dev = DeviceState(
+                        info=info,
+                        label=label,
+                        tags=tags,
+                        status=DeviceStatus.DISCONNECTED,
+                        played=serial in self._played_serials,
+                        last_seen=k.get("last_seen") or 0,
+                    )
+                    dev.error = "non collegato"
+                    self._devices[serial] = dev
+                else:
+                    dev = self._devices[serial]
+                    if dev.status == DeviceStatus.ONLINE:
+                        dev.streaming = False
+                    if dev.status != DeviceStatus.DISCONNECTED:
+                        dev.status = DeviceStatus.DISCONNECTED
+                        dev.error = "non collegato"
+
+        # Segna come disconnessi i dispositivi online scomparsi
         for serial, dev in self._devices.items():
-            if serial not in seen_serials and dev.status != DeviceStatus.DISCONNECTED:
+            if serial not in seen_serials and dev.status == DeviceStatus.ONLINE:
                 dev.status = DeviceStatus.DISCONNECTED
                 dev.streaming = False
+                dev.error = "non collegato"
                 logs.warn(f"Dispositivo disconnesso", serial=serial)
 
 

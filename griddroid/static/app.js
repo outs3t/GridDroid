@@ -85,9 +85,15 @@ function renderGrid() {
         });
     }
 
-    if (state.sortBy) {
-        devices.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || ""));
-    }
+    devices.sort((a, b) => {
+        // Online sempre in cima
+        const aOnline = a.status === "online";
+        const bOnline = b.status === "online";
+        if (aOnline && !bOnline) return -1;
+        if (bOnline && !aOnline) return 1;
+        if (state.sortBy) return (a.display_name || "").localeCompare(b.display_name || "");
+        return 0;
+    });
 
     // Nascondi i dispositivi segnati come "giocati"
     devices = devices.filter((dev) => !dev.played);
@@ -104,6 +110,8 @@ function renderGrid() {
 
     const seenSerials = new Set();
 
+    const activeCard = document.activeElement?.closest(".device-card");
+
     devices.forEach((dev) => {
         seenSerials.add(dev.serial);
         let cell = existingMap[dev.serial];
@@ -113,9 +121,11 @@ function renderGrid() {
             const card = wrapDeviceCard(cell, dev);
             grid.appendChild(card);
         } else {
-            // Riordina il DOM per matchare l'ordinamento dell'array
+            // Riordina il DOM solo se non stiamo editando un input nella card
             const card = cell.parentElement;
-            grid.appendChild(card);
+            if (card !== activeCard) {
+                grid.appendChild(card);
+            }
         }
 
         updateDeviceCell(cell, dev);
@@ -124,9 +134,15 @@ function renderGrid() {
     // Rimuovi celle di dispositivi non più presenti o giocati
     existingCells.forEach((cell) => {
         if (!seenSerials.has(cell.dataset.serial)) {
+            const card = cell.parentElement;
+            if (card === activeCard) {
+                // Non rimuovere la card che stiamo editando
+                seenSerials.add(cell.dataset.serial);
+                return;
+            }
             const feed = cell.querySelector(".device-feed");
             if (feed) stopStreamWs(feed);
-            cell.parentElement?.remove();
+            card?.remove();
         }
     });
 
@@ -289,6 +305,14 @@ function updateDeviceCell(cell, dev) {
     // Feed
     const feed = cell.querySelector(".device-feed");
     const placeholder = cell.querySelector(".device-feed-placeholder");
+    const placeholderText = placeholder?.querySelector("span");
+    if (placeholderText) {
+        if (dev.status !== "online") {
+            placeholderText.textContent = dev.error || "Non collegato";
+        } else if (!dev.streaming) {
+            placeholderText.textContent = "Nessuno stream";
+        }
+    }
 
     if (dev.streaming) {
         // Avvia WebSocket binario per stream a latenza minima

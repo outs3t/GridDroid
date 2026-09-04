@@ -17,6 +17,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 LABELS_FILE = CONFIG_DIR / "labels.json"
 TAGS_FILE = CONFIG_DIR / "tags.json"
 PLAYED_FILE = CONFIG_DIR / "played.json"
+KNOWN_FILE = CONFIG_DIR / "known.json"
 
 
 def _find_bundled_adb() -> str:
@@ -129,9 +130,24 @@ def load_played() -> List[str]:
     return []
 
 
-def save_played(serials: List[str]) -> None:
-    """Salva la lista di seriali giocati su disco."""
+def save_played(played: List[str]) -> None:
+    """Salva la lista dei dispositivi giocati su disco."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     PLAYED_FILE.write_text(
-        json.dumps(serials, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(played, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_known() -> Dict[str, dict]:
+    """Carica il registro dei dispositivi mai collegati."""
+    if KNOWN_FILE.exists():
+        return json.loads(KNOWN_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_known(known: Dict[str, dict]) -> None:
+    """Salva il registro dei dispositivi mai collegati."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    KNOWN_FILE.write_text(
+        json.dumps(known, indent=2, ensure_ascii=False), encoding="utf-8"
     )

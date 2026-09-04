@@ -264,6 +264,13 @@ class DeviceStream:
             try:
                 async with self._start_sem_cm():
                     self._last_heartbeat = time.monotonic()
+
+                    # 0. Sveglia il dispositivo: scrcpy richiede display attivo
+                    try:
+                        await self._adb_exec(adb, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+                    except Exception:
+                        pass
+
                     # 1. Push server jar
                     remote_jar = "/data/local/tmp/scrcpy-server.jar"
                     await self._adb_exec(adb, "push", server_jar, remote_jar, timeout=60.0)
@@ -311,7 +318,7 @@ class DeviceStream:
 
                     # Attende che il server logghi "INFO: Device:"
                     try:
-                        await asyncio.wait_for(self._server_ready.wait(), timeout=6.0)
+                        await asyncio.wait_for(self._server_ready.wait(), timeout=10.0)
                     except asyncio.TimeoutError:
                         raise RuntimeError("scrcpy-server non pronto entro 6s")
                     if self._server_error:
@@ -320,12 +327,12 @@ class DeviceStream:
                     # 4. Connessione video con retry (evita WinError 1225 e l'EOF
                     #    che si riceve se il socket remoto di scrcpy non e' ancora attivo).
                     last_exc: Optional[Exception] = None
-                    await asyncio.sleep(0.3)  # aspetta che il ServerSocket si bindi
+                    await asyncio.sleep(0.5)  # aspetta che il ServerSocket si bindi
                     for attempt in range(10):
                         try:
                             reader, self._writer = await asyncio.wait_for(
                                 asyncio.open_connection("127.0.0.1", self._tcp_port),
-                                timeout=3.0,
+                                timeout=5.0,
                             )
                             # Se il socket non ha ancora dati, scrcpy ha appena bindato,
                             # ma la connessione remota e' ancora in corso. Richiudiamo e riproviamo.
@@ -342,10 +349,10 @@ class DeviceStream:
 
                     # 5. Connessione al canale di controllo (input nativi)
                     try:
-                        await asyncio.sleep(0.2)
+                        await asyncio.sleep(0.3)
                         _, ctrl_writer = await asyncio.wait_for(
                             asyncio.open_connection("127.0.0.1", self._tcp_port),
-                            timeout=3.0,
+                            timeout=5.0,
                         )
                         self._control = ControlChannel(self.serial, ctrl_writer)
                         logs.success("Canale di controllo attivo", serial=self.serial)
@@ -552,7 +559,10 @@ class DeviceStream:
                         break
                     text = line.decode("utf-8", errors="replace").strip()
                     if text:
-                        logs.info(f"{tag}: {text}", serial=self.serial)
+                        if tag == "server":
+                            logs.warn(f"{tag}: {text}", serial=self.serial)
+                        else:
+                            logs.info(f"{tag}: {text}", serial=self.serial)
                         self._on_server_output(text, tag)
             except Exception:
                 pass
