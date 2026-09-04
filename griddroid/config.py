@@ -56,7 +56,7 @@ class StreamSettings(BaseModel):
 
 class AppSettings(BaseSettings):
     """Impostazioni principali dell'applicazione."""
-    host: str = "127.0.0.1"
+    host: str = "0.0.0.0"
     port: int = 8470
     adb_path: str = Field(default_factory=_find_bundled_adb)
     scrcpy_server_path: str = ""

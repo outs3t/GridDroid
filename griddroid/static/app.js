@@ -898,8 +898,12 @@ function updateHeader() {
     const btnResetPlayed = document.getElementById("btnResetPlayed");
     const badgeResetPlayed = document.getElementById("resetPlayedBadge");
     if (btnResetPlayed) {
-        btnResetPlayed.style.display = played > 0 ? "" : "none";
-        if (badgeResetPlayed) badgeResetPlayed.textContent = String(played);
+        btnResetPlayed.disabled = played === 0;
+        btnResetPlayed.style.opacity = played > 0 ? "1" : "0.6";
+        if (badgeResetPlayed) {
+            badgeResetPlayed.textContent = String(played);
+            badgeResetPlayed.style.display = played > 0 ? "" : "none";
+        }
     }
 }
 

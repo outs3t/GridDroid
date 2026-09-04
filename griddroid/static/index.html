@@ -42,7 +42,7 @@
                 <input type="text" id="deviceSearchInput" placeholder="Cerca..." />
             </div>
             <button class="btn btn-toggle" id="btnSort" title="Ordina A-Z">A-Z</button>
-            <button class="btn btn-accent has-badge" id="btnResetPlayed" title="Ripristina dispositivi giocati" style="display:none">
+            <button class="btn btn-accent has-badge" id="btnResetPlayed" title="Ripristina dispositivi giocati" style="display:inline-flex" disabled>
                 Ripristina giocati <span class="badge" id="resetPlayedBadge">0</span>
             </button>
             <button class="btn" id="btnCheckUpdate" title="Controlla aggiornamenti">⬇ Aggiorna</button>
@@ -325,7 +325,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=41"></script>
+    <script src="/static/app.js?v=42"></script>
     <script>
     (async () => {
         try {
