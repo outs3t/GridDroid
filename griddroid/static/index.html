@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
-    <link rel="stylesheet" href="/static/style.css?v=37">
+    <link rel="stylesheet" href="/static/style.css?v=50">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -17,9 +17,12 @@
         .update-actions .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
         .btn-update-ok { background: #22c55e; color: #000; }
         .btn-update-cancel { background: #333; color: #fff; }
-        .server-banner { display: flex; align-items: center; gap: 12px; padding: 6px 16px; background: #141414; border-bottom: 1px solid var(--border, #2a2a2a); font-size: 13px; color: #aaa; }
-        .server-banner a { color: #4ade80; text-decoration: none; }
-        .server-banner button { padding: 4px 10px; font-size: 12px; }
+        .news-ticker { display: none; align-items: center; gap: 8px; padding: 4px 10px; background: #141414; border: 1px solid var(--border, #2a2a2a); border-radius: 6px; font-size: 12px; color: #aaa; overflow: hidden; max-width: 360px; }
+        .news-ticker a { color: #4ade80; text-decoration: none; }
+        .news-ticker .btn { padding: 3px 8px; font-size: 11px; }
+        .news-ticker-track { flex: 1; overflow: hidden; white-space: nowrap; }
+        #newsTickerText { display: inline-block; padding-left: 100%; animation: ticker 15s linear infinite; }
+        @keyframes ticker { 0% { transform: translateX(0); } 100% { transform: translateX(-100%); } }
     </style>
 </head>
 <body>
@@ -32,6 +35,12 @@
             </div>
             <div class="device-count" id="deviceCount">0 dispositivi</div>
             <div class="version-badge" id="versionBadge">v-</div>
+            <div class="news-ticker" id="newsTicker">
+                <div class="news-ticker-track">
+                    <span id="newsTickerText">...</span>
+                </div>
+                <button id="btnOpenFirewall" class="btn btn-accent" title="Apri la porta sul firewall di Windows" style="display:none">Apri</button>
+            </div>
         </div>
         <div class="header-actions">
             <div class="search-box">
@@ -55,11 +64,7 @@
         </div>
     </header>
 
-    <div id="serverBanner" class="server-banner" style="display:none">
-        <span id="serverAddress">...</span>
-        <button id="btnOpenFirewall" class="btn btn-accent" title="Apri la porta sul firewall di Windows" style="display:none">Apri porta firewall</button>
-        <span id="firewallMessage"></span>
-    </div>
+    <span id="firewallMessage" style="display:none"></span>
 
     <!-- MAIN -->
     <div class="main-layout">
@@ -307,6 +312,19 @@
         <div class="log-body" id="logBody"></div>
     </div>
 
+    <!-- CONTEXT MENU -->
+    <div class="context-menu" id="deviceContextMenu" style="display:none;">
+        <div class="context-menu-item" data-action="set-played">Segna come giocati</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item context-menu-title">Gruppi</div>
+        <div class="context-menu-item context-menu-new-group">
+            <input type="text" id="contextNewGroup" placeholder="Nuovo gruppo..." />
+            <button class="btn btn-accent" id="contextCreateGroup">Crea e aggiungi</button>
+        </div>
+        <div class="context-menu-separator"></div>
+        <div id="contextGroupList" class="context-menu-group-list"></div>
+    </div>
+
     <!-- TOAST -->
     <div class="toast-container" id="toastContainer"></div>
 
@@ -322,6 +340,18 @@
             <div class="result-modal-footer">
                 <button class="btn" id="btnCopyResult">Copia</button>
             </div>
+        </div>
+    </div>
+
+    <!-- COMMAND PALETTE -->
+    <div class="command-palette" id="commandPalette" style="display:none;">
+        <div class="command-palette-backdrop"></div>
+        <div class="command-palette-box">
+            <div class="command-palette-header">
+                <input type="text" id="commandPaletteInput" placeholder="Comando ADB..." autocomplete="off" />
+                <span>Ctrl+K · Esc</span>
+            </div>
+            <div id="commandPaletteList" class="command-palette-list"></div>
         </div>
     </div>
 
@@ -341,7 +371,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=48"></script>
+    <script src="/static/app.js?v=62"></script>
     <script>
     (async () => {
         try {

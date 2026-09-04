@@ -892,10 +892,11 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             await input_relay.keyevent(
                 cmd.get("keycode", 0),
                 cmd.get("metastate", 0),
+                serial=serial or None,
             )
 
         elif action == "text":
-            await input_relay.text(cmd.get("text", ""))
+            await input_relay.text(cmd.get("text", ""), serial=serial or None)
 
         elif action == "macro_record":
             if cmd.get("recording", False):

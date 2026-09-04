@@ -38,7 +38,7 @@ class DeviceState:
     streaming: bool = False
     stream_pid: Optional[int] = None
     last_seen: float = field(default_factory=time.time)
-    selected: bool = True  # selezionato per broadcast di default
+    selected: bool = False
     played: bool = False  # nascosto dalla griglia come "giocato"
     error: str = ""
     stream_failures: int = 0

@@ -74,10 +74,15 @@ class InputRelay:
                 return [self._focused_serial]
             return []
 
-        targets = []
-        for serial, dev in self._adb.devices.items():
-            if dev.status == DeviceStatus.ONLINE and dev.selected:
-                targets.append(serial)
+        targets = [
+            s for s, d in self._adb.devices.items()
+            if d.status == DeviceStatus.ONLINE and d.selected
+        ]
+        if not targets:
+            targets = [
+                s for s, d in self._adb.devices.items()
+                if d.status == DeviceStatus.ONLINE
+            ]
         return targets
 
     def _control_for(self, serial: str):
@@ -211,28 +216,28 @@ class InputRelay:
             return (int(x * nw / w), int(y * nh / h))
         return (x, y)
 
-    async def keyevent(self, keycode: int, metastate: int = 0) -> None:
+    async def keyevent(self, keycode: int, metastate: int = 0, *, serial: Optional[str] = None) -> None:
         """Invia un keyevent Android."""
-        targets = self._get_targets()
+        targets = [serial] if serial else self._get_targets()
         if not targets:
             return
         tasks = []
-        for serial in targets:
-            ctrl = self._control_for(serial)
+        for s in targets:
+            ctrl = self._control_for(s)
             if ctrl:
                 tasks.append(ctrl.key_press(keycode, metastate))
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def text(self, text: str) -> None:
+    async def text(self, text: str, *, serial: Optional[str] = None) -> None:
         """Invia testo da tastiera. Il canale nativo gestisce UTF-8, quindi
         accenti e caratteri italiani (è é ò à ù) funzionano correttamente."""
-        targets = self._get_targets()
+        targets = [serial] if serial else self._get_targets()
         if not targets:
             return
 
         tasks = []
-        for serial in targets:
-            ctrl = self._control_for(serial)
+        for s in targets:
+            ctrl = self._control_for(s)
             if ctrl:
                 tasks.append(ctrl.text(text))
         await asyncio.gather(*tasks, return_exceptions=True)

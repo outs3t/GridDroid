@@ -47,10 +47,16 @@ class BulkActionRunner:
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
     def _selected_serials(self) -> List[str]:
-        return [
+        selected = [
             s for s, d in self._adb.devices.items()
             if d.status == DeviceStatus.ONLINE and d.selected
         ]
+        if not selected:
+            return [
+                s for s, d in self._adb.devices.items()
+                if d.status == DeviceStatus.ONLINE
+            ]
+        return selected
 
     # ------------------------------------------------------------------
     # Installazione APK

@@ -14,9 +14,9 @@ const state = {
     gridCols: 15,
     gridGap: 14,
     feedZoom: 1.0,
-    sortBy: false,
     searchText: "",
     searchMode: "name",
+    activeGroupFilter: null,
 };
 
 // =====================================================================
@@ -97,6 +97,11 @@ function renderGrid() {
     const grid = document.getElementById("deviceGrid");
     let devices = [...state.devices];
 
+    // Filtro per gruppo attivo
+    if (state.activeGroupFilter && state.activeGroupFilter !== "__all__") {
+        devices = devices.filter((dev) => (dev.tags || []).includes(state.activeGroupFilter));
+    }
+
     // Filtro per nome o gruppo
     const q = state.searchText.trim().toLowerCase();
     if (q) {
@@ -109,13 +114,12 @@ function renderGrid() {
     }
 
     devices.sort((a, b) => {
-        // Online sempre in cima
+        // Online sempre in cima, poi A-Z automatico
         const aOnline = a.status === "online";
         const bOnline = b.status === "online";
         if (aOnline && !bOnline) return -1;
         if (bOnline && !aOnline) return 1;
-        if (state.sortBy) return (a.display_name || "").localeCompare(b.display_name || "");
-        return 0;
+        return (a.display_name || "").localeCompare(b.display_name || "");
     });
 
     // Nascondi i dispositivi segnati come "giocati"
@@ -140,14 +144,15 @@ function renderGrid() {
             seenSerials.add(dev.serial);
             let cell = existingMap[dev.serial];
 
+            let card;
             if (!cell) {
                 cell = createDeviceCell(dev);
-                const card = wrapDeviceCard(cell, dev);
-                grid.appendChild(card);
+                card = wrapDeviceCard(cell, dev);
             } else {
-                // La card e' gia' nel DOM, non spostarla: aggiorna in-place
+                card = cell.parentElement;
             }
 
+            grid.appendChild(card);
             updateDeviceCell(cell, dev);
         });
     } catch (e) {
@@ -204,16 +209,28 @@ function createDeviceCell(dev) {
         </div>
     `;
 
-    // Click sul feed → focus
+    // Click sul feed → focus; Ctrl+click → selezione multipla; doppio clic → fullscreen
     cell.addEventListener("click", (e) => {
         if (e.target.closest(".toolbar-btn") || e.target.closest(".device-select")) return;
+        if (e.ctrlKey || e.metaKey) {
+            e.stopPropagation();
+            toggleDeviceSelection(dev.serial);
+            return;
+        }
         wsSend({ action: "focus", serial: dev.serial });
+    });
+    cell.addEventListener("dblclick", (e) => {
+        if (e.target.closest(".device-name") || e.target.closest(".toolbar-btn") || e.target.closest(".device-select")) return;
+        e.stopPropagation();
+        toggleFullscreen(dev.serial, cell);
     });
 
     // Checkbox selezione
     const checkbox = cell.querySelector(".device-select");
     checkbox.addEventListener("change", () => {
-        wsSend({ action: "select", serial: dev.serial, selected: checkbox.checked });
+        const next = checkbox.checked;
+        if (dev) dev.selected = next;
+        wsSend({ action: "select", serial: dev.serial, selected: next });
     });
 
     // Toolbar actions
@@ -247,11 +264,11 @@ function wrapDeviceCard(cell, dev) {
 
     const label = document.createElement("div");
     label.className = "device-label";
+    const nameSize = Math.max(4, (dev.display_name || dev.serial).length + 2);
     label.innerHTML = `
         <div class="device-label-row">
-            <input type="text" class="device-name" spellcheck="false" title="Clicca per rinominare" value="${escapeHtml(dev.display_name)}" />
+            <input type="text" class="device-name" spellcheck="false" title="Clicca per rinominare" value="${escapeHtml(dev.display_name)}" size="${nameSize}" />
             <span class="status-dot ${dev.status}"></span>
-            <span class="device-status-label status-${dev.status}">${escapeHtml(getDeviceStatusLabel(dev.status))}</span>
         </div>
         <div class="device-tags"></div>
     `;
@@ -273,15 +290,164 @@ function wrapDeviceCard(cell, dev) {
     card.appendChild(label);
     card.appendChild(cell);
 
-    // Tasto destro sul telefono → segna come giocato (con conferma)
+    // Tasto destro → menu contestuale (gruppi, segnare giocati)
     card.addEventListener("contextmenu", (e) => {
-        e.preventDefault();
-        if (window.confirm(`Segnare "${dev.display_name || dev.serial}" come giocato?`)) {
-            wsSend({ action: "set_played", serial: dev.serial, played: true });
+        showDeviceContextMenu(e, dev.serial);
+    });
+
+    // Ctrl+click sulla card → selezione multipla (ignora nome, toolbar e checkbox)
+    card.addEventListener("click", (e) => {
+        if (e.ctrlKey || e.metaKey) {
+            if (e.target.closest(".device-name") || e.target.closest(".toolbar-btn") || e.target.closest(".device-select")) return;
+            e.stopPropagation();
+            toggleDeviceSelection(dev.serial);
         }
     });
 
     return card;
+}
+
+function getTargetSerials(serial) {
+    const dev = state.devices.find((d) => d.serial === serial);
+    if (dev && dev.selected) {
+        return state.devices.filter((d) => d.selected).map((d) => d.serial);
+    }
+    return [serial];
+}
+
+function toggleDeviceSelection(serial) {
+    const dev = state.devices.find((d) => d.serial === serial);
+    if (!dev) return;
+    dev.selected = !dev.selected;
+    wsSend({ action: "select", serial, selected: dev.selected });
+    renderGrid();
+    renderPhoneSelection();
+}
+
+function getContextTargetSerials(serial) {
+    const dev = state.devices.find((d) => d.serial === serial);
+    const selected = state.devices.filter((d) => d.selected);
+    // Se ci sono altri dispositivi selezionati, applica a quelli; altrimenti solo al cliccato
+    if (selected.length > 0 && selected.some((d) => d.serial === serial)) {
+        return selected.map((d) => d.serial);
+    }
+    return [serial];
+}
+
+function addDevicesToGroup(serials, groupName) {
+    groupName = (groupName || "").trim();
+    if (!groupName) return;
+    const stored = loadStoredGroups();
+    if (!stored.includes(groupName)) {
+        stored.push(groupName);
+        saveStoredGroups(stored);
+    }
+    serials.forEach((s) => {
+        const d = state.devices.find((dev) => dev.serial === s);
+        if (d) {
+            const tags = new Set(d.tags || []);
+            tags.add(groupName);
+            d.tags = [...tags];
+            wsSend({ action: "tags", serial: s, tags: d.tags });
+        }
+    });
+    renderGroups();
+    renderGrid();
+    renderAssignDevice();
+    toast(`${serials.length} telefono/i aggiunti a "${groupName}"`, "success");
+}
+
+function createContextGroupForSelection(serials) {
+    const name = window.prompt("Nome del nuovo gruppo:");
+    if (name) addDevicesToGroup(serials, name);
+}
+
+function showDeviceContextMenu(e, serial) {
+    e.preventDefault();
+    const menu = document.getElementById("deviceContextMenu");
+    if (!menu) return;
+    menu.dataset.serial = serial;
+
+    const targets = getContextTargetSerials(serial);
+    const targetCount = targets.length;
+
+    // Aggiorna etichette
+    const setPlayedItem = menu.querySelector('[data-action="set-played"]');
+    if (setPlayedItem) {
+        setPlayedItem.textContent = targetCount === 1 ? "Segna come giocato" : `Segna ${targetCount} come giocati`;
+    }
+
+    // Lista gruppi esistenti
+    const groupList = document.getElementById("contextGroupList");
+    const allGroups = getAllGroups();
+    const stored = new Set(loadStoredGroups());
+    if (groupList) {
+        if (!allGroups.length) {
+            groupList.innerHTML = `<div class="command-palette-empty" style="padding:8px 14px;font-size:11px;">Nessun gruppo</div>`;
+        } else {
+            groupList.innerHTML = allGroups
+                .map(
+                    (g) => `
+                <div class="context-menu-item" data-group="${escapeHtml(g)}">
+                    <span>${escapeHtml(g)}</span>
+                    <div class="group-actions">
+                        ${stored.has(g) ? `<button class="group-btn group-btn-delete" data-action="delete" data-group="${escapeHtml(g)}" title="Elimina gruppo">×</button>` : ""}
+                    </div>
+                </div>
+            `
+                )
+                .join("");
+            groupList.querySelectorAll('[data-group]').forEach((row) => {
+                row.addEventListener("click", () => {
+                    if (row.dataset.group) addDevicesToGroup(targets, row.dataset.group);
+                    hideDeviceContextMenu();
+                });
+            });
+            groupList.querySelectorAll('button[data-action="delete"]').forEach((btn) => {
+                btn.addEventListener("click", (ev) => {
+                    ev.stopPropagation();
+                    if (confirm(`Rimuovere il gruppo "${btn.dataset.group}"?`)) removeGroup(btn.dataset.group);
+                    hideDeviceContextMenu();
+                });
+            });
+        }
+    }
+
+    // Posizione
+    const x = Math.min(e.clientX, window.innerWidth - 260);
+    const y = Math.min(e.clientY, window.innerHeight - 200);
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    menu.style.display = "flex";
+
+    const createBtn = document.getElementById("contextCreateGroup");
+    if (createBtn) {
+        createBtn.onclick = () => {
+            const input = document.getElementById("contextNewGroup");
+            const name = input?.value.trim();
+            if (name) {
+                addDevicesToGroup(targets, name);
+                if (input) input.value = "";
+            }
+            hideDeviceContextMenu();
+        };
+    }
+
+    const newGroupInput = document.getElementById("contextNewGroup");
+    if (newGroupInput) {
+        newGroupInput.onkeydown = (ke) => {
+            if (ke.key === "Enter") {
+                ke.preventDefault();
+                createBtn?.click();
+            }
+        };
+        setTimeout(() => newGroupInput.focus(), 0);
+    }
+}
+
+function hideDeviceContextMenu() {
+    const menu = document.getElementById("deviceContextMenu");
+    if (menu) menu.style.display = "none";
 }
 
 function updateDeviceCell(cell, dev) {
@@ -291,6 +457,7 @@ function updateDeviceCell(cell, dev) {
     const nameEl = card?.querySelector(".device-name");
     if (nameEl && nameEl !== document.activeElement) {
         nameEl.value = dev.display_name;
+        nameEl.size = Math.max(4, (dev.display_name || dev.serial).length + 2);
     }
 
     // Stato
@@ -319,11 +486,11 @@ function updateDeviceCell(cell, dev) {
     // Classi celle
     cell.classList.toggle("focused", dev.serial === state.focusedSerial);
     cell.classList.toggle("offline", dev.status !== "online");
-    cell.classList.toggle("selected", state.broadcastMode && dev.selected);
+    cell.classList.toggle("selected", dev.selected);
 
     // Checkbox
     const checkbox = cell.querySelector(".device-select");
-    checkbox.checked = dev.selected;
+    if (checkbox) checkbox.checked = dev.selected;
 
     // Feed
     const feed = cell.querySelector(".device-feed");
@@ -676,6 +843,8 @@ function setupInputHandlers(feedEl, serial) {
     let dragging = false;
     let pendingMove = null;
     let moveScheduled = false;
+    let lastPointerDownTime = 0;
+    const DBLCLICK_THRESHOLD = 320; // ms
 
     // Invia i movimenti al massimo una volta per frame: evita di saturare
     // il WebSocket mantenendo il drag perfettamente fluido.
@@ -687,11 +856,21 @@ function setupInputHandlers(feedEl, serial) {
     }
 
     feedEl.addEventListener("pointerdown", (ev) => {
-        if (ev.button !== 0) return;
+        if (ev.button !== 0 || ev.ctrlKey || ev.metaKey) return;
         const c = feedCoords(feedEl, ev);
         if (!c) return;
 
         ev.preventDefault();
+
+        // Se il secondo click di un doppio clic arriva troppo presto,
+        // ignoralo: evita il doppio-tap che può bloccare/spegnere lo schermo.
+        const now = Date.now();
+        if (now - lastPointerDownTime < DBLCLICK_THRESHOLD) {
+            lastPointerDownTime = 0;
+            return;
+        }
+        lastPointerDownTime = now;
+
         feedEl.setPointerCapture(ev.pointerId);
         dragging = true;
 
@@ -744,6 +923,7 @@ function setupInputHandlers(feedEl, serial) {
 
     // Rotella del mouse → scroll nativo
     feedEl.addEventListener("wheel", (ev) => {
+        if (ev.ctrlKey || ev.metaKey) return;
         const c = feedCoords(feedEl, ev);
         if (!c) return;
         ev.preventDefault();
@@ -757,12 +937,6 @@ function setupInputHandlers(feedEl, serial) {
         });
     }, { passive: false });
 
-    // Il tasto destro fa da BACK, come in scrcpy
-    feedEl.addEventListener("contextmenu", (ev) => {
-        ev.preventDefault();
-        wsSend({ action: "focus", serial: serial });
-        wsSend({ action: "keyevent", keycode: 4 });
-    });
 }
 
 // Tastiera globale → input text / keyevent
@@ -770,12 +944,22 @@ document.addEventListener("keydown", (e) => {
     // Ignora se il focus è su un input o textarea
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
 
-    // Copia / incolla / taglia / seleziona tutto: Ctrl (o Cmd) + C/V/X/A
+    // Copia / incolla / taglia: Ctrl (o Cmd) + C/V/X
     if (e.ctrlKey || e.metaKey) {
         const k = e.key.toLowerCase();
-        if (k === "c" || k === "v" || k === "x" || k === "a") {
+        if (k === "c" || k === "v" || k === "x") {
             e.preventDefault();
             sendClipboardShortcut(k);
+            return;
+        }
+        if (k === "a") {
+            e.preventDefault();
+            selectAllDevices();
+            return;
+        }
+        if (k === "k") {
+            e.preventDefault();
+            openCommandPalette();
             return;
         }
         return;
@@ -810,15 +994,16 @@ async function sendClipboardShortcut(key) {
         return;
     }
     if (key === "v") {
-        // Ctrl+V: prova a incollare il testo degli appunti del PC
-        try {
-            const text = await navigator.clipboard.readText();
-            if (text) {
+        // Ctrl+V: prova a incollare il testo degli appunti del PC (o prompt su HTTP remoto)
+        const text = await readFromClipboard();
+        if (text !== null) {
+            if (text.trim()) {
                 wsSend({ action: "text", text });
                 toast("Testo incollato sul dispositivo", "success");
-                return;
             }
-        } catch {}
+            return;
+        }
+        // fallback: manda il Ctrl+V nativo del dispositivo
     }
     const keyMap = { "a": 29, "c": 31, "v": 50, "x": 52 };
     const keycode = keyMap[key];
@@ -832,34 +1017,31 @@ async function sendClipboardShortcut(key) {
 // =====================================================================
 
 function handleToolbarAction(action, serial, cell) {
+    const dev = state.devices.find((d) => d.serial === serial);
     switch (action) {
         case "fullscreen":
             toggleFullscreen(serial, cell);
             break;
-        case "screen_toggle": {
-            const dev = state.devices.find((d) => d.serial === serial);
+        case "screen_toggle":
             if (dev && dev.screen_on) {
                 wsSend({ action: "screen_off", serial });
             } else {
                 wsSend({ action: "screen_on", serial });
             }
             break;
-        }
         case "screenshot":
             takeScreenshot(serial);
             break;
         case "rotate":
             wsSend({ action: "rotate", serial });
             break;
-        case "stream_toggle": {
-            const dev = state.devices.find((d) => d.serial === serial);
+        case "stream_toggle":
             if (dev && dev.streaming) {
                 wsSend({ action: "stop_stream", serial });
             } else {
                 wsSend({ action: "start_stream", serial });
             }
             break;
-        }
         case "home":
             wsSend({ action: "keyevent", serial, keycode: 3 });
             break;
@@ -1139,10 +1321,11 @@ function initResultModal() {
         btnClose.addEventListener("click", closeResult);
     }
     if (btnCopy) {
-        btnCopy.addEventListener("click", () => {
+        btnCopy.addEventListener("click", async () => {
             const body = document.getElementById("resultModalBody");
             if (body) {
-                navigator.clipboard.writeText(body.textContent).then(() => toast("Copiato", "success")).catch(() => {});
+                const ok = await copyToClipboard(body.textContent);
+                toast(ok ? "Copiato" : "Errore copia", ok ? "success" : "error");
             }
         });
     }
@@ -1155,8 +1338,7 @@ async function runShellCommand() {
     const cmd = document.getElementById("shellCommand").value.trim();
     if (!cmd) return;
 
-    showResult("Esecuzione shell", "Esecuzione in corso...");
-
+    const shellOutput = document.getElementById("shellOutput");
     try {
         const resp = await fetch(`/api/bulk/shell?command=${encodeURIComponent(cmd)}`, {
             method: "POST",
@@ -1166,9 +1348,11 @@ async function runShellCommand() {
         for (const [serial, result] of Object.entries(data)) {
             output += `[${serial}] ${result}\n`;
         }
-        showResult("Output shell", output || "(nessun output)");
+        toast("Shell eseguita", "success");
+        if (shellOutput) shellOutput.textContent = output || "(nessun output)";
     } catch (e) {
-        showResult("Errore shell", "Errore: " + e.message);
+        toast("Errore shell: " + e.message, "error");
+        if (shellOutput) shellOutput.textContent = "Errore: " + e.message;
     }
 }
 
@@ -1364,7 +1548,8 @@ async function eseguiScript(scriptId, nomeScript, parametri) {
         }
 
         const testo = `── ${nomeScript} ──\n` + righe.join("\n");
-        showResult(nomeScript, testo);
+        if (outputEl) outputEl.textContent = testo;
+        if (outputWrap) outputWrap.style.display = "block";
     } catch (e) {
         toast(`Errore: ${e.message}`, "error");
     }
@@ -1558,11 +1743,11 @@ async function initSettings() {
 // =====================================================================
 
 function initServerInfo() {
-    const banner = document.getElementById("serverBanner");
-    const addressEl = document.getElementById("serverAddress");
+    const ticker = document.getElementById("newsTicker");
+    const tickerText = document.getElementById("newsTickerText");
     const fwBtn = document.getElementById("btnOpenFirewall");
     const msgEl = document.getElementById("firewallMessage");
-    if (!banner || !addressEl) return;
+    if (!ticker || !tickerText) return;
 
     fetch("/api/server-info")
         .then((r) => (r.ok ? r.json() : null))
@@ -1576,30 +1761,20 @@ function initServerInfo() {
             } else if (info.host === "127.0.0.1" || info.host === "localhost") {
                 text += ` (solo locale; per la LAN avvia con --host 0.0.0.0)`;
             }
-            addressEl.innerHTML = text;
-            banner.style.display = "";
+            tickerText.innerHTML = text;
+            ticker.style.display = "inline-flex";
 
             if (fwBtn && info.host === "0.0.0.0") {
                 fwBtn.style.display = "";
                 fwBtn.addEventListener("click", () => {
                     fwBtn.disabled = true;
-                    if (msgEl) {
-                        msgEl.textContent = "Richiesta in corso...";
-                        msgEl.style.color = "";
-                    }
                     fetch("/api/open-firewall", { method: "POST" })
                         .then((r) => r.json())
                         .then((res) => {
-                            if (msgEl) {
-                                msgEl.textContent = res.message || "";
-                                msgEl.style.color = res.ok ? "#4ade80" : "#f87171";
-                            }
+                            toast(res.message || "Fatto", res.ok ? "success" : "error");
                         })
                         .catch(() => {
-                            if (msgEl) {
-                                msgEl.textContent = "Errore richiesta";
-                                msgEl.style.color = "#f87171";
-                            }
+                            toast("Errore richiesta", "error");
                         })
                         .finally(() => {
                             fwBtn.disabled = false;
@@ -1690,14 +1865,10 @@ function initHeaderButtons() {
         }, { passive: false });
     }
 
-    // Ordinamento
+    // Ordinamento automatico A-Z attivo di default
     const btnSort = document.getElementById("btnSort");
     if (btnSort) {
-        btnSort.addEventListener("click", () => {
-            state.sortBy = !state.sortBy;
-            btnSort.classList.toggle("active", state.sortBy);
-            renderGrid();
-        });
+        btnSort.classList.add("active");
     }
 
     // Update manuale
@@ -1823,6 +1994,46 @@ function appendLog(entry) {
 }
 
 // =====================================================================
+// Clipboard helpers (funzionano anche su HTTP remoto)
+// =====================================================================
+
+async function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+    }
+    // Fallback con document.execCommand (funziona anche su HTTP non-locale)
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+        const ok = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        return ok;
+    } catch (e) {
+        document.body.removeChild(textarea);
+        return false;
+    }
+}
+
+async function readFromClipboard() {
+    if (navigator.clipboard && window.isSecureContext) {
+        try {
+            const text = await navigator.clipboard.readText();
+            return text;
+        } catch (e) {
+            // fall-through al prompt
+        }
+    }
+    const text = window.prompt("Incolla qui il testo da inviare al dispositivo:");
+    return text === null ? null : text;
+}
+
+// =====================================================================
 // Log Actions
 // =====================================================================
 
@@ -1836,10 +2047,8 @@ function copyLog() {
         lines.push(`${time}\t${serial}\t${msg}`);
     });
     const text = lines.join("\n");
-    navigator.clipboard.writeText(text).then(() => {
-        toast("Log copiato negli appunti");
-    }).catch(() => {
-        toast("Errore nella copia del log", "error");
+    copyToClipboard(text).then((ok) => {
+        toast(ok ? "Log copiato negli appunti" : "Errore nella copia del log", ok ? "success" : "error");
     });
 }
 
@@ -2143,10 +2352,9 @@ function initBookmakers() {
                 </div>
             `;
             row.querySelector(".bookmaker-open").addEventListener("click", () => openBookmaker(b.url, b.name));
-            row.querySelector(".bookmaker-copy").addEventListener("click", () => {
-                navigator.clipboard.writeText(b.url)
-                    .then(() => toast("URL copiato", "success"))
-                    .catch(() => toast("Errore copia URL", "error"));
+            row.querySelector(".bookmaker-copy").addEventListener("click", async () => {
+                const ok = await copyToClipboard(b.url);
+                toast(ok ? "URL copiato" : "Errore copia URL", ok ? "success" : "error");
             });
             const del = row.querySelector(".bookmaker-delete");
             if (del) {
@@ -2294,6 +2502,16 @@ function filterGroup(name) {
     renderGrid();
 }
 
+function toggleGroupFilter(name) {
+    if (state.activeGroupFilter === name) {
+        state.activeGroupFilter = null;
+    } else {
+        state.activeGroupFilter = name;
+    }
+    renderGroups();
+    renderGrid();
+}
+
 function renderGroups() {
     const list = document.getElementById("groupList");
     if (!list) return;
@@ -2305,28 +2523,48 @@ function renderGroups() {
         });
         return acc;
     }, {});
-    if (!groups.length) {
-        list.innerHTML = `<div class="group-empty">Nessun gruppo. Crea il primo sopra.</div>`;
-        return;
-    }
-    list.innerHTML = groups
+
+    const allActive = !state.activeGroupFilter || state.activeGroupFilter === "__all__";
+    const allCount = state.devices.length;
+
+    let html = `
+        <div class="group-row">
+            <span class="group-name">Tutti i telefoni <span class="group-count">(${allCount})</span></span>
+            <div class="group-actions">
+                <span class="group-eye ${allActive ? "active" : ""}" data-group="__all__" title="Mostra tutti">👁</span>
+                <button class="group-btn" data-action="select" data-group="__all__">Seleziona</button>
+            </div>
+        </div>
+    `;
+
+    html += groups
         .map(
             (g) => `
         <div class="group-row">
             <span class="group-name">${escapeHtml(g)} <span class="group-count">(${counts[g] || 0})</span></span>
             <div class="group-actions">
+                <span class="group-eye ${state.activeGroupFilter === g ? "active" : ""}" data-group="${escapeHtml(g)}" title="Filtra">👁</span>
                 <button class="group-btn" data-action="select" data-group="${escapeHtml(g)}">Seleziona</button>
-                <button class="group-btn" data-action="filter" data-group="${escapeHtml(g)}">Filtra</button>
+                <button class="group-btn" data-action="filter-search" data-group="${escapeHtml(g)}">Cerca</button>
                 ${stored.has(g) ? `<button class="group-btn group-btn-delete" data-action="delete" data-group="${escapeHtml(g)}">×</button>` : ""}
             </div>
         </div>
     `
         )
         .join("");
-    list.querySelectorAll("button[data-action='select']").forEach((btn) => {
-        btn.addEventListener("click", () => selectGroup(btn.dataset.group));
+
+    list.innerHTML = html;
+
+    list.querySelectorAll(".group-eye").forEach((eye) => {
+        eye.addEventListener("click", () => toggleGroupFilter(eye.dataset.group));
     });
-    list.querySelectorAll("button[data-action='filter']").forEach((btn) => {
+    list.querySelectorAll("button[data-action='select']").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            if (btn.dataset.group === "__all__") selectAllDevices();
+            else selectGroup(btn.dataset.group);
+        });
+    });
+    list.querySelectorAll("button[data-action='filter-search']").forEach((btn) => {
         btn.addEventListener("click", () => filterGroup(btn.dataset.group));
     });
     list.querySelectorAll("button[data-action='delete']").forEach((btn) => {
@@ -2478,12 +2716,21 @@ function initAccordion() {
     document.querySelectorAll(".flyout .sidebar-section").forEach((sec) => {
         const h4 = sec.querySelector("h4");
         if (!h4) return;
+        h4.style.cursor = "pointer";
+        h4.tabIndex = 0;
+        h4.setAttribute("role", "button");
         h4.addEventListener("click", () => {
             const wasActive = sec.classList.contains("active");
             const flyout = sec.closest(".flyout");
             const siblings = flyout ? flyout.querySelectorAll(".sidebar-section") : [];
             siblings.forEach((s) => s.classList.remove("active"));
             if (!wasActive) sec.classList.add("active");
+        });
+        h4.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                h4.click();
+            }
         });
     });
 
@@ -2519,6 +2766,255 @@ function initSearch() {
 }
 
 // =====================================================================
+// Command Palette
+// =====================================================================
+
+const COMMAND_PALETTE_KEY = "griddroid_palette_history";
+const PALETTE_TOKEN_LABELS = {
+    pin: "PIN (lascia vuoto per solo wake):",
+    url: "URL da aprire:",
+    testo: "Testo da inserire:",
+};
+const PALETTE_PREDEFINED = [
+    { name: "Sblocca schermo", command: "input keyevent 82 && input text {pin} && input keyevent 66", desc: "chiede il PIN" },
+    { name: "Home", command: "input keyevent 3", desc: "tasto home" },
+    { name: "Indietro", command: "input keyevent 4", desc: "tasto back" },
+    { name: "App recenti", command: "input keyevent 187", desc: "multitasking" },
+    { name: "Spegni schermo", command: "input keyevent 26", desc: "tasto power" },
+    { name: "Riavvia", command: "reboot", desc: "riavvio dispositivo" },
+    { name: "Apri URL", command: "am start -a android.intent.action.VIEW -d {url}", desc: "sito o bookmaker" },
+    { name: "Apri Bet365", command: "am start -a android.intent.action.VIEW -d https://www.bet365.com", desc: "browser" },
+    { name: "Apri PokerStars", command: "am start -a android.intent.action.VIEW -d https://www.pokerstars.it", desc: "browser" },
+    { name: "Apri PayPal", command: "am start -a android.intent.action.VIEW -d https://www.paypal.com", desc: "browser" },
+];
+
+async function resolvePaletteCommand(command) {
+    const tokenRegex = /\{([a-zA-Z0-9_]+)\}/g;
+    const tokens = [...command.matchAll(tokenRegex)].map((m) => m[1]);
+    if (!tokens.length) return command;
+
+    const values = {};
+    for (const t of tokens) {
+        const label = PALETTE_TOKEN_LABELS[t] || `Valore per ${t}:`;
+        const val = window.prompt(label);
+        if (val === null) return null;
+        values[t] = val.trim();
+    }
+
+    // Sblocco: PIN vuoto = solo wake
+    if (tokens.includes("pin") && values.pin === "") {
+        return "input keyevent 82";
+    }
+
+    let final = command;
+    for (const [t, v] of Object.entries(values)) {
+        final = final.replace(new RegExp(`\\{${t}\\}`, "g"), v);
+    }
+    return final;
+}
+
+let commandPaletteEl = null;
+let commandPaletteInput = null;
+let commandPaletteList = null;
+let paletteActiveIndex = -1;
+let paletteItems = [];
+
+function loadPaletteHistory() {
+    try {
+        const raw = localStorage.getItem(COMMAND_PALETTE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .map((c) => {
+                if (typeof c === "string") return { name: c, command: c };
+                const cmd = c.command || c.name || "";
+                return { name: c.name || cmd, command: cmd };
+            })
+            .filter((c) => c.command);
+    } catch (e) {
+        return [];
+    }
+}
+
+function savePaletteHistory(name, command) {
+    if (!command) return;
+    const history = loadPaletteHistory().filter((c) => c.command !== command);
+    history.unshift({ name: name || command, command });
+    if (history.length > 15) history.pop();
+    try {
+        localStorage.setItem(COMMAND_PALETTE_KEY, JSON.stringify(history));
+    } catch (e) {}
+}
+
+function selectAllDevices() {
+    if (!state.devices.length) return;
+    state.devices.forEach((d) => {
+        d.selected = true;
+        wsSend({ action: "select", serial: d.serial, selected: true });
+    });
+    renderGrid();
+    renderPhoneSelection();
+    toast("Tutti i dispositivi selezionati", "success");
+}
+
+async function runPaletteCommand(command, name = command) {
+    const cmdToRun = await resolvePaletteCommand(command);
+    if (!cmdToRun) return;
+    savePaletteHistory(name, command);
+    const targets = state.devices.filter((d) => d.selected);
+    if (!targets.length) {
+        toast("Nessun dispositivo selezionato", "warn");
+        return;
+    }
+    const shellOutput = document.getElementById("shellOutput");
+    try {
+        const resp = await fetch(`/api/bulk/shell?command=${encodeURIComponent(cmdToRun)}`, { method: "POST" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        let output = "";
+        for (const [serial, result] of Object.entries(data)) {
+            output += `[${serial}] ${result}\n`;
+        }
+        toast(`Comando eseguito su ${targets.length} dispositivi`, "success");
+        if (shellOutput) shellOutput.textContent = output || "(nessun output)";
+    } catch (e) {
+        toast("Errore comando: " + e.message, "error");
+        if (shellOutput) shellOutput.textContent = "Errore: " + e.message;
+    }
+}
+
+function renderPalette() {
+    if (!commandPaletteList || !commandPaletteInput) return;
+    const q = commandPaletteInput.value.trim().toLowerCase();
+    const history = loadPaletteHistory().map((c) => ({ name: c.name, command: c.command, desc: "cronologia", history: true }));
+    const seen = new Set();
+    paletteItems = [];
+    for (const c of [...history, ...PALETTE_PREDEFINED]) {
+        if (seen.has(c.command)) continue;
+        seen.add(c.command);
+        if (!q || c.name.toLowerCase().includes(q) || c.command.toLowerCase().includes(q)) {
+            paletteItems.push(c);
+        }
+    }
+
+    commandPaletteList.innerHTML = "";
+    if (!paletteItems.length) {
+        commandPaletteList.innerHTML = `<div class="command-palette-empty">Nessun comando. Premi Invio per eseguire "${escapeHtml(commandPaletteInput.value.trim())}"</div>`;
+        return;
+    }
+    paletteItems.forEach((c, i) => {
+        const div = document.createElement("div");
+        div.className = "command-palette-row" + (i === paletteActiveIndex ? " active" : "");
+        div.dataset.command = c.command;
+        div.dataset.name = c.name;
+        div.innerHTML = `<span>${escapeHtml(c.name)}</span><span class="cmd-desc">${escapeHtml(c.desc)}</span>`;
+        div.addEventListener("click", () => {
+            runPaletteCommand(c.command, c.name);
+            closeCommandPalette();
+        });
+        commandPaletteList.appendChild(div);
+    });
+}
+
+function openCommandPalette() {
+    if (!commandPaletteEl || !commandPaletteInput) return;
+    commandPaletteEl.style.display = "flex";
+    commandPaletteEl.classList.add("active");
+    commandPaletteInput.value = "";
+    paletteActiveIndex = -1;
+    renderPalette();
+    commandPaletteInput.focus();
+}
+
+function closeCommandPalette() {
+    if (!commandPaletteEl) return;
+    commandPaletteEl.classList.remove("active");
+    commandPaletteEl.style.display = "none";
+    paletteActiveIndex = -1;
+}
+
+function initCommandPalette() {
+    commandPaletteEl = document.getElementById("commandPalette");
+    commandPaletteInput = document.getElementById("commandPaletteInput");
+    commandPaletteList = document.getElementById("commandPaletteList");
+    if (!commandPaletteEl || !commandPaletteInput || !commandPaletteList) return;
+
+    commandPaletteEl.querySelector(".command-palette-backdrop").addEventListener("click", closeCommandPalette);
+
+    commandPaletteInput.addEventListener("input", () => {
+        paletteActiveIndex = -1;
+        renderPalette();
+    });
+
+    commandPaletteInput.addEventListener("keydown", (e) => {
+        const rows = commandPaletteList.querySelectorAll(".command-palette-row");
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            paletteActiveIndex = (paletteActiveIndex + 1) % rows.length;
+            renderPalette();
+            rows[paletteActiveIndex]?.scrollIntoView({ block: "nearest" });
+            return;
+        }
+        if (e.key === "ArrowUp") {
+            e.preventDefault();
+            paletteActiveIndex = (paletteActiveIndex - 1 + rows.length) % rows.length;
+            renderPalette();
+            rows[paletteActiveIndex]?.scrollIntoView({ block: "nearest" });
+            return;
+        }
+        if (e.key === "Enter") {
+            e.preventDefault();
+            if (paletteActiveIndex >= 0 && paletteItems[paletteActiveIndex]) {
+                const item = paletteItems[paletteActiveIndex];
+                runPaletteCommand(item.command, item.name);
+            } else if (commandPaletteInput.value.trim()) {
+                const value = commandPaletteInput.value.trim();
+                runPaletteCommand(value, value);
+            }
+            closeCommandPalette();
+            return;
+        }
+        if (e.key === "Escape") {
+            e.preventDefault();
+            closeCommandPalette();
+        }
+    });
+}
+
+// =====================================================================
+// Context Menu Init
+// =====================================================================
+
+function initContextMenu() {
+    const menu = document.getElementById("deviceContextMenu");
+    if (!menu) return;
+
+    menu.addEventListener("click", (e) => {
+        const item = e.target.closest('[data-action="set-played"]');
+        if (item) {
+            const serial = menu.dataset.serial;
+            if (!serial) return;
+            const targets = getContextTargetSerials(serial);
+            if (window.confirm(`Segnare ${targets.length === 1 ? "il dispositivo" : targets.length + " dispositivi"} come giocati?`)) {
+                targets.forEach((s) => wsSend({ action: "set_played", serial: s, played: true }));
+            }
+            hideDeviceContextMenu();
+        }
+    });
+
+    document.addEventListener("click", (e) => {
+        if (!e.target.closest("#deviceContextMenu")) hideDeviceContextMenu();
+    });
+
+    document.addEventListener("contextmenu", (e) => {
+        if (!e.target.closest(".device-card") && !e.target.closest("#deviceContextMenu")) {
+            hideDeviceContextMenu();
+        }
+    });
+}
+
+// =====================================================================
 // Init
 // =====================================================================
 
@@ -2541,6 +3037,8 @@ document.addEventListener("DOMContentLoaded", () => {
     initSelection();
     initResultModal();
     initServerInfo();
+    initCommandPalette();
+    initContextMenu();
     // Carica la versione dell'app
     fetch("/api/version").then(r => r.json()).then(d => {
         const el = document.getElementById("versionBadge");
