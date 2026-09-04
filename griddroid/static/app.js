@@ -141,11 +141,7 @@ function renderGrid() {
                 const card = wrapDeviceCard(cell, dev);
                 grid.appendChild(card);
             } else {
-                // Riordina il DOM solo se non stiamo editando un input nella card
-                const card = cell.parentElement;
-                if (card !== activeCard) {
-                    grid.appendChild(card);
-                }
+                // La card e' gia' nel DOM, non spostarla: aggiorna in-place
             }
 
             updateDeviceCell(cell, dev);
