@@ -83,6 +83,13 @@ def load_settings() -> AppSettings:
     if not shutil.which(settings.adb_path):
         settings.adb_path = _find_bundled_adb()
 
+    # Forza ascolto su tutte le interfacce: le installazioni esistenti avevano
+    # 127.0.0.1 in config.json, che blocca l'accesso da altri PC. La rete
+    # locale viene comunque protetta dal firewall Windows, gestibile con il
+    # pulsante "Apri porta firewall" nell'interfaccia.
+    if settings.host in ("127.0.0.1", "localhost", "::1"):
+        settings.host = "0.0.0.0"
+
     save_settings(settings)
     return settings
 
