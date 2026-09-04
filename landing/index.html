@@ -315,15 +315,25 @@
           const el = document.getElementById('lastUpdate');
           if (!el) return;
           try {
-            const r = await fetch('https://api.github.com/repos/outs3t/GridDroid/commits?per_page=1');
+            const r = await fetch('./version.json');
             if (!r.ok) throw new Error('non disponibile');
             const data = await r.json();
-            const commit = data[0];
-            const date = new Date(commit.commit.committer.date);
-            const sha = (commit.sha || '').substring(0, 7);
-            el.textContent = date.toLocaleDateString('it-IT') + (sha ? ' (' + sha + ')' : '');
+            const date = data.build_time ? new Date(data.build_time) : null;
+            const version = data.version || '';
+            if (!date) throw new Error('no build_time');
+            el.textContent = date.toLocaleString('it-IT') + (version ? ' v' + version : '');
           } catch (e) {
-            el.textContent = 'controlla su GitHub';
+            try {
+              const r = await fetch('https://api.github.com/repos/outs3t/GridDroid/commits?per_page=1');
+              if (!r.ok) throw new Error('non disponibile');
+              const data = await r.json();
+              const commit = data[0];
+              const date = new Date(commit.commit.committer.date);
+              const sha = (commit.sha || '').substring(0, 7);
+              el.textContent = date.toLocaleString('it-IT') + (sha ? ' (' + sha + ')' : '');
+            } catch (e2) {
+              el.textContent = 'controlla su GitHub';
+            }
           }
         })();
       </script>

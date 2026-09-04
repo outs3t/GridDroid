@@ -494,7 +494,10 @@ body::before {
     border-radius: var(--r-sm);
     font-size: 11px;
     color: var(--text-1);
-    min-height: 26px;
+    height: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    overflow: hidden;
     box-sizing: border-box;
 }
 
@@ -515,6 +518,8 @@ body::before {
     transition: all var(--dur-fast) var(--ease);
     font-family: inherit;
     text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
     box-sizing: border-box;
 }
 
@@ -541,9 +546,10 @@ body::before {
 
 .device-tags {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 3px;
     width: 100%;
+    overflow: hidden;
 }
 
 .device-tag {

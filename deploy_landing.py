@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -70,8 +71,10 @@ def update_landing(exe_name: str, version: str) -> None:
 
     # version.json
     version_file = LANDING_DIR / "version.json"
+    build_time = datetime.now().astimezone().isoformat()
     data = {
         "version": version,
+        "build_time": build_time,
         "windows": {
             "download_url": f"https://outs3t.github.io/GridDroid/{exe_name}",
             "silent_args": [] if "Setup" not in exe_name else ["/SILENT"],
@@ -82,7 +85,7 @@ def update_landing(exe_name: str, version: str) -> None:
         },
     }
     version_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    print(f"Aggiornato {version_file} alla versione {version}")
+    print(f"Aggiornato {version_file} alla versione {version} ({build_time})")
 
     # index.html — aggiorna riferimenti al nome eseguibile
     index_file = LANDING_DIR / "index.html"
