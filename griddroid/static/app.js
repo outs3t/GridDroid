@@ -23,6 +23,11 @@ const state = {
 // WebSocket
 // =====================================================================
 
+// Log diagnostici stream: attivare con window.DEBUG_STREAM = true in console
+const DEBUG_STREAM = () => window.DEBUG_STREAM === true;
+
+let wsReconnectDelay = 2000;
+
 function connectWebSocket() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${location.host}/ws`;
@@ -30,6 +35,7 @@ function connectWebSocket() {
     state.ws = ws;
 
     ws.onopen = () => {
+        wsReconnectDelay = 2000;
         console.log("WebSocket connesso");
     };
 
@@ -47,8 +53,11 @@ function connectWebSocket() {
     };
 
     ws.onclose = () => {
-        console.log("WebSocket disconnesso, riconnessione tra 2s...");
-        setTimeout(connectWebSocket, 2000);
+        // Backoff esponenziale + jitter: evita tempeste di riconnessione su VPN
+        const delay = wsReconnectDelay + Math.random() * 1000;
+        console.log(`WebSocket disconnesso, riconnessione tra ${Math.round(delay / 1000)}s...`);
+        setTimeout(connectWebSocket, delay);
+        wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
     };
 
     ws.onerror = () => {
@@ -714,7 +723,7 @@ function startStreamWs(feedEl, serial) {
         if (!session.configured || decoder.state !== "configured") return;
 
         session.frameCount++;
-        if (session.frameCount <= 5 || session.frameCount % 100 === 0) {
+        if (DEBUG_STREAM() && (session.frameCount <= 5 || session.frameCount % 100 === 0)) {
             console.log(`Frame ${session.frameCount}: ${isKey ? "KEY" : "delta"} ${h264Data.length}B queue=${decoder.decodeQueueSize}`);
         }
 
@@ -750,7 +759,8 @@ function startStreamWs(feedEl, serial) {
         setPlaceholder('Connessione persa', '📵');
         if (streamSessions[serial] === session) {
             feedEl.dataset.wsActive = "";
-            feedEl.dataset.wsRetryAt = Date.now() + 3000;
+            // Jitter: su VPN tanti stream che riprovano insieme saturano la rete
+            feedEl.dataset.wsRetryAt = Date.now() + 3000 + Math.random() * 3000;
             delete streamSessions[serial];
         }
     };
@@ -770,14 +780,21 @@ function stopStreamWs(feedEl) {
     const serial = feedEl.dataset.wsActive;
     const session = serial && streamSessions[serial];
     if (session) {
-        try { session.ws.close(); } catch (e) { }
+        try {
+            // Chiudere un WS ancora in CONNECTING genera un warning in console
+            if (session.ws.readyState === WebSocket.CONNECTING) {
+                session.ws.onopen = () => session.ws.close();
+            } else {
+                session.ws.close();
+            }
+        } catch (e) { }
         try {
             if (session.decoder.state !== "closed") session.decoder.close();
         } catch (e) { }
         delete streamSessions[serial];
     }
     feedEl.dataset.wsActive = "";
-    feedEl.dataset.wsRetryAt = Date.now() + 3000;
+    feedEl.dataset.wsRetryAt = Date.now() + 3000 + Math.random() * 3000;
     feedEl.style.display = 'none';
     const placeholder = feedEl.parentElement.querySelector('.device-feed-placeholder');
     if (placeholder) {

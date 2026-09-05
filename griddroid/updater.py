@@ -73,37 +73,56 @@ async def download_file(
     """Scarica `url` in `dest` aggiornando `state['percent']`."""
 
     def _download():
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": f"GridDroid-Updater/{state.get('version', '0.0.0')}"},
-            )
-            with urllib.request.urlopen(req, timeout=60.0) as r:
-                total = r.headers.get("Content-Length")
-                total = int(total) if total else None
-                downloaded = 0
-                state["status"] = "downloading"
-                state["percent"] = 0
-                state["error"] = None
-                with dest.open("wb") as f:
-                    while True:
-                        data = r.read(chunk)
-                        if not data:
-                            break
-                        f.write(data)
-                        downloaded += len(data)
-                        if total:
-                            state["percent"] = min(100, int(downloaded * 100 / total))
-                        else:
-                            # dimensione sconosciuta: avanza gradualmente
-                            state["percent"] = min(state["percent"] + 2, 99)
-            state["status"] = "ready"
-            state["percent"] = 100
-            return True
-        except Exception as exc:
-            state["status"] = "error"
-            state["error"] = str(exc)
-            return False
+        import time as _time
+
+        max_attempts = 5
+        state["status"] = "downloading"
+        state["percent"] = 0
+        state["error"] = None
+        downloaded = dest.stat().st_size if dest.exists() else 0
+        total: Optional[int] = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                headers = {"User-Agent": f"GridDroid-Updater/{state.get('version', '0.0.0')}"}
+                # Resume: riprende da dove si e' interrotto
+                if downloaded:
+                    headers["Range"] = f"bytes={downloaded}-"
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=60.0) as r:
+                    # Se il server ignora Range (200 invece di 206), ricomincia da zero
+                    if downloaded and r.status == 200:
+                        downloaded = 0
+                    if total is None:
+                        cl = r.headers.get("Content-Length")
+                        total = (int(cl) + downloaded) if cl else None
+                    mode = "ab" if downloaded else "wb"
+                    with dest.open(mode) as f:
+                        while True:
+                            data = r.read(chunk)
+                            if not data:
+                                break
+                            f.write(data)
+                            downloaded += len(data)
+                            if total:
+                                state["percent"] = min(100, int(downloaded * 100 / total))
+                            else:
+                                state["percent"] = min(state["percent"] + 2, 99)
+                # Download troncato senza eccezione: riprova invece di
+                # installare un exe corrotto.
+                if total is not None and downloaded < total:
+                    raise IOError(f"download incompleto: {downloaded}/{total} byte")
+                state["status"] = "ready"
+                state["percent"] = 100
+                return True
+            except Exception as exc:
+                state["error"] = str(exc)
+                if attempt < max_attempts:
+                    _time.sleep(min(2 ** attempt, 10))
+                    continue
+                state["status"] = "error"
+                return False
+        return False
 
     return await asyncio.to_thread(_download)
 
