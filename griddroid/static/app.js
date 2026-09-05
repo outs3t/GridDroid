@@ -915,9 +915,10 @@ function setupInputHandlers(feedEl, serial) {
     feedEl.addEventListener("pointercancel", endDrag);
     feedEl.addEventListener("lostpointercapture", endDrag);
 
-    // Rotella del mouse → scroll nativo
+    // Rotella del mouse → scroll nativo sul telefono.
+    // Alt+rotellina lascia l'evento alla pagina per scrollare la griglia.
     feedEl.addEventListener("wheel", (ev) => {
-        if (ev.ctrlKey || ev.metaKey) return;
+        if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
         const c = feedCoords(feedEl, ev);
         if (!c) return;
         ev.preventDefault();
@@ -948,7 +949,8 @@ document.addEventListener("keydown", (e) => {
         }
         if (k === "a") {
             e.preventDefault();
-            selectAllDevices();
+            if (e.shiftKey) deselectAllDevices();
+            else selectAllDevices();
             return;
         }
         if (k === "k") {
@@ -1132,7 +1134,13 @@ function initDock() {
         const flyout = target ? document.getElementById(target) : item.querySelector(".flyout");
         if (!flyout) return;
 
+        // I click dentro il flyout non devono raggiungere il dock-item:
+        // se un handler interno ri-renderizza e stacca il target dal DOM,
+        // closest(".flyout") fallirebbe e il click verrebbe letto come toggle.
+        flyout.addEventListener("click", (e) => e.stopPropagation());
+
         item.addEventListener("click", (e) => {
+            if (!e.target.isConnected) return;
             if (e.target.closest(".flyout")) return;
             const wasOpen = flyout.classList.contains("active");
             closeAllFlyouts();
@@ -2709,14 +2717,7 @@ function initSelection() {
         });
     }
     if (btnNone) {
-        btnNone.addEventListener("click", () => {
-            state.devices.forEach((d) => {
-                d.selected = false;
-                wsSend({ action: "select", serial: d.serial, selected: false });
-            });
-            renderGrid();
-            renderPhoneSelection();
-        });
+        btnNone.addEventListener("click", deselectAllDevices);
     }
 }
 
@@ -2864,6 +2865,17 @@ function selectAllDevices() {
     renderGrid();
     renderPhoneSelection();
     toast("Tutti i dispositivi selezionati", "success");
+}
+
+function deselectAllDevices() {
+    if (!state.devices.length) return;
+    state.devices.forEach((d) => {
+        d.selected = false;
+        wsSend({ action: "select", serial: d.serial, selected: false });
+    });
+    renderGrid();
+    renderPhoneSelection();
+    toast("Selezione azzerata", "success");
 }
 
 async function runPaletteCommand(command, name = command) {

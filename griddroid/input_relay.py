@@ -68,22 +68,26 @@ class InputRelay:
             logs.info(f"Focus su dispositivo", serial=serial)
 
     def _get_targets(self) -> List[str]:
-        """Ritorna la lista di seriali su cui inviare gli input."""
-        if not self._broadcast_mode:
-            if self._focused_serial:
-                return [self._focused_serial]
-            return []
+        """Ritorna la lista di seriali su cui inviare gli input.
 
-        targets = [
+        Priorita': dispositivi selezionati > broadcast (tutti online) > focused.
+        """
+        selected = [
             s for s, d in self._adb.devices.items()
             if d.status == DeviceStatus.ONLINE and d.selected
         ]
-        if not targets:
-            targets = [
+        if selected:
+            return selected
+
+        if self._broadcast_mode:
+            return [
                 s for s, d in self._adb.devices.items()
                 if d.status == DeviceStatus.ONLINE
             ]
-        return targets
+
+        if self._focused_serial:
+            return [self._focused_serial]
+        return []
 
     def _control_for(self, serial: str):
         """Ritorna il canale di controllo scrcpy del dispositivo, se attivo."""

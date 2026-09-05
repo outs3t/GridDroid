@@ -768,7 +768,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
         Formato: 1 byte flag (1 = keyframe, 0 = delta) + access unit Annex-B.
         """
-        if not _origin_allowed(ws.headers.get("origin")):
+        if not _origin_allowed(ws.headers.get("origin"), ws.headers.get("host")):
             return
         await ws.accept()
         stream = streams.get_stream(serial)
@@ -791,7 +791,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
-        if not _origin_allowed(ws.headers.get("origin")):
+        if not _origin_allowed(ws.headers.get("origin"), ws.headers.get("host")):
             return
         await ws.accept()
         log_queue = logs.subscribe()
