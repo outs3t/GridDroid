@@ -165,10 +165,16 @@ def schedule_install(
     system = platform.system()
     if system == "Windows":
         script = _make_windows_bat(installer, silent_args, restart_path, old_pid)
-        flags = 0x00000008  # DETACHED_PROCESS
+        # CREATE_NO_WINDOW evita la comparsa del terminale nero;
+        # DETACHED_PROCESS stacca il processo dal padre.
+        flags = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | DETACHED_PROCESS
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
         subprocess.Popen(
             ["cmd", "/c", "call", str(script)],
             creationflags=flags,
+            startupinfo=si,
             close_fds=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
