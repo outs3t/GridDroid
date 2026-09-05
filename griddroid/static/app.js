@@ -113,14 +113,8 @@ function renderGrid() {
         });
     }
 
-    devices.sort((a, b) => {
-        // Online sempre in cima, poi A-Z automatico
-        const aOnline = a.status === "online";
-        const bOnline = b.status === "online";
-        if (aOnline && !bOnline) return -1;
-        if (bOnline && !aOnline) return 1;
-        return (a.display_name || "").localeCompare(b.display_name || "");
-    });
+    // A-Z automatico, indipendentemente dallo stato online/offline
+    devices.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || ""));
 
     // Nascondi i dispositivi segnati come "giocati"
     devices = devices.filter((dev) => !dev.played);
@@ -1165,6 +1159,9 @@ function initDock() {
     });
 
     document.addEventListener("click", (e) => {
+        // Se il click ha rimosso il target dal DOM (es. re-render lista script),
+        // closest() non risale più al dock: non e' un click "fuori".
+        if (!e.target.isConnected) return;
         if (e.target.closest("#rightDock")) return;
         closeAllFlyouts();
     });
@@ -2474,6 +2471,17 @@ function removeGroup(name) {
             wsSend({ action: "tags", serial: d.serial, tags: d.tags });
         }
     });
+
+    // Se il gruppo eliminato era il filtro attivo, torna a "tutti"
+    if (state.activeGroupFilter === name) {
+        state.activeGroupFilter = null;
+    }
+    // Se la ricerca per gruppo puntava al gruppo eliminato, azzerala
+    if (state.searchMode === "group" && state.searchText === name) {
+        state.searchText = "";
+        const searchInput = document.getElementById("deviceSearchInput");
+        if (searchInput) searchInput.value = "";
+    }
 
     renderGroups();
     renderAssignDevice();

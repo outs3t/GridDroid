@@ -117,8 +117,14 @@ def _make_windows_bat(
     """Crea uno script .bat che chiude GridDroid, esegue l'installer e lo riavvia."""
     bat = Path(tempfile.gettempdir()) / "griddroid_update.bat"
     args = " ".join(silent_args)
-    restart = f'start "" "{exe_path}"' if exe_path and exe_path != str(installer) else ""
+    restart = f'start "" "{exe_path}"\n' if exe_path and exe_path != str(installer) else ""
     kill_pid = f"taskkill /F /PID {old_pid} 2>nul\n" if old_pid else ""
+    # Senza silent_args il file scaricato e' l'exe portatile: va copiato
+    # sopra il vecchio exe, non eseguito (altrimenti gira da temp e basta).
+    if exe_path and not silent_args and exe_path != str(installer):
+        install = f'copy /Y "{installer}" "{exe_path}" >nul\n'
+    else:
+        install = f'start /wait "" "{installer}" {args}\n'
     text = (
         "@echo off\n"
         "title GridDroid Updater\n"
@@ -130,8 +136,8 @@ def _make_windows_bat(
         "    ping -n 2 127.0.0.1 >nul\n"
         "    goto wait\n"
         ")\n"
-        f"start /wait \"\" \"{installer}\" {args}\n"
-        f"{restart}\n"
+        f"{install}"
+        f"{restart}"
         f"del /F /Q \"{installer}\" 2>nul\n"
         "del /F /Q \"%~f0\" 2>nul\n"
     )

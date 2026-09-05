@@ -220,12 +220,37 @@
             </div>
         </div>
 
-        <!-- Gestione -->
-        <div class="dock-item" data-target="flyoutManage" tabindex="0" role="button" title="Gestione">
-            <span class="dock-icon">⚙</span>
-            <span class="dock-label">Gestione</span>
-            <div class="flyout" id="flyoutManage">
-                <div class="flyout-header"><span>Gestione</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
+        <!-- Bookmakers -->
+        <div class="dock-item" data-target="flyoutBookmakers" tabindex="0" role="button" title="Bookmakers">
+            <span class="dock-icon">🎰</span>
+            <span class="dock-label">Bookmakers</span>
+            <div class="flyout" id="flyoutBookmakers">
+                <div class="flyout-header"><span>Bookmakers</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
+                <div class="flyout-body">
+                    <div class="sidebar-section active">
+                        <h4>Bookmakers</h4>
+                        <div class="input-group" style="margin-top:0;margin-bottom:10px;">
+                            <input type="text" id="bookmakerSearch" placeholder="Cerca sito..." />
+                            <button class="btn" id="btnToggleBookmakerAdd" style="margin-left:4px;flex:0 0 auto;" title="Aggiungi sito">+</button>
+                        </div>
+                        <div id="bookmakerAdd" style="display:none;margin-bottom:10px;">
+                            <input type="text" id="newBookmakerName" placeholder="Nome sito" style="width:100%;margin-bottom:6px;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);" />
+                            <input type="text" id="newBookmakerUrl" placeholder="https://..." style="width:100%;margin-bottom:6px;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);" />
+                            <button class="btn btn-accent" id="btnSaveBookmaker" style="width:100%;">Aggiungi</button>
+                        </div>
+                        <div id="bookmakerGrid" class="bookmaker-grid"></div>
+                        <button class="btn btn-accent" id="btnOpenPayPalApp" style="margin-top:12px;width:100%;">Apri app PayPal</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Gruppi -->
+        <div class="dock-item" data-target="flyoutGroups" tabindex="0" role="button" title="Gruppi">
+            <span class="dock-icon">🗂</span>
+            <span class="dock-label">Gruppi</span>
+            <div class="flyout" id="flyoutGroups">
+                <div class="flyout-header"><span>Gruppi</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
                 <div class="flyout-body">
                     <div class="sidebar-section active">
                         <h4>Gruppi</h4>
@@ -243,21 +268,18 @@
                             <button class="btn btn-accent" id="btnSaveAssignment" style="width:100%;margin-top:8px;">Salva assegnazione</button>
                         </div>
                     </div>
-                    <div class="sidebar-section">
-                        <h4>Bookmakers</h4>
-                        <div class="input-group" style="margin-top:0;margin-bottom:10px;">
-                            <input type="text" id="bookmakerSearch" placeholder="Cerca sito..." />
-                            <button class="btn" id="btnToggleBookmakerAdd" style="margin-left:4px;flex:0 0 auto;" title="Aggiungi sito">+</button>
-                        </div>
-                        <div id="bookmakerAdd" style="display:none;margin-bottom:10px;">
-                            <input type="text" id="newBookmakerName" placeholder="Nome sito" style="width:100%;margin-bottom:6px;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);" />
-                            <input type="text" id="newBookmakerUrl" placeholder="https://..." style="width:100%;margin-bottom:6px;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);" />
-                            <button class="btn btn-accent" id="btnSaveBookmaker" style="width:100%;">Aggiungi</button>
-                        </div>
-                        <div id="bookmakerGrid" class="bookmaker-grid"></div>
-                        <button class="btn btn-accent" id="btnOpenPayPalApp" style="margin-top:12px;width:100%;">Apri app PayPal</button>
-                    </div>
-                    <div class="sidebar-section">
+                </div>
+            </div>
+        </div>
+
+        <!-- Gestione -->
+        <div class="dock-item" data-target="flyoutManage" tabindex="0" role="button" title="Gestione">
+            <span class="dock-icon">⚙</span>
+            <span class="dock-label">Gestione</span>
+            <div class="flyout" id="flyoutManage">
+                <div class="flyout-header"><span>Gestione</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
+                <div class="flyout-body">
+                    <div class="sidebar-section active">
                         <h4>Impostazioni griglia</h4>
                         <div class="input-group">
                             <label>Max colonne</label>
@@ -371,7 +393,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=62"></script>
+    <script src="/static/app.js?v=64"></script>
     <script>
     (async () => {
         try {
