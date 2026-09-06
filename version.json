@@ -1,9 +1,20 @@
 {
-  "version": "0.1.36",
-  "build_time": "2026-09-06T00:27:56.896304+02:00",
+  "version": "0.1.37",
+  "build_time": "2026-09-06T12:49:16.637499+02:00",
   "windows": {
-    "download_url": "https://outs3t.github.io/GridDroid/GridDroid.exe",
-    "silent_args": []
+    "download_url": "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe",
+    "silent_args": [
+      "/VERYSILENT",
+      "/NORESTART",
+      "/SUPPRESSMSGBOXES"
+    ],
+    "installer_url": "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe",
+    "installer_silent_args": [
+      "/VERYSILENT",
+      "/NORESTART",
+      "/SUPPRESSMSGBOXES"
+    ],
+    "portable_url": "https://outs3t.github.io/GridDroid/GridDroid.exe"
   },
   "linux": {
     "download_url": "https://raw.githubusercontent.com/outs3t/GridDroid/main/install_linux.sh",
