@@ -97,6 +97,8 @@ class DeviceStream:
         self._h264_config: bytes = b""
         self._last_keyframe: Optional[bytes] = None
         self._subscribers: Set[asyncio.Queue] = set()
+        # Code che hanno perso frame: ricevono solo keyframe finche' non si riallineano
+        self._desynced: Set[asyncio.Queue] = set()
         self._task: Optional[asyncio.Task] = None
         self._log_task: Optional[asyncio.Task] = None
         self._native_width: int = 0
@@ -189,6 +191,7 @@ class DeviceStream:
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self._subscribers.discard(q)
+        self._desynced.discard(q)
 
     # ------------------------------------------------------------------
     # Core: scrcpy-server standalone via TCP
@@ -303,6 +306,9 @@ class DeviceStream:
                         f"raw_stream=true "
                         f"max_size={s.max_size} max_fps={s.max_fps} "
                         f"video_bit_rate={s.bit_rate} "
+                        # Keyframe ogni 2s: chi perde frame (rete lenta/VPN)
+                        # si riallinea in fretta invece di restare corrotto.
+                        f"video_codec_options=i-frame-interval=2 "
                         f"scid={scid_hex}"
                     )
                     self._server_proc = await asyncio.create_subprocess_exec(
@@ -644,19 +650,36 @@ class DeviceStream:
 
     def _distribute_frame(self, frame: bytes) -> None:
         self._last_heartbeat = time.monotonic()
+        # Keyframe H264 (flag 0x01) o JPEG completo del fallback:
+        # entrambi riallineano un client che ha perso frame.
+        is_key = frame[:1] == b"\x01" or frame[:2] == b"\xff\xd8"
         dead: List[asyncio.Queue] = []
         for q in self._subscribers:
             try:
-                if q.full():
-                    try:
-                        q.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
+                if q in self._desynced:
+                    # Ha perso frame: i delta produrrebbero video corrotto,
+                    # si riallinea solo sul prossimo keyframe.
+                    if not is_key:
+                        continue
+                    self._desynced.discard(q)
+                elif q.full():
+                    # Scartare un solo delta corrompe il decoder del client
+                    # fino al prossimo keyframe: meglio svuotare la coda
+                    # e riallineare direttamente sul keyframe.
+                    while True:
+                        try:
+                            q.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    if not is_key:
+                        self._desynced.add(q)
+                        continue
                 q.put_nowait(frame)
             except Exception:
                 dead.append(q)
         for q in dead:
             self._subscribers.discard(q)
+            self._desynced.discard(q)
 
 
 class StreamManager:

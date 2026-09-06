@@ -695,12 +695,26 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         platform_info = remote.get(platform_key)
         if not platform_info:
             return {"available": False, "version": __version__}
+        # Installazione Inno -> aggiorna via setup silenzioso (chiude e
+        # riavvia l'app da solo). Exe portatile -> auto-sostituzione.
+        download_url = platform_info.get("download_url")
+        silent_args = platform_info.get("silent_args", [])
+        if sys.platform == "win32":
+            if updater.is_installed() and platform_info.get("installer_url"):
+                download_url = platform_info["installer_url"]
+                silent_args = platform_info.get(
+                    "installer_silent_args",
+                    ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
+                )
+            elif platform_info.get("portable_url"):
+                download_url = platform_info["portable_url"]
+                silent_args = []
         return {
             "available": True,
             "current_version": __version__,
             "new_version": remote_version,
-            "download_url": platform_info.get("download_url"),
-            "silent_args": platform_info.get("silent_args", []),
+            "download_url": download_url,
+            "silent_args": silent_args,
         }
 
     @app.post("/api/update/start")

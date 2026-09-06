@@ -273,7 +273,7 @@ def _cleanup_children() -> None:
             _log(f"Errore taskkill: {exc}")
 
 
-def _start_tray(url: str, window) -> None:
+def _start_tray(url: str, window, quit_callback=None) -> None:
     """Avvia l'icona di notifica in un thread separato."""
     global _tray_icon
     try:
@@ -285,11 +285,14 @@ def _start_tray(url: str, window) -> None:
                 _open_browser(url)
 
         def exit_app():
+            _log("Uscita richiesta da tray")
+            if quit_callback:
+                quit_callback()
+                return
             try:
                 window.destroy()
             except Exception:
                 pass
-            _log("Uscita richiesta da tray")
             os._exit(0)
 
         _tray_icon = startup.create_tray_icon(url, show_window, exit_app)
@@ -334,9 +337,8 @@ def _run_with_webview(url: str, settings, no_tray: bool = False) -> None:
         import webview
         _log("Apertura finestra nativa")
 
-        def _on_closing() -> None:
-            """Forza la chiusura del processo quando l'utente chiude la finestra."""
-            _log("Chiusura finestra richiesta")
+        def _quit_app() -> None:
+            """Chiusura completa: server, processi figli, log, processo."""
             _destroy_tray()
             try:
                 _stop_server(3.0)
@@ -353,6 +355,19 @@ def _run_with_webview(url: str, settings, no_tray: bool = False) -> None:
                 _log(f"Errore salvataggio log: {exc}")
             _log("GridDroid chiuso")
             os._exit(0)
+
+        def _on_closing():
+            """La X nasconde la finestra nella tray; per uscire davvero
+            si usa "Esci" dal menu dell'icona di notifica."""
+            if _tray_icon is not None:
+                try:
+                    window.hide()
+                except Exception as exc:
+                    _log(f"Errore hide finestra: {exc}")
+                return False  # annulla la chiusura
+            _log("Chiusura finestra richiesta")
+            _quit_app()
+            return True
 
         window = webview.create_window(
             "GridDroid",
@@ -401,9 +416,10 @@ def _run_with_webview(url: str, settings, no_tray: bool = False) -> None:
             _log("Evento 'loaded' di pywebview non disponibile")
         threading.Timer(1.0, _apply_startup_later).start()
 
-        # Icona di notifica
-        if minimize_to_tray:
-            _start_tray(url, window)
+        # Icona di notifica sempre attiva: la X manda in tray,
+        # "Esci" dal menu tray chiude davvero l'app.
+        if not no_tray:
+            _start_tray(url, window, _quit_app)
 
         webview.start()
         _destroy_tray()

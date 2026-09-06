@@ -34,6 +34,20 @@ def is_newer(remote: str, local: str) -> bool:
     return _version_tuple(remote) > _version_tuple(local)
 
 
+def is_installed() -> bool:
+    """True se GridDroid gira da un'installazione Inno Setup.
+
+    Inno crea sempre `unins000.exe` nella cartella dell'app: e' il marker
+    piu' affidabile per distinguere installazione da exe portatile.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    try:
+        return (Path(sys.executable).parent / "unins000.exe").exists()
+    except Exception:
+        return False
+
+
 async def fetch_remote_info(
     url: str = DEFAULT_REMOTE, timeout: float = 10.0,
 ) -> Optional[Dict[str, Any]]:

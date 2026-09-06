@@ -47,37 +47,46 @@ def build_onefile() -> None:
     run([sys.executable, "-m", "PyInstaller", "griddroid.spec", "--clean", "--noconfirm"], cwd=REPO_ROOT)
 
 
-def build_installer() -> None:
+def build_installer(version: str) -> None:
+    """Compila l'installer Inno passando la versione corrente via /D."""
     print("Build dell'installer con Inno Setup...")
-    run(["build_setup.bat"], cwd=REPO_ROOT)
+    iscc_candidates = [
+        r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        r"C:\Program Files\Inno Setup 6\ISCC.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"),
+    ]
+    iscc = next((p for p in iscc_candidates if os.path.exists(p)), None)
+    if not iscc:
+        raise RuntimeError(
+            "Inno Setup non trovato. Installalo con:\n"
+            "  winget install --id JRSoftware.InnoSetup -e --silent"
+        )
+    run([iscc, f"/DMyAppVersion={version}", "setup.iss"], cwd=REPO_ROOT)
 
 
-def update_landing(exe_name: str, version: str) -> None:
-    src_exe = DIST_DIR / exe_name
-    if not src_exe.exists():
-        raise FileNotFoundError(f"Manca {src_exe}. Build prima con --build o --installer.")
+def update_landing(version: str) -> None:
+    """Copia installer + portable nella landing e aggiorna version.json."""
+    base = "https://outs3t.github.io/GridDroid"
+    for name in ("GridDroid_Setup.exe", "GridDroid.exe"):
+        src = DIST_DIR / name
+        if not src.exists():
+            raise FileNotFoundError(f"Manca {src}. Build prima con --build.")
+        dst = LANDING_DIR / name
+        print(f"Copio: {src} -> {dst}")
+        shutil.copy2(src, dst)
 
-    dst_exe = LANDING_DIR / exe_name
-    print(f"Copio eseguibile: {src_exe} -> {dst_exe}")
-    shutil.copy2(src_exe, dst_exe)
-
-    # Pulisco eseguibili vecchi
-    for old in ["GridDroid_Setup.exe", "GridDroid.exe"]:
-        if old != exe_name:
-            old_path = LANDING_DIR / old
-            if old_path.exists():
-                print(f"Rimuovo eseguibile vecchio: {old_path}")
-                old_path.unlink()
-
-    # version.json
+    # version.json: entrambi i canali; l'app sceglie in base a come gira
     version_file = LANDING_DIR / "version.json"
     build_time = datetime.now().astimezone().isoformat()
     data = {
         "version": version,
         "build_time": build_time,
         "windows": {
-            "download_url": f"https://outs3t.github.io/GridDroid/{exe_name}",
-            "silent_args": [] if "Setup" not in exe_name else ["/SILENT"],
+            "download_url": f"{base}/GridDroid_Setup.exe",
+            "silent_args": ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
+            "installer_url": f"{base}/GridDroid_Setup.exe",
+            "installer_silent_args": ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
+            "portable_url": f"{base}/GridDroid.exe",
         },
         "linux": {
             "download_url": "https://raw.githubusercontent.com/outs3t/GridDroid/main/install_linux.sh",
@@ -86,19 +95,6 @@ def update_landing(exe_name: str, version: str) -> None:
     }
     version_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(f"Aggiornato {version_file} alla versione {version} ({build_time})")
-
-    # index.html — aggiorna riferimenti al nome eseguibile
-    index_file = LANDING_DIR / "index.html"
-    if index_file.exists():
-        html = index_file.read_text(encoding="utf-8")
-        for old in ["GridDroid_Setup.exe", "GridDroid.exe"]:
-            html = html.replace(old, exe_name)
-        # Testo esplicativo per l'eseguibile portatile
-        if "Setup" not in exe_name:
-            html = html.replace("Installer .exe. Non richiede Python, ADB o installazioni aggiuntive.",
-                                "Versione portatile .exe. Non richiede installazione, basta avviarla.")
-        index_file.write_text(html, encoding="utf-8")
-        print(f"Aggiornato {index_file}")
 
 
 def push_to_gh_pages(version: str) -> None:
@@ -148,8 +144,7 @@ def push_to_gh_pages(version: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Deploy landing page")
-    parser.add_argument("--build", action="store_true", help="Builda GridDroid.exe prima di deployare")
-    parser.add_argument("--installer", action="store_true", help="Usa dist\\GridDroid_Setup.exe")
+    parser.add_argument("--build", action="store_true", help="Builda exe + installer prima di deployare")
     parser.add_argument("--no-push", action="store_true", help="Aggiorna landing/ ma non pusha")
     args = parser.parse_args()
 
@@ -157,16 +152,10 @@ def main() -> None:
     print(f"Versione rilevata: {version}")
 
     if args.build:
-        if args.installer:
-            build_installer()
-            exe_name = "GridDroid_Setup.exe"
-        else:
-            build_onefile()
-            exe_name = "GridDroid.exe"
-    else:
-        exe_name = "GridDroid_Setup.exe" if args.installer else "GridDroid.exe"
+        build_onefile()
+        build_installer(version)
 
-    update_landing(exe_name, version)
+    update_landing(version)
 
     if not args.no_push:
         push_to_gh_pages(version)
