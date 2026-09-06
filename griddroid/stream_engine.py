@@ -30,6 +30,11 @@ else:
 _SCRCPY_VERSION = "4.1"
 _BASE_PORT = 27183
 
+# Seriali il cui encoder crasha con video_codec_options=i-frame-interval
+# (0 frame prodotti). A livello di modulo perche' l'auto-stream ricrea
+# DeviceStream a ogni tentativo: lo stato deve sopravvivere.
+_IFRAME_UNSUPPORTED: Set[str] = set()
+
 
 def _tools_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -99,6 +104,10 @@ class DeviceStream:
         self._subscribers: Set[asyncio.Queue] = set()
         # Code che hanno perso frame: ricevono solo keyframe finche' non si riallineano
         self._desynced: Set[asyncio.Queue] = set()
+        # Device il cui encoder crasha con i-frame-interval (0 frame):
+        # set a livello di modulo perche' l'auto-stream ricrea DeviceStream
+        # a ogni tentativo e una variabile locale si resetterebbe.
+        self._iframe_unsupported = _IFRAME_UNSUPPORTED
         self._task: Optional[asyncio.Task] = None
         self._log_task: Optional[asyncio.Task] = None
         self._native_width: int = 0
@@ -308,8 +317,11 @@ class DeviceStream:
                         f"video_bit_rate={s.bit_rate} "
                         # Keyframe ogni 2s: chi perde frame (rete lenta/VPN)
                         # si riallinea in fretta invece di restare corrotto.
-                        f"video_codec_options=i-frame-interval=2 "
-                        f"scid={scid_hex}"
+                        + (
+                            "video_codec_options=i-frame-interval=2 "
+                            if self.serial not in self._iframe_unsupported else ""
+                        )
+                        + f"scid={scid_hex}"
                     )
                     self._server_proc = await asyncio.create_subprocess_exec(
                         adb, "-s", self.serial, "shell", server_cmd,
@@ -372,6 +384,14 @@ class DeviceStream:
                     consecutive_failures = 0
                 else:
                     consecutive_failures += 1
+                    if self.serial not in self._iframe_unsupported:
+                        # Encoder morto subito dopo il configure:
+                        # i-frame-interval non digerito, si riprova senza.
+                        self._iframe_unsupported.add(self.serial)
+                        logs.warn(
+                            "Encoder senza frame: disattivo i-frame-interval e riprovo",
+                            serial=self.serial,
+                        )
 
             except asyncio.CancelledError:
                 break

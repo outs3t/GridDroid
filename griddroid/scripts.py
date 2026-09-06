@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 import shlex
+import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Dict, List, Optional
 
@@ -216,82 +217,103 @@ class ScriptEngine:
         out = await self._shell(serial, "dumpsys window")
         return bool(re.search(r"m(Dreaming|Showing)Lockscreen\s*=\s*true", out, re.I))
 
+    async def _attendi(self, cond, timeout: float, step: float = 0.3) -> bool:
+        """Attesa attiva: True appena cond() diventa vera, False al timeout.
+
+        Piu' robusta degli sleep fissi: su device veloci non perde tempo,
+        su device lenti aspetta il necessario.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if await cond():
+                return True
+            await asyncio.sleep(step)
+        return await cond()
+
     # ------------------------------------------------------------------
     # Handler: sblocco con PIN
     # ------------------------------------------------------------------
 
     async def _sblocca_pin(self, serial: str, params: dict) -> ScriptResult:
-        """Sblocca il dispositivo inserendo il PIN.
+        """Sblocca il dispositivo inserendo il PIN (o la password).
 
-        Sequenza robusta che funziona sulla maggioranza delle ROM:
-        1. accende lo schermo
-        2. se il keyguard è attivo, fa swipe verso l'alto e tappa al centro
-        3. digita il PIN tramite keyevent (cifra per cifra) e conferma
-        4. verifica che il keyguard sia effettivamente caduto
+        Strategia a tentativi multipli con attese attive (polling) al posto
+        di sleep fissi: piu' robusta su device lenti e ROM diverse.
+        - PIN numerico: cifre via keyevent (KEYCODE_0..9)
+        - Alfanumerico: input text (gli spazi diventano %s)
+        - Conferma: ENTER, poi DPAD/MENU come fallback
         """
         pin = str(params.get("pin", "")).strip()
-        if not pin.isdigit():
-            return ScriptResult(serial, False, "Il PIN deve contenere solo cifre")
+        if not pin:
+            return ScriptResult(serial, False, "PIN vuoto")
+        solo_cifre = pin.isdigit()
+        keycodes = " ".join(str(7 + int(d)) for d in pin) if solo_cifre else ""
+        # input text non accetta spazi letterali: vanno passati come %s
+        pin_text = shlex.quote(pin.replace(" ", "%s"))
 
-        # 1. Accende lo schermo (power, poi wakeup se serve)
-        if not await self._schermo_acceso(serial):
-            await self._key(serial, KEY_POWER)
-            await asyncio.sleep(0.6)
-        if not await self._schermo_acceso(serial):
-            await self._key(serial, KEY_WAKEUP)
-            await asyncio.sleep(0.7)
+        for tentativo in range(1, 4):
+            # 1. Accende lo schermo con attesa attiva (max ~5s)
+            if not await self._attendi(lambda: self._schermo_acceso(serial), 1.0):
+                await self._key(serial, KEY_POWER)
+                await self._attendi(lambda: self._schermo_acceso(serial), 2.0)
+            if not await self._schermo_acceso(serial):
+                await self._key(serial, KEY_WAKEUP)
+                await self._attendi(lambda: self._schermo_acceso(serial), 2.0)
 
-        # Se non è bloccato, non serve fare altro
-        if not await self._bloccato(serial):
-            return ScriptResult(serial, True, "Già sbloccato")
+            # Se non e' bloccato, non serve fare altro
+            if not await self._bloccato(serial):
+                return ScriptResult(serial, True, "Già sbloccato")
 
-        # 2. Calcola il centro dello schermo e mostra il tastierino
-        size = await self._shell(serial, "wm size")
-        larghezza, altezza = 1080, 1920
-        match = re.search(r"(\d+)x(\d+)", size)
-        if match:
-            larghezza, altezza = int(match.group(1)), int(match.group(2))
-
-        cx, cy = larghezza // 2, altezza // 2
-        await self._shell(
-            serial,
-            f"input swipe {cx} {int(altezza * 0.85)} {cx} {int(altezza * 0.15)} 200",
-        )
-        await asyncio.sleep(0.5)
-        await self._shell(serial, f"input tap {cx} {cy}")
-        await asyncio.sleep(0.3)
-
-        # 3. Inserisce il PIN cifra per cifra con keyevent
-        keycodes = " ".join(str(7 + int(d)) for d in pin)  # KEYCODE_0..9 = 7..16
-        await self._shell(serial, f"input keyevent {keycodes}")
-        await asyncio.sleep(0.3)
-        await self._key(serial, KEY_ENTER)
-        await asyncio.sleep(1.2)
-
-        # 4. Verifica
-        if not await self._bloccato(serial):
-            return ScriptResult(serial, True, "Dispositivo sbloccato")
-
-        # Fallback: alcune ROM accettano solo input text con conferma alternativa
-        await self._shell(serial, f"input text {pin}")
-        await asyncio.sleep(0.3)
-        await self._key(serial, KEY_ENTER)
-        await asyncio.sleep(1.0)
-
-        if not await self._bloccato(serial):
-            return ScriptResult(serial, True, "Dispositivo sbloccato")
-
-        # Ultimo tentativo: conferma con DPAD_CENTER
-        await self._shell(serial, f"input keyevent {keycodes}")
-        await asyncio.sleep(0.3)
-        await self._key(serial, KEY_MENU)
-        await asyncio.sleep(1.0)
-
-        if await self._bloccato(serial):
-            return ScriptResult(
-                serial, False, "Sblocco fallito: PIN errato o ROM non compatibile",
+            # 2. Mostra il tastierino: due gesture per coprire piu' ROM
+            size = await self._shell(serial, "wm size")
+            larghezza, altezza = 1080, 1920
+            match = re.search(r"(\d+)x(\d+)", size)
+            if match:
+                larghezza, altezza = int(match.group(1)), int(match.group(2))
+            cx = larghezza // 2
+            # Swipe classico dal basso verso l'alto
+            await self._shell(
+                serial,
+                f"input swipe {cx} {int(altezza * 0.85)} {cx} {int(altezza * 0.15)} 200",
             )
-        return ScriptResult(serial, True, "Dispositivo sbloccato")
+            await asyncio.sleep(0.4)
+            # Alcune ROM (MIUI, OneUI recenti) vogliono lo swipe dal bordo
+            await self._shell(
+                serial,
+                f"input swipe {cx} {altezza - 80} {cx} {int(altezza * 0.4)} 250",
+            )
+            await asyncio.sleep(0.4)
+
+            # 3. Inserimento: keyevent per le cifre, input text per il resto
+            if solo_cifre:
+                await self._shell(serial, f"input keyevent {keycodes}")
+            else:
+                await self._shell(serial, f"input text {pin_text}")
+            await asyncio.sleep(0.3)
+            await self._key(serial, KEY_ENTER)
+
+            # 4. Attesa attiva: il keyguard puo' impiegare fino a ~2.5s a cadere
+            if await self._attendi(lambda: self._non_bloccato(serial), 2.5):
+                return ScriptResult(serial, True, "Dispositivo sbloccato")
+
+            # Fallback: alcune ROM accettano solo input text / conferma MENU
+            await self._shell(serial, f"input text {pin_text}")
+            await asyncio.sleep(0.3)
+            await self._key(serial, KEY_MENU)
+            if await self._attendi(lambda: self._non_bloccato(serial), 2.0):
+                return ScriptResult(serial, True, "Dispositivo sbloccato")
+
+            # Ancora bloccato: piccolo backoff prima del prossimo tentativo
+            if tentativo < 3:
+                await asyncio.sleep(0.8 * tentativo)
+
+        return ScriptResult(
+            serial, False, "Sblocco fallito: PIN errato, lockout attivo o ROM non compatibile",
+        )
+
+    async def _non_bloccato(self, serial: str) -> bool:
+        """True quando il keyguard non e' piu' attivo (per _attendi)."""
+        return not await self._bloccato(serial)
 
     async def _blocca(self, serial: str, params: dict) -> ScriptResult:
         """Blocca il dispositivo e spegne lo schermo."""

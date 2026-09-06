@@ -204,16 +204,17 @@ def schedule_install(
     system = platform.system()
     if system == "Windows":
         script = _make_windows_bat(installer, silent_args, restart_path, old_pid)
-        # CREATE_NO_WINDOW evita la comparsa del terminale nero;
-        # DETACHED_PROCESS stacca il processo dal padre.
-        flags = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | DETACHED_PROCESS
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 0  # SW_HIDE
+        # Wrapper VBScript: WScript.Shell.Run con window style 0 esegue il bat
+        # completamente invisibile (niente finestra console durante l'update).
+        vbs = Path(tempfile.gettempdir()) / "griddroid_update.vbs"
+        vbs.write_text(
+            'CreateObject("Wscript.Shell").Run '
+            f'"cmd /c call ""{script}""", 0, False\n',
+            encoding="utf-8",
+        )
         subprocess.Popen(
-            ["cmd", "/c", "call", str(script)],
-            creationflags=flags,
-            startupinfo=si,
+            ["wscript.exe", str(vbs)],
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
             close_fds=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
