@@ -283,24 +283,43 @@ class AdbManager:
         Username: nodi vicino a 'ciao'/'benvenuto'/'account'/'profilo'.
         """
         info = {"saldo": None, "bookmaker": "", "username": ""}
+        # Una sola chiamata adb: dump diretto su stdout (niente file
+        # intermedio + cat). Il messaggio "UI hierchary dumped to:" va
+        # tolto: l'XML vero sta tra <hierarchy> e </hierarchy>.
+        xml = ""
         try:
-            await self.shell(
-                serial, "uiautomator dump /sdcard/griddroid_ui.xml", timeout=15.0
+            out = await self.shell(
+                serial, "uiautomator dump /dev/stdout", timeout=15.0
             )
-            xml = await self.shell(
-                serial, "cat /sdcard/griddroid_ui.xml", timeout=15.0
-            )
-        except Exception as exc:
-            logs.warn(f"Lettura saldo fallita: {exc}", serial=serial)
-            return info
+            start = out.find("<hierarchy")
+            end = out.rfind("</hierarchy>")
+            if start >= 0 and end > start:
+                xml = out[start : end + len("</hierarchy>")]
+        except Exception:
+            pass
+        if not xml:
+            # Fallback: metodo file (device dove /dev/stdout non va)
+            try:
+                await self.shell(
+                    serial, "uiautomator dump /sdcard/griddroid_ui.xml", timeout=15.0
+                )
+                xml = await self.shell(
+                    serial, "cat /sdcard/griddroid_ui.xml", timeout=15.0
+                )
+            except Exception as exc:
+                logs.warn(f"Lettura saldo fallita: {exc}", serial=serial)
+                return info
         if not xml:
             return info
 
         texts = [t for t in re.findall(r'text="([^"]+)"', xml) if t.strip()]
 
-        # --- Bookmaker: app in foreground ---
-        pkg = await self._foreground_package(serial)
-        if pkg:
+        # --- Bookmaker: il package dell'app in foreground e' gia' nei nodi
+        # del dump (attributo package=) — niente dumpsys separato.
+        pkgs = re.findall(r'package="([^"]+)"', xml)
+        if pkgs:
+            # Il package piu' frequente e' quello dell'app a schermo
+            pkg = max(set(pkgs), key=pkgs.count)
             info["bookmaker"] = self._bookmaker_from_package(pkg)
 
         # --- Saldo ---
