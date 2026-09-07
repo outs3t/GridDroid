@@ -122,10 +122,12 @@ class DeviceStream:
     def alive(self) -> bool:
         if not self._running or self._task is None:
             return False
-        # Se la task e' morta o non batte da troppo tempo, consideriamo lo stream morto
-        if self._task.done():
-            return False
-        return (time.monotonic() - self._last_heartbeat) < 180.0
+        # Vitalita' = la pipeline sta girando. NON si guarda l'ultimo frame:
+        # con schermo statico MediaCodec non emette nulla e uno stream sano
+        # resta muto per minuti (prima veniva ucciso e riavviato ogni 180s).
+        # Se l'encoder muore il socket si chiude e la task termina, quindi
+        # _task.done() copre comunque il caso reale.
+        return not self._task.done()
 
     @property
     def last_frame(self) -> Optional[bytes]:
@@ -434,18 +436,13 @@ class DeviceStream:
         au_count = 0
 
         while self._running:
-            try:
-                # Watchdog: se l'encoder sul telefono muore ma il socket TCP
-                # resta aperto (es. errore 'Released state'), read() bloccherebbe
-                # all'infinito e lo stream resterebbe zombie fino al timeout
-                # heartbeat di 180s. Senza dati per 30s -> riconnessione.
-                data = await asyncio.wait_for(tcp_reader.read(65536), timeout=30.0)
-            except asyncio.TimeoutError:
-                logs.warn(
-                    f"Nessun frame da 30s, riavvio stream ({au_count} frame)",
-                    serial=self.serial,
-                )
-                break
+            # Nessun timeout sulla read: se lo schermo del telefono e' statico
+            # MediaCodec non emette alcun frame, quindi uno stream sano puo'
+            # restare muto per minuti. Un watchdog a tempo lo ucciderebbe in
+            # loop. Il caso zombie reale (encoder crashato con il socket
+            # ancora aperto) e' gestito da _on_server_output, che chiude il
+            # writer appena vede l'errore e sblocca questa read.
+            data = await tcp_reader.read(65536)
             if not data:
                 logs.info(f"TCP stream chiuso ({au_count} frame)", serial=self.serial)
                 break
