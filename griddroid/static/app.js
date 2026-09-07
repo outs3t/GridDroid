@@ -1344,10 +1344,32 @@ async function downloadBalancesCsv() {
         // Nome file dal server: saldi_ledger_BET365_2026-09-07.csv
         const cd = resp.headers.get("Content-Disposition") || "";
         const m = cd.match(/filename="?([^";]+)"?/);
+        const filename = m ? m[1] : `saldi_ledger_${Date.now()}.csv`;
+        // Dialogo "Salva con nome": l'utente sceglie dove salvare il file.
+        // Supportato da Chrome/Edge; altrove si ricade sul download classico.
+        if (window.showSaveFilePicker) {
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: filename,
+                    types: [{
+                        description: "CSV saldi",
+                        accept: { "text/csv": [".csv"] },
+                    }],
+                });
+                const writable = await handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                toast(`CSV saldi salvato: ${handle.name}`, "success");
+                return;
+            } catch (e) {
+                if (e && e.name === "AbortError") return; // annullato dall'utente
+                // Permesso negato o API non usabile: fallback sotto
+            }
+        }
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = m ? m[1] : `saldi_ledger_${Date.now()}.csv`;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         a.remove();

@@ -373,12 +373,13 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             )
         data = LEDGER_FILE.read_text(encoding="utf-8")
         # Nome file come il sample del sito: saldi_ledger_BET365_2026-09-07.csv
+        # Con bookmaker diversi li elenca tutti: saldi_ledger_BET365-SNAI_....csv
         book = ""
         lines = [l for l in data.splitlines() if l.strip()]
         if len(lines) > 1:
-            books = {l.split(",")[1].strip() for l in lines[1:]}
-            if len(books) == 1:
-                book = f"_{books.pop()}"
+            books = sorted({l.split(",")[1].strip() for l in lines[1:]} - {""})
+            if books:
+                book = "_" + "-".join(books)
         stamp = datetime.now().strftime("%Y-%m-%d")
         return Response(
             content="\ufeff" + data,
