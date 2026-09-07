@@ -63,6 +63,7 @@ jobs:
           $ver = "${{ steps.ver.outputs.version }}"
           $json = @{
             version = $ver
+            build_time = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             windows = @{
               download_url = "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe"
               silent_args = @()
