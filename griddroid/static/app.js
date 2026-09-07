@@ -1415,6 +1415,10 @@ function initDock() {
                 flyout.classList.add("active");
                 item.classList.add("active");
             }
+            // Il dock-item ha tabindex=0 e resterebbe focalizzato: il suo
+            // handler keydown riaprirebbe il flyout a ogni Spazio/Invio
+            // mentre si scrive su un telefono. Togliamo il focus.
+            item.blur();
         });
 
         item.addEventListener("keydown", (e) => {
