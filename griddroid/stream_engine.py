@@ -229,6 +229,14 @@ class DeviceStream:
                 self._server_error = text
             if not self._server_ready.is_set():
                 self._server_ready.set()
+            # Encoder morto a meta' stream (es. 'Released state'): il socket
+            # resta aperto ma non arrivano piu' frame. Chiudiamo il writer per
+            # sbloccare read() e far ripartire lo stream subito.
+            if "Capture/encoding error" in text and self._writer is not None:
+                try:
+                    self._writer.close()
+                except Exception:
+                    pass
 
     async def _run(self) -> None:
         server_jar = _find_scrcpy_server()
@@ -426,10 +434,22 @@ class DeviceStream:
         au_count = 0
 
         while self._running:
-            data = await tcp_reader.read(65536)
+            try:
+                # Watchdog: se l'encoder sul telefono muore ma il socket TCP
+                # resta aperto (es. errore 'Released state'), read() bloccherebbe
+                # all'infinito e lo stream resterebbe zombie fino al timeout
+                # heartbeat di 180s. Senza dati per 30s -> riconnessione.
+                data = await asyncio.wait_for(tcp_reader.read(65536), timeout=30.0)
+            except asyncio.TimeoutError:
+                logs.warn(
+                    f"Nessun frame da 30s, riavvio stream ({au_count} frame)",
+                    serial=self.serial,
+                )
+                break
             if not data:
                 logs.info(f"TCP stream chiuso ({au_count} frame)", serial=self.serial)
                 break
+            self._last_heartbeat = time.monotonic()
             buf.extend(data)
 
             # Sincronizza il buffer sul primo start code

@@ -284,16 +284,27 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/balances/read")
-    async def read_balances():
-        """Legge il saldo a schermo di ogni device online e lo salva in CSV."""
+    async def read_balances(request: Request):
+        """Legge il saldo a schermo dei device selezionati e lo salva in CSV."""
         from .config import append_balances, BALANCES_FILE
 
+        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        wanted = set(body.get("serials") or [])
+
         ts = datetime.now().isoformat(timespec="seconds")
+        online = [
+            (s, d) for s, d in adb.devices.items()
+            if d.status == DeviceStatus.ONLINE and (not wanted or s in wanted)
+        ]
+        # In parallelo: in sequenza 26 device richiederebbero ~80s
+        saldi = await asyncio.gather(
+            *(adb.read_balance(s) for s, _ in online),
+            return_exceptions=True,
+        )
         results = []
-        for serial, dev in adb.devices.items():
-            if dev.status != DeviceStatus.ONLINE:
-                continue
-            saldo = await adb.read_balance(serial)
+        for (serial, dev), saldo in zip(online, saldi):
+            if isinstance(saldo, Exception):
+                saldo = None
             results.append(
                 {"serial": serial, "nome": dev.display_name, "saldo": saldo}
             )
@@ -813,6 +824,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if not _origin_allowed(ws.headers.get("origin"), ws.headers.get("host")):
             return
         await ws.accept()
+        # Modalita' lite: solo keyframe (~1 ogni 2s). Per client remoti su
+        # rete lenta: banda ridotta del ~95%, il decoder resta agganciato
+        # perche' ogni keyframe e' auto-contenuto.
+        lite = ws.query_params.get("lite") == "1"
         stream = streams.get_stream(serial)
         if not stream:
             await ws.close(code=1008, reason="stream non attivo")
@@ -825,6 +840,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 await ws.send_bytes(keyframe)
             while True:
                 frame = await q.get()
+                if lite and frame[:1] != b"\x01":
+                    continue
                 await ws.send_bytes(frame)
         except (WebSocketDisconnect, Exception):
             pass

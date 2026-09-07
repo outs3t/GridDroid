@@ -619,6 +619,14 @@ function updateDeviceCell(cell, dev) {
 
 const streamSessions = {};
 
+// Modalita' Remota: questo browser riceve solo keyframe (?lite=1).
+// Per-browser, non tocca gli altri client. Default ON fuori da localhost.
+function remoteLiteMode() {
+    const s = localStorage.getItem("griddroid_remote_lite");
+    if (s !== null) return s === "1";
+    return !["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+}
+
 function parseSpsPpsFromAnnexB(data) {
     let sps = null, pps = null;
     let i = 0;
@@ -757,7 +765,8 @@ function startStreamWs(feedEl, serial) {
     session.decoder = decoder;
 
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${location.host}/ws/stream/${serial}`);
+    const liteQs = remoteLiteMode() ? "?lite=1" : "";
+    const ws = new WebSocket(`${protocol}//${location.host}/ws/stream/${serial}${liteQs}`);
     ws.binaryType = "arraybuffer";
     session.ws = ws;
 
@@ -772,6 +781,21 @@ function startStreamWs(feedEl, serial) {
         const isKey = data[0] === 1;
         const h264Data = data.subarray(1);
 
+        // Rotazione/fullscreen: scrcpy manda un nuovo SPS con la nuova
+        // risoluzione dentro il keyframe. Se il decoder resta configurato
+        // col vecchio SPS l'immagine esce sfocata: rileva il cambio e
+        // forza la riconfigurazione.
+        if (isKey && session.gotKey && session.sps) {
+            const cur = parseSpsPpsFromAnnexB(h264Data);
+            const s = cur.sps;
+            const old = session.sps;
+            if (s && (s.length !== old.length || !s.every((b, i) => b === old[i]))) {
+                console.log(`Decoder ${serial}: nuovo SPS (rotazione?), riconfiguro`);
+                session.gotKey = false;
+                session.configured = false;
+            }
+        }
+
         if (!session.gotKey) {
             if (!isKey) return;
             session.gotKey = true;
@@ -783,6 +807,7 @@ function startStreamWs(feedEl, serial) {
                 session.gotKey = false;
                 return;
             }
+            session.sps = sps;
             session.description = buildAvcDescription(sps, pps);
             const codecStr = `avc1.${sps[1].toString(16).padStart(2,'0')}${sps[2].toString(16).padStart(2,'0')}${sps[3].toString(16).padStart(2,'0')}`;
             console.log(`Decoder ${serial}: codec=${codecStr} SPS=${sps.length}B PPS=${pps.length}B`);
@@ -1852,6 +1877,104 @@ async function initSettings() {
         });
     }
 
+    // Modalità Slot: preset leggero per quando i telefoni renderizzano le
+    // slot. Encoder piu' piccolo = meno CPU sul telefono, meno banda USB,
+    // meno decode nel browser. I valori normali vengono salvati e
+    // ripristinati allo spegnimento della modalita'.
+    const SLOT_PRESET = { max_fps: 8, max_size: 360, bit_rate: 1500000 };
+    const btnSlotMode = document.getElementById("btnSlotMode");
+    let slotMode = localStorage.getItem("griddroid_slot_mode") === "1";
+    let savedQuality = null;
+
+    const renderSlotMode = () => {
+        if (!btnSlotMode) return;
+        btnSlotMode.textContent = slotMode
+            ? "🎰 Modalità Slot: ON"
+            : "🎰 Modalità Slot: OFF";
+        btnSlotMode.classList.toggle("btn-accent", slotMode);
+    };
+    renderSlotMode();
+
+    if (btnSlotMode) {
+        btnSlotMode.addEventListener("click", async () => {
+            slotMode = !slotMode;
+            localStorage.setItem("griddroid_slot_mode", slotMode ? "1" : "0");
+            btnSlotMode.disabled = true;
+            try {
+                let stream;
+                if (slotMode) {
+                    // Salva la qualita' corrente per ripristinarla dopo
+                    savedQuality = {
+                        max_fps: parseInt(maxFps?.value) || 15,
+                        max_size: parseInt(maxSize?.value) || 480,
+                    };
+                    stream = { ...SLOT_PRESET };
+                } else {
+                    stream = savedQuality || { max_fps: 15, max_size: 480 };
+                }
+                await fetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ stream }),
+                });
+                if (maxFps) maxFps.value = stream.max_fps;
+                if (maxSize) maxSize.value = stream.max_size;
+                await fetch("/api/settings/apply-stream", { method: "POST" });
+                renderSlotMode();
+                toast(
+                    slotMode
+                        ? "Modalità Slot attiva: stream alleggeriti su tutti i device"
+                        : "Modalità Slot disattivata: qualità ripristinata",
+                    "success"
+                );
+            } catch (e) {
+                slotMode = !slotMode;
+                localStorage.setItem("griddroid_slot_mode", slotMode ? "1" : "0");
+                toast("Errore cambio modalità", "error");
+            } finally {
+                btnSlotMode.disabled = false;
+            }
+        });
+    }
+
+    // Modalita' Remota: alleggerisce SOLO questo browser (il server manda
+    // solo keyframe, ~1 ogni 2s). Pensata per quando la griglia e' aperta
+    // da un altro PC in rete: la banda e' il collo di bottiglia, non il
+    // telefono. Default ON automatico se l'host non e' localhost.
+    const btnRemoteLite = document.getElementById("btnRemoteLite");
+
+    const renderRemoteLite = () => {
+        if (!btnRemoteLite) return;
+        const on = remoteLiteMode();
+        btnRemoteLite.textContent = on
+            ? "🌐 Modalità Remota: ON"
+            : "🌐 Modalità Remota: OFF";
+        btnRemoteLite.classList.toggle("btn-accent", on);
+    };
+    renderRemoteLite();
+
+    if (btnRemoteLite) {
+        btnRemoteLite.addEventListener("click", () => {
+            const on = !remoteLiteMode();
+            localStorage.setItem("griddroid_remote_lite", on ? "1" : "0");
+            renderRemoteLite();
+            // Riavvia tutte le sessioni stream attive per applicare il flag
+            for (const feed of document.querySelectorAll("canvas[data-ws-active]")) {
+                const serial = feed.dataset.wsActive;
+                if (!serial) continue;
+                stopStreamWs(feed);
+                feed.dataset.wsRetryAt = "";
+                startStreamWs(feed, serial);
+            }
+            toast(
+                on
+                    ? "Modalità Remota attiva: solo keyframe, banda ridotta"
+                    : "Modalità Remota disattivata: stream completo",
+                "success"
+            );
+        });
+    }
+
     const btnRestartAdb = document.getElementById("btnRestartAdb");
     if (btnRestartAdb) {
         btnRestartAdb.addEventListener("click", async () => {
@@ -1996,21 +2119,34 @@ function initHeaderButtons() {
     const btnReadBalances = document.getElementById("btnReadBalances");
     if (btnReadBalances) {
         btnReadBalances.addEventListener("click", async () => {
+            const serials = state.devices.filter((d) => d.selected).map((d) => d.serial);
+            if (!serials.length) {
+                toast("Seleziona prima i dispositivi di cui leggere il saldo", "error");
+                return;
+            }
             btnReadBalances.disabled = true;
+            const oldText = btnReadBalances.textContent;
+            btnReadBalances.textContent = "Lettura in corso…";
+            toast(`Lettura saldi su ${serials.length} device…`, "info");
             try {
-                const res = await fetch("/api/balances/read", { method: "POST" });
+                const res = await fetch("/api/balances/read", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ serials }),
+                });
                 const data = await res.json();
                 const found = (data.results || []).filter((r) => r.saldo);
                 if (found.length) {
                     const lines = found.map((r) => `${r.nome}: ${r.saldo}`).join(" — ");
                     toast(`${data.saved} saldi salvati in CSV: ${lines}`, "success");
                 } else {
-                    toast("Nessun saldo rilevato a schermo", "error");
+                    toast(`Nessun saldo rilevato a schermo (${(data.results || []).length} device letti)`, "error");
                 }
             } catch (e) {
                 toast("Errore lettura saldi: " + e.message, "error");
             } finally {
                 btnReadBalances.disabled = false;
+                btnReadBalances.textContent = oldText;
             }
         });
     }

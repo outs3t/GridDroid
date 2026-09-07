@@ -77,6 +77,8 @@ class AdbManager:
         self._change_callbacks: List = []
         # Auto-clicker per device: serial -> task asyncio
         self._autoclick_tasks: Dict[str, asyncio.Task] = {}
+        # Throttle per `adb reconnect` automatico su device bloccati
+        self._last_reconnect: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Proprietà pubbliche
@@ -554,6 +556,31 @@ class AdbManager:
                 dev.error = "non collegato"
                 logs.warn(f"Dispositivo disconnesso", serial=serial, throttle_s=30)
 
+        # Recovery automatico: i device rimasti offline/unauthorized dopo un
+        # riavvio del daemon restano bloccati finche' non si cambia modalita'
+        # USB sul telefono (carica -> PTP). `adb reconnect` forza la
+        # rinegoziazione del transport senza toccare il telefono.
+        now = time.time()
+        for serial in seen_serials:
+            dev = self._devices.get(serial)
+            if not dev or dev.status not in (
+                DeviceStatus.OFFLINE,
+                DeviceStatus.UNAUTHORIZED,
+            ):
+                continue
+            if now - self._last_reconnect.get(serial, 0.0) < 20.0:
+                continue
+            self._last_reconnect[serial] = now
+            asyncio.ensure_future(self._try_reconnect(serial))
+
+    async def _try_reconnect(self, serial: str) -> None:
+        """Tenta `adb reconnect` su un device bloccato offline/unauthorized."""
+        rc, out, err = await self.adb_command(
+            "reconnect", serial=serial, timeout=10.0
+        )
+        msg = (out or err).strip()
+        logs.info(f"adb reconnect: {msg or 'nessuna risposta'}", serial=serial)
+
 
     # ------------------------------------------------------------------
     # Comandi utili
@@ -576,19 +603,52 @@ class AdbManager:
         await self.adb_command("reboot", serial=serial)
 
     async def restart_adb_server(self) -> bool:
-        """Riavvia il daemon ADB: kill + start per forzare re-enumerazione USB."""
+        """Riavvia il daemon ADB: kill + start per forzare re-enumerazione USB.
+
+        Con molti device su hub USB la re-enumerazione puo' richiedere decine
+        di secondi: dopo lo start attendiamo attivamente che `adb devices`
+        torni a vedere i device, con un secondo tentativo se la prima
+        enumerazione resta a zero (es. porta 5037 ancora occupata).
+        """
         logs.warn("Riavvio daemon ADB richiesto dall'utente")
         try:
-            await self.adb_command("kill-server", timeout=10.0)
-            await asyncio.sleep(1.0)
-            rc, out, err = await self.adb_command("start-server", timeout=15.0)
-            if rc == 0:
-                logs.success("Daemon ADB riavviato")
-                await asyncio.sleep(1.0)
-                await self._refresh_devices()
-                return True
-            logs.error(f"Start ADB fallito: {err}")
-            return False
+            for attempt in range(2):
+                await self.adb_command("kill-server", timeout=10.0)
+                await asyncio.sleep(1.5)
+                rc, _, err = await self.adb_command("start-server", timeout=15.0)
+                if rc != 0:
+                    logs.error(f"Start ADB fallito: {err}")
+                    if attempt == 0:
+                        continue
+                    return False
+
+                logs.success("Daemon ADB riavviato, attendo i dispositivi...")
+                # Attesa attiva: `adb devices` finche' non torna almeno un device
+                for i in range(40):
+                    await asyncio.sleep(1.0)
+                    rc, out, _ = await self.adb_command("devices", timeout=10.0)
+                    count = len(_DEVICE_RE_PLAIN.findall(out)) if rc == 0 else 0
+                    if count > 0:
+                        break
+                    if i % 10 == 9:
+                        logs.info(f"Ancora nessun dispositivo ({i + 1}s)...")
+
+                if count == 0:
+                    logs.warn("Nessun dispositivo dopo il riavvio, riprovo...")
+                    continue
+
+                break
+
+            await self._refresh_devices()
+            online = sum(
+                1 for d in self._devices.values()
+                if d.status == DeviceStatus.ONLINE
+            )
+            if online:
+                logs.success(f"Re-enumerazione completata: {online} dispositivi online")
+            else:
+                logs.error("Nessun dispositivo rilevato dopo il riavvio ADB")
+            return online > 0
         except Exception as exc:
             logs.error(f"Errore riavvio ADB: {exc}")
             return False
