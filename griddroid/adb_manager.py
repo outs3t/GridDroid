@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import random
 import re
 import shutil
+import socket
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -284,6 +287,17 @@ class AdbManager:
         Username: nodi vicino a 'ciao'/'benvenuto'/'account'/'profilo'.
         """
         info = {"saldo": None, "bookmaker": "", "username": ""}
+
+        # --- Canale 1: CDP/DOM (Chrome in foreground) ---
+        # Se il device ha Chrome aperto, il saldo si legge direttamente dal
+        # DOM via DevTools Protocol: precisione assoluta, niente parsing
+        # dell'albero accessibility. Fallisce in fretta se Chrome non c'e'.
+        cdp = await self._saldo_via_cdp(serial)
+        if cdp.get("saldo"):
+            info.update(cdp)
+            return info
+
+        # --- Canale 2: accessibility tree (uiautomator dump) ---
         # Una sola chiamata adb: dump diretto su stdout (niente file
         # intermedio + cat). Il messaggio "UI hierchary dumped to:" va
         # tolto: l'XML vero sta tra <hierarchy> e </hierarchy>.
@@ -434,6 +448,163 @@ class AdbManager:
     async def read_balance(self, serial: str) -> Optional[str]:
         """Compatibilita': restituisce solo il saldo normalizzato."""
         return (await self.read_account_info(serial))["saldo"]
+
+    # ------------------------------------------------------------------
+    # Saldo via Chrome DevTools Protocol (DOM, precisione assoluta)
+    # ------------------------------------------------------------------
+
+    # JS eseguito nella pagina: cerca il saldo nel DOM per selettori
+    # mirati, poi per keyword, poi per primo importo con valuta.
+    _CDP_JS = r"""
+(() => {
+  const money = /(?:€|EUR|USD|\$|£)\s*[0-9][0-9.,\s]*[0-9]|[0-9][0-9.,]*[0-9]\s*(?:€|EUR|USD|\$|£)/i;
+  const kw = /saldo|balance|totale|available|disponibil|conto|wallet|fondi|credit/i;
+  const pick = t => { const m = t.match(money); return m ? m[0] : null; };
+  const out = v => ({saldo: v, site: location.hostname});
+  const sels = ['[class*="balance" i]','[class*="saldo" i]','[id*="balance" i]',
+                '[id*="saldo" i]','[class*="wallet" i]','[class*="credit" i]',
+                '[data-testid*="balance" i]'];
+  for (const s of sels) {
+    for (const el of document.querySelectorAll(s)) {
+      const t = (el.innerText || el.textContent || '').trim();
+      if (t && t.length < 80) { const v = pick(t); if (v) return out(v); }
+    }
+  }
+  const leaves = document.querySelectorAll('body *');
+  for (const el of leaves) {
+    if (el.children.length) continue;
+    const t = (el.innerText || '').trim();
+    if (t && t.length < 80 && kw.test(t)) { const v = pick(t); if (v) return out(v); }
+  }
+  for (const el of leaves) {
+    if (el.children.length) continue;
+    const t = (el.innerText || '').trim();
+    if (t && t.length < 40) { const v = pick(t); if (v) return out(v); }
+  }
+  return null;
+})()
+"""
+
+    async def _saldo_via_cdp(self, serial: str) -> dict:
+        """Saldo dal DOM di Chrome via DevTools Protocol su adb forward.
+
+        Chrome espone un socket abstract 'chrome_devtools_remote': con
+        'adb forward' lo mappiamo su TCP locale, leggiamo i target da
+        /json e valutiamo JS nella pagina attiva. Se Chrome non e' in
+        esecuzione il socket non esiste e tutto fallisce in <1s.
+        """
+        empty = {"saldo": None, "bookmaker": "", "username": ""}
+        port = 0
+        try:
+            import websockets  # dipendenza gia' in requirements
+        except Exception:
+            return empty
+        try:
+            # Porta locale libera per il forward
+            for _ in range(20):
+                candidate = random.randint(39300, 39900)
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.2)
+                    if s.connect_ex(("127.0.0.1", candidate)) != 0:
+                        port = candidate
+                        break
+            if not port:
+                return empty
+
+            rc, _, _ = await self.adb_command(
+                "forward", f"tcp:{port}",
+                "localabstract:chrome_devtools_remote",
+                serial=serial, timeout=10.0,
+            )
+            if rc != 0:
+                return empty
+
+            async def _cdp() -> dict:
+                # Lista target: HTTP minimale su localhost (niente requests)
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", port), timeout=3.0
+                )
+                try:
+                    writer.write(
+                        b"GET /json HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n"
+                    )
+                    await writer.drain()
+                    raw = await asyncio.wait_for(reader.read(65536), timeout=3.0)
+                finally:
+                    writer.close()
+                body = raw.split(b"\r\n\r\n", 1)
+                if len(body) < 2:
+                    return empty
+                targets = json.loads(body[1].decode("utf-8", errors="replace"))
+                # Prima pagina web reale (skip chrome:// e about:blank)
+                page = next(
+                    (
+                        t for t in targets
+                        if t.get("type") == "page"
+                        and t.get("url", "").startswith("http")
+                    ),
+                    None,
+                )
+                if not page or not page.get("webSocketDebuggerUrl"):
+                    return empty
+                async with websockets.connect(
+                    page["webSocketDebuggerUrl"],
+                    open_timeout=3, close_timeout=1, max_size=2**20,
+                ) as ws:
+                    await ws.send(json.dumps({
+                        "id": 1,
+                        "method": "Runtime.evaluate",
+                        "params": {
+                            "expression": self._CDP_JS,
+                            "returnByValue": True,
+                        },
+                    }))
+                    while True:
+                        msg = json.loads(
+                            await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        )
+                        if msg.get("id") != 1:
+                            continue
+                        val = (
+                            msg.get("result", {})
+                            .get("result", {})
+                            .get("value")
+                        )
+                        if not isinstance(val, dict) or not val.get("saldo"):
+                            return empty
+                        num = re.search(
+                            r"[0-9]+(?:[.,][0-9]+)*[.,][0-9]{1,2}\b",
+                            val["saldo"],
+                        )
+                        saldo = (
+                            self._normalize_amount(num.group(0)) if num else None
+                        )
+                        site = (val.get("site") or "").replace("www.", "")
+                        return {
+                            "saldo": saldo,
+                            "bookmaker": site.split(".")[0].upper() if site else "",
+                            "username": "",
+                        }
+
+            result = await asyncio.wait_for(_cdp(), timeout=10.0)
+            if result.get("saldo"):
+                logs.info(
+                    f"Saldo via CDP/DOM: {result['saldo']} ({result['bookmaker']})",
+                    serial=serial,
+                )
+            return result
+        except Exception:
+            # Chrome non attivo o CDP non raggiungibile: fallback uiautomator
+            return empty
+        finally:
+            if port:
+                try:
+                    await self.adb_command(
+                        "forward", "--remove", f"tcp:{port}",
+                        serial=serial, timeout=5.0,
+                    )
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Etichette
