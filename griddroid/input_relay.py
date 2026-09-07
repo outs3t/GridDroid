@@ -230,6 +230,10 @@ class InputRelay:
             ctrl = self._control_for(s)
             if ctrl:
                 tasks.append(ctrl.key_press(keycode, metastate))
+            else:
+                # Il canale scrcpy esiste solo con stream attivo: senza di
+                # esso il comando verrebbe scartato. Fallback via ADB shell.
+                tasks.append(self._adb.shell(s, f"input keyevent {keycode}"))
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def text(self, text: str, *, serial: Optional[str] = None) -> None:
