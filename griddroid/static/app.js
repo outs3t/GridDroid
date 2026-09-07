@@ -3587,4 +3587,14 @@ document.addEventListener("DOMContentLoaded", () => {
         const el = document.getElementById("versionBadge");
         if (el && d.version) el.textContent = `v${d.version}`;
     }).catch(() => {});
+
+    // Esito ultimo aggiornamento: toast di conferma o errore al riavvio
+    fetch("/api/update/result").then(r => r.json()).then(d => {
+        if (!d.pending) return;
+        if (d.success) {
+            toast(`Aggiornamento riuscito: GridDroid v${d.current}`, "success");
+        } else {
+            toast(`Aggiornamento a v${d.expected || "?"} NON riuscito — versione attuale v${d.current}`, "error");
+        }
+    }).catch(() => {});
 });

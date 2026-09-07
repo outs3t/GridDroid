@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .adb_manager import AdbManager
 from .bulk_actions import BulkActionRunner
-from .config import AppSettings, load_settings, save_settings, load_labels, load_tags, load_played, load_known
+from .config import AppSettings, CONFIG_DIR, load_settings, save_settings, load_labels, load_tags, load_played, load_known
 from .device import DeviceStatus
 from .input_relay import InputRelay
 from .log_manager import logs
@@ -874,6 +874,18 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if getattr(sys, "frozen", False):
             restart_path = sys.executable
 
+        # Marker d'esito: al prossimo avvio /api/update/result confronta la
+        # versione attesa con quella effettiva e riferisce all'utente se
+        # l'aggiornamento e' andato a buon fine.
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            (CONFIG_DIR / "update_pending.json").write_text(
+                json.dumps({"version": app.state.update_state.get("version")}),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
         updater.schedule_install(installer, silent_args, restart_path, os.getpid())
 
         async def _shutdown():
@@ -882,6 +894,28 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
         asyncio.create_task(_shutdown())
         return {"closing": True}
+
+    @app.get("/api/update/result")
+    async def update_result():
+        """Esito dell'ultimo aggiornamento: letto una volta al riavvio."""
+        marker = CONFIG_DIR / "update_pending.json"
+        if not marker.exists():
+            return {"pending": False}
+        try:
+            expected = json.loads(marker.read_text(encoding="utf-8")).get("version")
+        except Exception:
+            expected = None
+        try:
+            marker.unlink()
+        except Exception:
+            pass
+        ok = expected is not None and __version__ == expected
+        return {
+            "pending": True,
+            "success": ok,
+            "expected": expected,
+            "current": __version__,
+        }
 
     # ------------------------------------------------------------------
     # WebSocket – Aggiornamenti in tempo reale
