@@ -323,6 +323,11 @@ class AdbManager:
             info["bookmaker"] = self._bookmaker_from_package(pkg)
 
         # --- Saldo ---
+        # 0) Posizione: il numero accanto al simbolo € sulla stessa riga.
+        #    I bounds dei nodi danno le coordinate — come leggere lo
+        #    screenshot, ma senza OCR.
+        info["saldo"] = self._saldo_from_position(xml)
+
         kw = re.compile(
             r"saldo|balance|totale|available|disponibil|conto|wallet|fondi",
             re.IGNORECASE,
@@ -334,18 +339,19 @@ class AdbManager:
         )
         num = re.compile(r"[0-9]+(?:[.,][0-9]+)*[.,][0-9]{1,2}\b")
         # 1) numero nel nodo con keyword, o nei 2 nodi successivi
-        for i, t in enumerate(texts):
-            if kw.search(t):
-                for t2 in [t] + texts[i + 1 : i + 3]:
-                    m = num.search(t2) or money.search(t2)
-                    if m:
-                        raw = m.group(0) if m.re is num else (m.group(1) or m.group(2))
-                        val = self._normalize_amount(raw)
-                        if val:
-                            info["saldo"] = val
-                            break
-                if info["saldo"]:
-                    break
+        if not info["saldo"]:
+            for i, t in enumerate(texts):
+                if kw.search(t):
+                    for t2 in [t] + texts[i + 1 : i + 3]:
+                        m = num.search(t2) or money.search(t2)
+                        if m:
+                            raw = m.group(0) if m.re is num else (m.group(1) or m.group(2))
+                            val = self._normalize_amount(raw)
+                            if val:
+                                info["saldo"] = val
+                                break
+                    if info["saldo"]:
+                        break
         # 2) fallback: primo importo con simbolo di valuta
         if not info["saldo"]:
             for t in texts:
@@ -374,6 +380,55 @@ class AdbManager:
                     break
 
         return info
+
+    def _saldo_from_position(self, xml: str) -> Optional[str]:
+        """Saldo per posizione: il numero accanto al simbolo €.
+
+        Ogni nodo del dump ha bounds="[x1,y1][x2,y2]": trovo il nodo che
+        contiene la valuta e prendo l'importo nel nodo stesso, oppure nel
+        nodo piu' vicino sulla stessa riga a destra (label e importo sono
+        spesso elementi separati e affiancati).
+        """
+        num = re.compile(r"[0-9]+(?:[.,][0-9]+)*[.,][0-9]{1,2}\b")
+        nodes = []
+        for m in re.finditer(r"<node\b[^>]*>", xml):
+            tag = m.group(0)
+            tm = re.search(r'text="([^"]*)"', tag)
+            bm = re.search(
+                r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', tag
+            )
+            if tm and bm:
+                nodes.append(
+                    (tm.group(1),) + tuple(int(g) for g in bm.groups())
+                )
+        for text, x1, y1, x2, y2 in nodes:
+            if "€" not in text and "eur" not in text.lower():
+                continue
+            # Caso 1: importo nello stesso nodo ("€ 118,00")
+            m = num.search(text)
+            if m:
+                val = self._normalize_amount(m.group(0))
+                if val:
+                    return val
+            # Caso 2: nodo solo '€' -> numero piu' vicino a destra, stessa riga
+            cy = (y1 + y2) / 2
+            height = max(y2 - y1, 1)
+            best = None
+            for t2, a1, b1, a2, b2 in nodes:
+                if a1 <= x2:
+                    continue  # deve stare a destra del simbolo
+                if abs((b1 + b2) / 2 - cy) > height:
+                    continue  # non sulla stessa riga
+                m2 = num.search(t2)
+                if m2:
+                    dist = a1 - x2
+                    if best is None or dist < best[0]:
+                        best = (dist, m2.group(0))
+            if best:
+                val = self._normalize_amount(best[1])
+                if val:
+                    return val
+        return None
 
     async def read_balance(self, serial: str) -> Optional[str]:
         """Compatibilita': restituisce solo il saldo normalizzato."""
