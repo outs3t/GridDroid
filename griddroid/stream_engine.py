@@ -132,6 +132,7 @@ class DeviceStream:
         self._degrade_level = _DEGRADED.get(serial, 0)
         self._task: Optional[asyncio.Task] = None
         self._log_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
         self._native_width: int = 0
         self._native_height: int = 0
         self._tcp_port: int = 0

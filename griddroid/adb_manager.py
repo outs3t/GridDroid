@@ -816,7 +816,13 @@ class AdbManager:
                         or "no devices/emulators found" in combined
                     ):
                         dev = self._devices[serial]
-                        if dev.status != DeviceStatus.DISCONNECTED:
+                        # Non retrocedere un device gia' OFFLINE: il reconnect
+                        # periodico su seriali assenti fallisce "not found" e
+                        # riarmerebbe il log "scomparso" a ogni poll.
+                        if dev.status not in (
+                            DeviceStatus.DISCONNECTED,
+                            DeviceStatus.OFFLINE,
+                        ):
                             dev.status = DeviceStatus.DISCONNECTED
                             dev.streaming = False
                             logs.warn("Dispositivo segnato offline da ADB", serial=serial)
@@ -1086,7 +1092,13 @@ class AdbManager:
                     dev = self._devices[serial]
                     if dev.status == DeviceStatus.ONLINE:
                         dev.streaming = False
-                    if dev.status != DeviceStatus.DISCONNECTED:
+                    # Non retrocedere OFFLINE -> DISCONNECTED: il missing-block
+                    # sopra ha gia' loggato "scomparso", e il flip-flop lo
+                    # riarmerebbe a ogni poll.
+                    if dev.status not in (
+                        DeviceStatus.DISCONNECTED,
+                        DeviceStatus.OFFLINE,
+                    ):
                         dev.status = DeviceStatus.DISCONNECTED
                         dev.error = "non collegato"
 
