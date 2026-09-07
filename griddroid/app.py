@@ -814,7 +814,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 download_url = platform_info.get("installer_url") or download_url
                 silent_args = platform_info.get(
                     "installer_silent_args",
-                    ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
+                    ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES",
+                     "/FORCECLOSEAPPLICATIONS"],
                 )
             elif platform_info.get("portable_url"):
                 download_url = platform_info["portable_url"]

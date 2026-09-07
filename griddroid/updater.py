@@ -166,7 +166,7 @@ def _make_windows_bat(
     bat = Path(tempfile.gettempdir()) / "griddroid_update.bat"
     args = " ".join(silent_args)
     restart = f'start "" "{exe_path}"\n' if exe_path and exe_path != str(installer) else ""
-    kill_pid = f"taskkill /F /PID {old_pid} 2>nul\n" if old_pid else ""
+    kill_pid = f"taskkill /F /T /PID {old_pid} 2>nul\n" if old_pid else ""
     # Senza silent_args il file scaricato e' l'exe portatile: va copiato
     # sopra il vecchio exe, non eseguito (altrimenti gira da temp e basta).
     if exe_path and not silent_args and exe_path != str(installer):
@@ -177,7 +177,7 @@ def _make_windows_bat(
         "@echo off\n"
         "title GridDroid Updater\n"
         f"{kill_pid}"
-        "taskkill /F /IM GridDroid.exe 2>nul\n"
+        "taskkill /F /T /IM GridDroid.exe 2>nul\n"
         ":wait\n"
         "tasklist /FI \"IMAGENAME eq GridDroid.exe\" 2>nul | find /I \"GridDroid.exe\" >nul\n"
         "if %errorlevel%==0 (\n"
