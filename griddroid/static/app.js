@@ -1218,16 +1218,56 @@ function setDeviceStreamQuality(serial, maxSize) {
     }).catch(() => { });
 }
 
+// Qualita' adattiva allo zoom: la risoluzione dello stream segue la
+// dimensione a cui il telefono e' davvero mostrato. Zoom piccolo = stream
+// leggero, zoom grande = piu' definizione. Ogni cambio riavvia lo stream di
+// quel device, quindi si usano pochi livelli e un debounce lungo per non
+// generare raffiche di riavvii mentre si zooma.
+const QUALITY_STEPS = [480, 720, 1080];
+const deviceQuality = {};
+let qualityTimer = null;
+
+function desiredMaxSize(feedEl) {
+    const dpr = window.devicePixelRatio || 1;
+    // max_size di scrcpy = lato piu' lungo, e i telefoni sono in verticale
+    const needed = feedEl.clientHeight * dpr;
+    for (const step of QUALITY_STEPS) {
+        if (needed <= step) return step;
+    }
+    return QUALITY_STEPS[QUALITY_STEPS.length - 1];
+}
+
+function applyAdaptiveQuality() {
+    for (const feed of document.querySelectorAll("canvas[data-ws-active]")) {
+        const serial = feed.dataset.wsActive;
+        if (!serial) continue;
+        // Il device ingrandito ha la sua risoluzione dedicata
+        if (state.fullscreenSerial === serial) continue;
+        if (!feed.clientHeight) continue;
+        const want = desiredMaxSize(feed);
+        if (deviceQuality[serial] === want) continue;
+        deviceQuality[serial] = want;
+        setDeviceStreamQuality(serial, want);
+    }
+}
+
+function scheduleAdaptiveQuality() {
+    clearTimeout(qualityTimer);
+    qualityTimer = setTimeout(applyAdaptiveQuality, 1200);
+}
+
 function exitFullscreen() {
     document.querySelectorAll(".fullscreen-cell").forEach((c) => {
         c.classList.remove("fullscreen-cell");
     });
     document.getElementById("fullscreenBackdrop")?.remove();
-    // 0 = torna alla risoluzione globale della griglia
-    if (state.fullscreenSerial) {
-        setDeviceStreamQuality(state.fullscreenSerial, 0);
-    }
+    const prev = state.fullscreenSerial;
     state.fullscreenSerial = null;
+    if (prev) {
+        // Ricalcola la risoluzione adatta alla griglia: un solo riavvio
+        delete deviceQuality[prev];
+        scheduleAdaptiveQuality();
+    }
 }
 
 function toggleFullscreen(serial, cell) {
@@ -1261,6 +1301,25 @@ async function takeScreenshot(serial) {
         toast("Screenshot salvato", "success");
     } catch (e) {
         toast("Errore screenshot: " + e.message, "error");
+    }
+}
+
+async function downloadBalancesCsv() {
+    try {
+        const resp = await fetch("/api/balances/csv");
+        if (!resp.ok) throw new Error("CSV non disponibile");
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `saldi_${Date.now()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast("CSV saldi scaricato", "success");
+    } catch (e) {
+        toast("Errore download CSV: " + e.message, "error");
     }
 }
 
@@ -2165,6 +2224,7 @@ function initHeaderButtons() {
                 if (found.length) {
                     const lines = found.map((r) => `${r.nome}: ${r.saldo}`).join(" — ");
                     toast(`${data.saved} saldi salvati in CSV: ${lines}`, "success");
+                    await downloadBalancesCsv();
                 } else {
                     toast(`Nessun saldo rilevato a schermo (${(data.results || []).length} device letti)`, "error");
                 }
@@ -2205,7 +2265,10 @@ function initHeaderButtons() {
     // Adatta colonne al ridimensionamento finestra / multi-schermo
     const gridContainer = document.getElementById("gridContainer");
     if (gridContainer && "ResizeObserver" in window) {
-        const resizeObserver = new ResizeObserver(updateGridColumns);
+        const resizeObserver = new ResizeObserver(() => {
+            updateGridColumns();
+            scheduleAdaptiveQuality();
+        });
         resizeObserver.observe(gridContainer);
     }
 
@@ -2466,6 +2529,7 @@ function applyZoom() {
     const label = document.getElementById("zoomLabel");
     if (label) label.textContent = Math.round(state.feedZoom * 100) + "%";
     updateGridColumns();
+    scheduleAdaptiveQuality();
 }
 
 function initZoomControls() {

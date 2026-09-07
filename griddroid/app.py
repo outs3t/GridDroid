@@ -339,6 +339,27 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             "file": str(BALANCES_FILE),
         }
 
+    @app.get("/api/balances/csv")
+    async def download_balances():
+        """Scarica il CSV dei saldi come allegato."""
+        from .config import BALANCES_FILE
+
+        if not BALANCES_FILE.exists():
+            return JSONResponse(
+                {"ok": False, "error": "nessuna lettura saldi registrata"},
+                status_code=404,
+            )
+        data = BALANCES_FILE.read_text(encoding="utf-8")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        # BOM: senza di questo Excel non interpreta gli accenti in UTF-8
+        return Response(
+            content="\ufeff" + data,
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="saldi-{stamp}.csv"'
+            },
+        )
+
     @app.post("/api/devices/{serial}/screen-on")
     async def screen_on(serial: str):
         await adb.screen_on(serial)
