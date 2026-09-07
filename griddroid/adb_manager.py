@@ -700,6 +700,7 @@ class AdbManager:
         # "online" all'infinito (card fantasma — il log mostrava Focus su
         # seriali che adb non elencava piu'). Dopo 2 poll senza vederli
         # li marchiamo offline, come Panda che li mostra disconnessi.
+        reconnect_due = []
         for serial, dev in self._devices.items():
             if serial in seen_serials:
                 self._missing.pop(serial, None)
@@ -719,6 +720,20 @@ class AdbManager:
                     "disattiva la sospensione selettiva USB di Windows",
                     serial=serial,
                 )
+            # Recovery attivo (come Panda): ogni ~3 poll senza vederlo
+            # forziamo 'adb reconnect' per far ri-enumerare il device al
+            # server, invece di aspettare che torni da solo.
+            if misses >= 2 and misses % 3 == 0:
+                reconnect_due.append(serial)
+
+        if reconnect_due:
+            await asyncio.gather(
+                *(
+                    self.adb_command("reconnect", serial=s, timeout=10.0)
+                    for s in reconnect_due
+                ),
+                return_exceptions=True,
+            )
 
         # Calo improvviso: tipico di un altro adb.exe (Panda, scrcpy,
         # altro GridDroid) che uccide il server per versione diversa.
