@@ -47,6 +47,9 @@ class InputRelay:
         # Down touch senza canale nativo: serial -> (x, y, w, h) per il
         # fallback 'input tap' quando arriva l'up corrispondente.
         self._pending_down: Dict[str, Tuple[int, int, int, int]] = {}
+        # Cooldown riconnessione canale: gli eventi move arrivano a decine
+        # al secondo, senza cooldown ognuno tenterebbe una reconnect da 5s.
+        self._last_reconnect_try: Dict[str, float] = {}
 
     @property
     def broadcast_mode(self) -> bool:
@@ -112,6 +115,15 @@ class InputRelay:
         stream = self._streams.get_stream(serial)
         if not stream:
             return None
+        ctrl = stream.control
+        if ctrl:
+            return ctrl
+        # Canale assente/morto: riconnetti al massimo una volta ogni 3s
+        # per device, altrimenti una raffica di move si impala sui timeout.
+        now = time.monotonic()
+        if now - self._last_reconnect_try.get(serial, 0.0) < 3.0:
+            return None
+        self._last_reconnect_try[serial] = now
         try:
             return await stream.ensure_control()
         except Exception:
@@ -177,7 +189,12 @@ class InputRelay:
 
         tasks = []
         for serial in targets:
-            ctrl = await self._control_or_reconnect(serial)
+            # I 'move' sono ad alta frequenza: niente reconnect, se il
+            # canale e' morto il down ha gia' armato il fallback adb.
+            if action == "move":
+                ctrl = self._control_for(serial)
+            else:
+                ctrl = await self._control_or_reconnect(serial)
             if ctrl:
                 tasks.append(ctrl.touch(
                     native_action, x, y, width, height, pressure=pressure,
