@@ -40,10 +40,74 @@ class LogManager:
 
     MAX_HISTORY = 2000
 
+    MAX_SESSION_FILES = 20
+
     def __init__(self) -> None:
         self._entries: Deque[LogEntry] = deque(maxlen=self.MAX_HISTORY)
         self._subscribers: List[asyncio.Queue] = []
         self._throttle: Dict[Tuple[str, str], float] = {}
+        self._file = None
+        self._file_path: Optional[Path] = None
+
+    # ------------------------------------------------------------------
+    # File di sessione
+    # ------------------------------------------------------------------
+
+    def start_session_file(self, logs_dir: Optional[Path] = None) -> Optional[Path]:
+        """Apre il file di log per questo avvio.
+
+        Ogni riga viene scritta con flush immediato: se l'app crasha o viene
+        chiusa di forza il log resta comunque completo su disco.
+        """
+        if logs_dir is None:
+            from .config import CONFIG_DIR
+            logs_dir = CONFIG_DIR / "logs"
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            self._rotate_session_files(logs_dir)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            path = logs_dir / f"sessione-{stamp}.log"
+            self._file = path.open("a", encoding="utf-8", buffering=1)
+            self._file_path = path
+            return path
+        except Exception:
+            self._file = None
+            self._file_path = None
+            return None
+
+    def _rotate_session_files(self, logs_dir: Path) -> None:
+        """Tiene solo i file di sessione piu' recenti."""
+        try:
+            files = sorted(logs_dir.glob("sessione-*.log"))
+            for old in files[: max(0, len(files) - self.MAX_SESSION_FILES + 1)]:
+                old.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    @property
+    def session_file(self) -> Optional[Path]:
+        return self._file_path
+
+    def close_session_file(self) -> None:
+        if self._file is not None:
+            try:
+                self._file.flush()
+                self._file.close()
+            except Exception:
+                pass
+            self._file = None
+
+    def _write_line(self, entry: LogEntry) -> None:
+        if self._file is None:
+            return
+        try:
+            ts = time.strftime("%H:%M:%S", time.localtime(entry.timestamp))
+            serial = entry.serial or "-"
+            self._file.write(
+                f"{ts} [{entry.level.value.upper():7}] {serial:20} {entry.message}\n"
+            )
+        except Exception:
+            pass
 
     def log(
         self,
@@ -65,6 +129,7 @@ class LogManager:
             message=message,
         )
         self._entries.append(entry)
+        self._write_line(entry)
         for q in self._subscribers:
             try:
                 q.put_nowait(entry)

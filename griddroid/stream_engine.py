@@ -88,9 +88,13 @@ class DeviceStream:
         serial: str,
         settings: AppSettings,
         start_sem: Optional[asyncio.Semaphore] = None,
+        max_size_override: Optional[int] = None,
     ) -> None:
         self.serial = serial
         self._settings = settings
+        # Risoluzione dedicata a questo device (fullscreen): se impostata
+        # sovrascrive il max_size globale solo per questo stream.
+        self.max_size_override = max_size_override
         # Limite avvii concorrenti per non sovraccaricare ADB (default 4)
         self._start_sem: Optional[asyncio.Semaphore] = start_sem
         self._last_heartbeat = time.monotonic()
@@ -323,7 +327,8 @@ class DeviceStream:
                         f"audio=false control=true cleanup=false "
                         f"show_touches=true stay_awake=true power_off_on_close=true "
                         f"raw_stream=true "
-                        f"max_size={s.max_size} max_fps={s.max_fps} "
+                        f"max_size={self.max_size_override or s.max_size} "
+                        f"max_fps={s.max_fps} "
                         f"video_bit_rate={s.bit_rate} "
                         # Keyframe ogni 2s: chi perde frame (rete lenta/VPN)
                         # si riallinea in fretta invece di restare corrotto.
@@ -732,16 +737,40 @@ class StreamManager:
     def streams(self) -> Dict[str, DeviceStream]:
         return self._streams
 
-    async def start_stream(self, serial: str) -> DeviceStream:
+    async def start_stream(
+        self, serial: str, max_size_override: Optional[int] = None
+    ) -> DeviceStream:
         if serial in self._streams:
             stream = self._streams[serial]
             if stream.alive:
                 return stream
+            # Conserva la risoluzione dedicata (es. fullscreen attivo) quando
+            # lo stream viene ricreato dopo una caduta
+            if max_size_override is None:
+                max_size_override = stream.max_size_override
             await stream.stop()
-        stream = DeviceStream(serial, self._settings, self._start_sem)
+        stream = DeviceStream(
+            serial, self._settings, self._start_sem, max_size_override
+        )
         self._streams[serial] = stream
         await stream.start()
         return stream
+
+    async def set_device_max_size(
+        self, serial: str, max_size: Optional[int]
+    ) -> Optional[DeviceStream]:
+        """Cambia la risoluzione di un singolo device riavviando il suo stream.
+
+        Serve al fullscreen: alla risoluzione della griglia l'immagine ingrandita
+        risulterebbe sfocata perche' il browser fa upscaling del bitmap decodificato.
+        """
+        stream = self._streams.get(serial)
+        if stream is not None and stream.max_size_override == max_size:
+            return stream
+        if stream is not None:
+            await stream.stop()
+            self._streams.pop(serial, None)
+        return await self.start_stream(serial, max_size_override=max_size)
 
     async def stop_stream(self, serial: str) -> None:
         if serial in self._streams:

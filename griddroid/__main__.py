@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import ctypes
 import os
 import socket
@@ -20,7 +21,7 @@ from urllib.request import urlopen
 
 import uvicorn
 
-from . import startup
+from . import __version__, startup
 from .config import load_settings
 from .log_manager import logs
 
@@ -433,6 +434,30 @@ def _run_with_webview(url: str, settings, no_tray: bool = False) -> None:
 
 def main() -> None:
     _log("GridDroid avviato")
+
+    # Log di sessione su file: una riga per evento, flush immediato, cosi'
+    # anche un crash o una chiusura forzata lasciano il log completo.
+    session_path = logs.start_session_file()
+    if session_path:
+        _log(f"Log di sessione: {session_path}")
+        logs.info(f"GridDroid {__version__} avviato - log: {session_path}")
+
+    # I crash non gestiti finiscono nel file prima di terminare
+    _prev_excepthook = sys.excepthook
+
+    def _log_crash(exc_type, exc_value, exc_tb):
+        try:
+            detail = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            logs.error(f"CRASH non gestito: {exc_value}")
+            for line in detail.rstrip().splitlines():
+                logs.error(line)
+            logs.close_session_file()
+        except Exception:
+            pass
+        _prev_excepthook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _log_crash
+    atexit.register(logs.close_session_file)
     if os.name == "nt":
         try:
             mutex = ctypes.windll.kernel32.CreateMutexW(None, 1, "Global\\GridDroid_Mutex")

@@ -1206,11 +1206,27 @@ function handleToolbarAction(action, serial, cell) {
     }
 }
 
+// Risoluzione dedicata al device ingrandito: alla qualita' della griglia
+// (es. 480px) l'immagine a schermo pieno risulterebbe sfocata perche' il
+// browser fa upscaling del bitmap decodificato.
+const FULLSCREEN_MAX_SIZE = 1080;
+
+function setDeviceStreamQuality(serial, maxSize) {
+    if (!serial) return;
+    fetch(`/api/devices/${serial}/stream-quality?max_size=${maxSize}`, {
+        method: "POST",
+    }).catch(() => { });
+}
+
 function exitFullscreen() {
     document.querySelectorAll(".fullscreen-cell").forEach((c) => {
         c.classList.remove("fullscreen-cell");
     });
     document.getElementById("fullscreenBackdrop")?.remove();
+    // 0 = torna alla risoluzione globale della griglia
+    if (state.fullscreenSerial) {
+        setDeviceStreamQuality(state.fullscreenSerial, 0);
+    }
     state.fullscreenSerial = null;
 }
 
@@ -1227,6 +1243,7 @@ function toggleFullscreen(serial, cell) {
         document.body.appendChild(backdrop);
         cell.classList.add("fullscreen-cell");
         state.fullscreenSerial = serial;
+        setDeviceStreamQuality(serial, FULLSCREEN_MAX_SIZE);
     }
 }
 

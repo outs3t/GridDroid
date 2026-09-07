@@ -283,6 +283,24 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             dev.selected = selected
         return {"ok": True}
 
+    @app.post("/api/devices/{serial}/stream-quality")
+    async def set_device_stream_quality(serial: str, max_size: int = Query(0)):
+        """Risoluzione dedicata per un singolo device (0 = torna al valore globale).
+
+        Usato dal fullscreen: alla risoluzione della griglia l'immagine
+        ingrandita risulta sfocata perche' il browser fa upscaling.
+        """
+        dev = adb.get_device(serial)
+        if dev is None or dev.status != DeviceStatus.ONLINE:
+            return JSONResponse({"ok": False, "error": "device non online"}, status_code=400)
+        override = max_size if max_size > 0 else None
+        try:
+            await streams.set_device_max_size(serial, override)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        dev.streaming = True
+        return {"ok": True, "max_size": override or settings.stream.max_size}
+
     @app.post("/api/balances/read")
     async def read_balances(request: Request):
         """Legge il saldo a schermo dei device selezionati e lo salva in CSV."""
