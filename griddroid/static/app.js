@@ -196,18 +196,18 @@ function createDeviceCell(dev) {
         </div>
         <div class="device-toolbar">
             <div class="toolbar-left">
-                <button class="toolbar-btn" data-action="screenshot" title="Screenshot">📷</button>
-                <button class="toolbar-btn" data-action="screen_toggle" title="Accendi/Spegni schermo">💡</button>
+                <button class="toolbar-btn" data-action="screenshot" title="Screenshot"><svg viewBox="0 0 24 24"><path d="M9 3l-1.8 2H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.2L15 3H9zm3 5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9zm0 2a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></button>
+                <button class="toolbar-btn" data-action="screen_toggle" title="Accendi/Spegni schermo"><svg viewBox="0 0 24 24"><path d="M12 2a1 1 0 0 1 1 1v8a1 1 0 0 1-2 0V3a1 1 0 0 1 1-1zm5.7 3.3a1 1 0 0 1 0 1.4 7 7 0 1 1-11.4 0 1 1 0 1 1 1.4-1.4 5 5 0 1 0 8.6 0 1 1 0 0 1 1.4 0z"/></svg></button>
             </div>
             <div class="toolbar-center">
-                <button class="toolbar-btn nav-btn" data-action="recent_apps" title="App recenti">▣</button>
-                <button class="toolbar-btn nav-btn" data-action="home" title="Home">⌂</button>
-                <button class="toolbar-btn nav-btn" data-action="back" title="Indietro">←</button>
+                <button class="toolbar-btn nav-btn" data-action="recent_apps" title="App recenti"><svg viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+                <button class="toolbar-btn nav-btn" data-action="home" title="Home"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+                <button class="toolbar-btn nav-btn" data-action="back" title="Indietro"><svg viewBox="0 0 24 24"><path d="M15.5 5.5l-6 6.5 6 6.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
             <div class="toolbar-right">
-                <button class="toolbar-btn" data-action="rotate" title="Rotazione">🔄</button>
-                <button class="toolbar-btn" data-action="fullscreen" title="Schermo intero">⛶</button>
-                <button class="toolbar-btn" data-action="stream_toggle" title="Avvia/Ferma stream">▶</button>
+                <button class="toolbar-btn" data-action="rotate" title="Rotazione"><svg viewBox="0 0 24 24"><path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg></button>
+                <button class="toolbar-btn" data-action="fullscreen" title="Schermo intero"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <button class="toolbar-btn" data-action="stream_toggle" title="Avvia/Ferma stream"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
             </div>
         </div>
     `;
@@ -516,12 +516,12 @@ function updateDeviceCell(cell, dev) {
         }
 
         const streamBtn = cell.querySelector('[data-action="stream_toggle"]');
-        if (streamBtn) streamBtn.textContent = "⏹";
+        if (streamBtn) streamBtn.innerHTML = '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
     } else {
         stopStreamWs(feed);
 
         const streamBtn = cell.querySelector('[data-action="stream_toggle"]');
-        if (streamBtn) streamBtn.textContent = "▶";
+        if (streamBtn) streamBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
     }
 }
 

@@ -617,10 +617,9 @@ body::before {
 .device-toolbar {
     position: absolute;
     bottom: 0; left: 0; right: 0;
-    height: 28px;
+    height: 32px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 4px;
     padding: 0 6px;
     background: linear-gradient(180deg, #1a1d23, #0b0c0f);
@@ -634,19 +633,22 @@ body::before {
     display: flex;
     align-items: center;
     gap: 4px;
+    flex: 0 0 auto;
 }
 
+/* Il centro e' un gruppo flex che si espande: i tasti di navigazione
+   restano centrati senza mai sovrapporsi ai gruppi laterali. */
 .toolbar-center {
+    flex: 1 1 auto;
     display: flex;
     align-items: center;
-    gap: 8px;
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
+    justify-content: center;
+    gap: 10px;
+    min-width: 0;
 }
 
 .toolbar-btn {
-    width: 22px; height: 22px;
+    width: 24px; height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -655,20 +657,30 @@ body::before {
     border: 1px solid #2e333a;
     color: #8a9199;
     cursor: pointer;
-    font-size: 12px;
+    padding: 0;
     transition: all var(--dur-fast) var(--ease);
+}
+.toolbar-btn svg {
+    width: 14px; height: 14px;
+    fill: currentColor;
+    flex: 0 0 auto;
 }
 .toolbar-btn:hover { background: #1e2229; color: #fff; border-color: #3e444d; transform: scale(1.08); }
 .toolbar-btn:active { background: #0b0c0f; transform: scale(0.95); }
 
+/* Tasti navigazione stile navbar Android: piu' grandi e distanziati */
 .nav-btn {
-    width: 26px;
-    height: 24px;
-    font-size: 14px;
+    width: 30px;
+    height: 26px;
     background: #0d0f12;
     border-color: #353a42;
-    color: #b0b7bf;
+    color: #c8cfd6;
 }
+.nav-btn svg {
+    width: 16px; height: 16px;
+    fill: none;
+}
+.nav-btn:hover { color: #fff; border-color: var(--accent, #4a5058); }
 
 /* Checkbox */
 .device-select {

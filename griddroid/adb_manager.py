@@ -334,7 +334,18 @@ class AdbManager:
             if attempt < 4:
                 await asyncio.sleep(0.2)
 
-        logs.info(f"Dispositivi ADB rilevati: {len(seen_serials)}", throttle_s=30)
+        # Breakdown per stato: aiuta a capire perche' mancano device
+        # (es. 30 collegati ma ADB ne elenca 13, di cui 2 unauthorized).
+        stati = {}
+        for serial in seen_serials:
+            dev = self._devices.get(serial)
+            stato = dev.status.value if dev else "?"
+            stati[stato] = stati.get(stato, 0) + 1
+        dettaglio = ", ".join(f"{k}: {v}" for k, v in sorted(stati.items()))
+        logs.info(
+            f"Dispositivi ADB rilevati: {len(seen_serials)} ({dettaglio})",
+            throttle_s=30,
+        )
 
         # Aggiungi dispositivi gia' visti in passato, ora assenti
         for serial, k in self._known.items():
