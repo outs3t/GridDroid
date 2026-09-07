@@ -17,6 +17,7 @@ else:
 
 from .config import (
     AppSettings,
+    _find_running_adb,
     load_labels,
     save_labels,
     load_tags,
@@ -728,6 +729,16 @@ class AdbManager:
                 "possibile conflitto con un altro adb.exe che riavvia il server",
                 throttle_s=60,
             )
+            # Se un altro adb.exe e' attivo (es. Panda partito dopo di noi),
+            # passiamo al suo binario: stesso server 5037, niente piu' kill
+            # incrociati che fanno sparire i device a intermittenza.
+            other = _find_running_adb(exclude=self._adb)
+            if other:
+                logs.info(
+                    f"Rilevato adb di terzi attivo: passo a {other} "
+                    "(condivide lo stesso server, fine del flapping)"
+                )
+                self._adb = other
         self._last_seen_count = len(seen_serials)
 
         # Breakdown per stato: aiuta a capire perche' mancano device

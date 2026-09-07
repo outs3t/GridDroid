@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, List
 
@@ -48,6 +51,46 @@ def _find_bundled_adb() -> str:
     return "adb"
 
 
+def _find_running_adb(exclude: str = "") -> str:
+    """Percorso di un adb.exe di terzi gia' in esecuzione (es. Panda).
+
+    Due adb.exe di versioni diverse si uccidono il server a vicenda sulla
+    porta 5037 ("adb server version doesn't match, killing..."): a ogni
+    kill i device USB si ri-enumerano e spariscono per qualche secondo —
+    e' il flapping visto nei log. Usare lo stesso binario dell'altro
+    programma significa parlare con lo STESSO server: niente guerra.
+    """
+    if os.name != "nt":
+        return ""
+    try:
+        out = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='adb.exe'\" "
+                "| Select-Object -ExpandProperty ExecutablePath",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout
+    except Exception:
+        return ""
+    excl = str(Path(exclude).resolve()).lower() if exclude else ""
+    temp = str(Path(tempfile.gettempdir()).resolve()).lower()
+    for line in out.splitlines():
+        p = line.strip()
+        if not p.lower().endswith("adb.exe") or not Path(p).exists():
+            continue
+        low = str(Path(p).resolve()).lower()
+        # Salta il nostro bundled e i residui in temp (vecchie sessioni
+        # PyInstaller): ci interessa solo l'adb di un'altra app.
+        if low == excl or low.startswith(temp):
+            continue
+        return p
+    return ""
+
+
 class StreamSettings(BaseModel):
     """Parametri di streaming video."""
     max_fps: int = Field(default=30, ge=1, le=60)
@@ -88,6 +131,12 @@ def load_settings() -> AppSettings:
     # Ricalcola sempre adb_path se quello salvato non è un eseguibile valido
     if not shutil.which(settings.adb_path):
         settings.adb_path = _find_bundled_adb()
+
+    # Se un altro adb.exe e' gia' in esecuzione (es. Panda), usiamo quello:
+    # stesso server sulla 5037, niente riavvii che fanno flappare i device.
+    running = _find_running_adb(exclude=settings.adb_path)
+    if running:
+        settings.adb_path = running
 
     # Forza ascolto su tutte le interfacce: le installazioni esistenti avevano
     # 127.0.0.1 in config.json, che blocca l'accesso da altri PC. La rete
