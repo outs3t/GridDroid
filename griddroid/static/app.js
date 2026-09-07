@@ -316,6 +316,15 @@ function wrapDeviceCard(cell, dev) {
         showDeviceContextMenu(e, dev.serial);
     });
 
+    // Hover = focus immediato (stile Panda): il telefono sotto il mouse
+    // e' gia' focalizzato, cosi' il primo click agisce subito senza
+    // dover prima selezionare. Ctrl+click resta la selezione multipla.
+    card.addEventListener("mouseenter", () => {
+        if (state.focusedSerial !== dev.serial) {
+            wsSend({ action: "focus", serial: dev.serial });
+        }
+    });
+
     // Ctrl+click sulla card → selezione multipla (ignora nome, toolbar e checkbox)
     card.addEventListener("click", (e) => {
         if (e.ctrlKey || e.metaKey) {
