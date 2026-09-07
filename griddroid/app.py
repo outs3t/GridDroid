@@ -357,12 +357,22 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             for r in results
             if r["saldo"]
         ]
+        saved = 0
+        save_error = ""
         if rows:
-            append_balances(rows)
-            write_ledger_csv(rows)
+            try:
+                append_balances(rows)
+                write_ledger_csv(rows)
+                saved = len(rows)
+            except OSError as exc:
+                # Tipico: il CSV e' aperto in Excel -> lock su Windows.
+                # I saldi restano validi a schermo, solo il file non si scrive.
+                save_error = f"CSV non salvato (file in uso?): {exc}"
+                logs.warn(save_error)
         return {
             "results": results,
-            "saved": len(rows),
+            "saved": saved,
+            "save_error": save_error,
             "file": str(BALANCES_FILE),
         }
 

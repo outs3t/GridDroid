@@ -2280,6 +2280,13 @@ function initHeaderButtons() {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ serials }),
                 });
+                // Un 500 del server risponde testo/HTML, non JSON:
+                // res.json() esploderebbe con 'unexpected token'.
+                const ct = res.headers.get("content-type") || "";
+                if (!res.ok || !ct.includes("json")) {
+                    const txt = (await res.text()).slice(0, 200);
+                    throw new Error(`server ${res.status}: ${txt || "risposta non JSON"}`);
+                }
                 const data = await res.json();
                 // Saldo sulla card: valore letto o N/D (app chiusa/background)
                 (data.results || []).forEach((r) => {
@@ -2295,8 +2302,12 @@ function initHeaderButtons() {
                         const meta = [r.bookmaker, r.username].filter(Boolean).join("/");
                         return `${r.nome}: ${r.saldo}${meta ? ` (${meta})` : ""}`;
                     }).join(" — ");
-                    toast(`${data.saved} saldi salvati in CSV: ${lines}`, "success");
-                    await downloadBalancesCsv();
+                    if (data.save_error) {
+                        toast(`${data.save_error} — saldi letti: ${lines}`, "warn");
+                    } else {
+                        toast(`${data.saved} saldi salvati in CSV: ${lines}`, "success");
+                        await downloadBalancesCsv();
+                    }
                 } else {
                     toast(`Nessun saldo rilevato a schermo (${(data.results || []).length} device letti)`, "error");
                 }
