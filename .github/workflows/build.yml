@@ -10,6 +10,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
 
 jobs:
   build-windows:
@@ -39,6 +41,12 @@ jobs:
           $ver = "${{ github.event.inputs.version }}"
           if ([string]::IsNullOrWhiteSpace($ver)) {
             $ver = (python -c "import griddroid; print(griddroid.__version__)")
+            # Push su main: versione sempre crescente = base + numero commit,
+            # cosi' ogni push aggiorna il sito senza bump manuale.
+            if ("${{ github.ref_type }}" -eq "branch") {
+              $n = (git rev-list --count HEAD)
+              $ver = "$ver.$n"
+            }
           }
           "version=$ver" >> $env:GITHUB_OUTPUT
 
