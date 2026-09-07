@@ -10,6 +10,7 @@ const state = {
     focusedSerial: null,
     fullscreenSerial: null,
     lastTap: {}, // serial -> {x, y} ultimo tap reale (target auto-click)
+    soloSerials: null, // Set di seriali da mostrare; null = mostra tutti
     logCount: 0,
     ws: null,
     gridCols: 15,
@@ -132,6 +133,11 @@ function renderGrid() {
 
     // Nascondi i dispositivi segnati come "giocati" o "non giocati"
     devices = devices.filter((dev) => !dev.played && !dev.skipped);
+
+    // Filtro "mostra solo questi": tiene solo i seriali selezionati
+    if (state.soloSerials) {
+        devices = devices.filter((dev) => state.soloSerials.has(dev.serial));
+    }
 
     // Aggiorna colonne CSS in base a zoom e larghezza container
     updateGridColumns();
@@ -401,6 +407,10 @@ function showDeviceContextMenu(e, serial) {
         autoclickItem.textContent = dev && dev.autoclick
             ? "Ferma auto-click"
             : "Auto-click sull'ultimo punto toccato";
+    }
+    const soloItem = menu.querySelector('[data-action="solo"]');
+    if (soloItem) {
+        soloItem.textContent = targetCount === 1 ? "Mostra solo questo" : `Mostra solo questi ${targetCount}`;
     }
 
     // Lista gruppi esistenti
@@ -1015,18 +1025,32 @@ function setupInputHandlers(feedEl, serial) {
 
     // Rotella del mouse → scroll nativo sul telefono.
     // Alt+rotellina lascia l'evento alla pagina per scrollare la griglia.
+    // I delta vengono accumulati e ridotti: uno scatto di rotellina non
+    // deve mandare un evento a piena intensità (scroll troppo veloce).
+    const SCROLL_SPEED = 0.35; // frazione di scroll per scatto standard
+    let accX = 0, accY = 0;
     feedEl.addEventListener("wheel", (ev) => {
         if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
         const c = feedCoords(feedEl, ev);
         if (!c) return;
         ev.preventDefault();
 
+        accX += -ev.deltaX;
+        accY += -ev.deltaY;
+        // Soglia minima: ignora micro-delta dei trackpad ad alta risoluzione
+        if (Math.abs(accX) < 40 && Math.abs(accY) < 40) return;
+
+        const hscroll = Math.max(-1, Math.min(1, (accX / 100) * SCROLL_SPEED));
+        const vscroll = Math.max(-1, Math.min(1, (accY / 100) * SCROLL_SPEED));
+        accX = 0;
+        accY = 0;
+
         wsSend({ action: "focus", serial: serial });
         wsSend({
             action: "scroll",
             x: c.x, y: c.y, w: c.w, h: c.h,
-            hscroll: Math.max(-1, Math.min(1, -ev.deltaX / 100)),
-            vscroll: Math.max(-1, Math.min(1, -ev.deltaY / 100)),
+            hscroll: hscroll,
+            vscroll: vscroll,
         });
     }, { passive: false });
 
@@ -1235,6 +1259,16 @@ function updateHeader() {
         if (badgeResetSkipped) {
             badgeResetSkipped.textContent = String(skipped);
             badgeResetSkipped.style.display = skipped > 0 ? "" : "none";
+        }
+    }
+
+    const btnShowAll = document.getElementById("btnShowAll");
+    const badgeShowAll = document.getElementById("showAllBadge");
+    if (btnShowAll) {
+        const soloActive = state.soloSerials && state.soloSerials.size > 0;
+        btnShowAll.style.display = soloActive ? "inline-flex" : "none";
+        if (badgeShowAll && soloActive) {
+            badgeShowAll.textContent = String(state.soloSerials.size);
         }
     }
 }
@@ -1945,6 +1979,16 @@ function initHeaderButtons() {
             if (confirm("Ripristinare tutti i dispositivi non giocati?")) {
                 wsSend({ action: "reset_skipped" });
             }
+        });
+    }
+
+    // Rimuove il filtro "mostra solo questi" e mostra di nuovo tutti i device
+    const btnShowAll = document.getElementById("btnShowAll");
+    if (btnShowAll) {
+        btnShowAll.addEventListener("click", () => {
+            state.soloSerials = null;
+            renderGrid();
+            updateHeader();
         });
     }
 
@@ -3236,6 +3280,18 @@ function initContextMenu() {
                     }
                 }
             }
+            hideDeviceContextMenu();
+            return;
+        }
+        const soloItem = e.target.closest('[data-action="solo"]');
+        if (soloItem) {
+            const serial = menu.dataset.serial;
+            if (!serial) return;
+            const targets = getContextTargetSerials(serial);
+            state.soloSerials = new Set(targets);
+            renderGrid();
+            updateHeader();
+            toast(`Mostro solo ${targets.length === 1 ? "1 dispositivo" : targets.length + " dispositivi"}`, "info");
             hideDeviceContextMenu();
         }
     });

@@ -83,7 +83,8 @@ async def fetch_remote_info(
                 },
             )
             with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
-                data = r.read().decode("utf-8")
+                # utf-8-sig: tollera un eventuale BOM in testa al JSON
+                data = r.read().decode("utf-8-sig")
                 return json.loads(data)
         except Exception as exc:
             logs.warn(f"Updater: fetch remoto fallito ({exc})")

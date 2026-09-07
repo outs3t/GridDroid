@@ -72,7 +72,7 @@ jobs:
               silent_args = @()
             }
           } | ConvertTo-Json -Depth 3
-          $json | Set-Content -Path version.json -Encoding utf8
+          [System.IO.File]::WriteAllText("$PWD/version.json", $json, (New-Object System.Text.UTF8Encoding $false))
 
       - name: Push installer to gh-pages
         shell: powershell
