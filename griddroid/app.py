@@ -304,7 +304,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     @app.post("/api/balances/read")
     async def read_balances(request: Request):
         """Legge il saldo a schermo dei device selezionati e lo salva in CSV."""
-        from .config import append_balances, BALANCES_FILE
+        from .config import append_balances, write_ledger_csv, BALANCES_FILE
 
         body = await request.json() if request.headers.get("content-type") == "application/json" else {}
         wanted = set(body.get("serials") or [])
@@ -346,6 +346,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         ]
         if rows:
             append_balances(rows)
+            write_ledger_csv(rows)
         return {
             "results": results,
             "saved": len(rows),
@@ -354,22 +355,28 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     @app.get("/api/balances/csv")
     async def download_balances():
-        """Scarica il CSV dei saldi come allegato."""
-        from .config import BALANCES_FILE
+        """Scarica il CSV in formato ledger (nickname,bookmaker,saldo)."""
+        from .config import LEDGER_FILE
 
-        if not BALANCES_FILE.exists():
+        if not LEDGER_FILE.exists():
             return JSONResponse(
                 {"ok": False, "error": "nessuna lettura saldi registrata"},
                 status_code=404,
             )
-        data = BALANCES_FILE.read_text(encoding="utf-8")
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        # BOM: senza di questo Excel non interpreta gli accenti in UTF-8
+        data = LEDGER_FILE.read_text(encoding="utf-8")
+        # Nome file come il sample del sito: saldi_ledger_BET365_2026-09-07.csv
+        book = ""
+        lines = [l for l in data.splitlines() if l.strip()]
+        if len(lines) > 1:
+            books = {l.split(",")[1].strip() for l in lines[1:]}
+            if len(books) == 1:
+                book = f"_{books.pop()}"
+        stamp = datetime.now().strftime("%Y-%m-%d")
         return Response(
             content="\ufeff" + data,
             media_type="text/csv; charset=utf-8",
             headers={
-                "Content-Disposition": f'attachment; filename="saldi-{stamp}.csv"'
+                "Content-Disposition": f'attachment; filename="saldi_ledger{book}_{stamp}.csv"'
             },
         )
 

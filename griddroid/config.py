@@ -19,6 +19,7 @@ TAGS_FILE = CONFIG_DIR / "tags.json"
 PLAYED_FILE = CONFIG_DIR / "played.json"
 SKIPPED_FILE = CONFIG_DIR / "skipped.json"
 BALANCES_FILE = CONFIG_DIR / "balances.csv"
+LEDGER_FILE = CONFIG_DIR / "saldi_ledger.csv"
 KNOWN_FILE = CONFIG_DIR / "known.json"
 
 
@@ -198,6 +199,29 @@ def append_balances(rows: List[dict]) -> None:
                     r["saldo"],
                 ]
             )
+
+
+def write_ledger_csv(rows: List[dict]) -> Path:
+    """Scrive il CSV nel formato del sito ledger: nickname,bookmaker,saldo.
+
+    nickname = etichetta del device (maiuscola), bookmaker maiuscolo senza
+    spazi, saldo come numero semplice ('118.00' -> '118', '118.50' -> '118.50').
+    Sovrascrive a ogni lettura: e' lo snapshot da importare, non uno storico.
+    """
+    import csv
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with LEDGER_FILE.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["nickname", "bookmaker", "saldo"])
+        for r in rows:
+            nick = (r.get("nome") or r.get("username") or r["serial"]).upper()
+            book = (r.get("bookmaker") or "").upper().replace(" ", "")
+            saldo = r["saldo"] or "0"
+            if saldo.endswith(".00"):
+                saldo = saldo[:-3]
+            w.writerow([nick, book, saldo])
+    return LEDGER_FILE
 
 
 def load_known() -> Dict[str, dict]:

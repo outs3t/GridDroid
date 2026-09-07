@@ -1314,10 +1314,13 @@ async function downloadBalancesCsv() {
         const resp = await fetch("/api/balances/csv");
         if (!resp.ok) throw new Error("CSV non disponibile");
         const blob = await resp.blob();
+        // Nome file dal server: saldi_ledger_BET365_2026-09-07.csv
+        const cd = resp.headers.get("Content-Disposition") || "";
+        const m = cd.match(/filename="?([^";]+)"?/);
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `saldi_${Date.now()}.csv`;
+        a.download = m ? m[1] : `saldi_ledger_${Date.now()}.csv`;
         document.body.appendChild(a);
         a.click();
         a.remove();
