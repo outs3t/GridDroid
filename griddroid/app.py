@@ -314,17 +314,22 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             (s, d) for s, d in adb.devices.items()
             if d.status == DeviceStatus.ONLINE and (not wanted or s in wanted)
         ]
-        # In parallelo: in sequenza 26 device richiederebbero ~80s
-        # Max 4 dump uiautomator alla volta: 26 dump simultanei rompevano
-        # la pipeline video di scrcpy (ondate di 'TCP stream chiuso').
-        sem = asyncio.Semaphore(4)
+        # In parallelo: in sequenza 26 device richiederebbero ~80s.
+        # Max 2 dump uiautomator alla volta + stagger: anche solo 4 dump
+        # simultanei saturano il canale adb/USB e chiudono TUTTI i socket
+        # video scrcpy nello stesso secondo (ondata di 'TCP stream chiuso').
+        sem = asyncio.Semaphore(2)
 
-        async def _read(serial):
+        async def _read(serial, delay: float):
+            # Stagger: evita la raffica di 'adb shell uiautomator dump'
+            # nello stesso istante, che e' quella che ammazza gli stream.
+            if delay:
+                await asyncio.sleep(delay)
             async with sem:
                 return await adb.read_account_info(serial)
 
         infos = await asyncio.gather(
-            *(_read(s) for s, _ in online),
+            *(_read(s, i * 0.4) for i, (s, _) in enumerate(online)),
             return_exceptions=True,
         )
         results = []
