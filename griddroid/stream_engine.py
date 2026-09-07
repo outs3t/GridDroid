@@ -765,9 +765,16 @@ class StreamManager:
         risulterebbe sfocata perche' il browser fa upscaling del bitmap decodificato.
         """
         stream = self._streams.get(serial)
-        if stream is not None and stream.max_size_override == max_size:
-            return stream
         if stream is not None:
+            # Confronta la risoluzione EFFETTIVA (override o globale):
+            # la qualita' adattiva puo' chiedere un valore uguale al
+            # globale con override ancora None — senza questo check
+            # riavviava tutti gli stream al primo giro.
+            current = stream.max_size_override or self._settings.stream.max_size
+            wanted = max_size or self._settings.stream.max_size
+            if current == wanted:
+                stream.max_size_override = max_size
+                return stream
             await stream.stop()
             self._streams.pop(serial, None)
         return await self.start_stream(serial, max_size_override=max_size)
