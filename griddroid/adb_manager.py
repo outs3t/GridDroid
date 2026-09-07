@@ -389,6 +389,27 @@ class AdbManager:
             logs.error(f"ADB non trovato nel PATH ({self._adb})")
             return
         self._running = True
+        # Card persistenti (come il registro di Panda): ogni device mai
+        # visto resta in griglia marcato 'non rilevato' finche' non torna.
+        for serial, k in self._known.items():
+            if serial in self._devices:
+                continue
+            dev = DeviceState(
+                info=DeviceInfo(
+                    serial=serial,
+                    model=k.get("model", ""),
+                    product=k.get("product", ""),
+                    transport_id=k.get("transport_id", ""),
+                    usb_port=k.get("usb_port", ""),
+                ),
+                label=self._labels.get(serial, k.get("label", "")),
+                tags=self._tags.get(serial, k.get("tags", [])),
+                status=DeviceStatus.OFFLINE,
+                played=serial in self._played_serials,
+                skipped=serial in self._skipped_serials,
+            )
+            dev.error = "non rilevato"
+            self._devices[serial] = dev
         logs.info("ADB Manager avviato")
         self._poll_task = asyncio.create_task(self._poll_loop())
 
