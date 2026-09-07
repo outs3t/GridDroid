@@ -44,6 +44,9 @@ class InputRelay:
         self._record_device = ""
         self._record_axes = (0, 0, 0, 0)
         self._record_serial = ""
+        # Down touch senza canale nativo: serial -> (x, y, w, h) per il
+        # fallback 'input tap' quando arriva l'up corrispondente.
+        self._pending_down: Dict[str, Tuple[int, int, int, int]] = {}
 
     @property
     def broadcast_mode(self) -> bool:
@@ -96,6 +99,47 @@ class InputRelay:
         stream = self._streams.get_stream(serial)
         return stream.control if stream else None
 
+    async def _control_or_reconnect(self, serial: str):
+        """Come _control_for, ma se il canale e' caduto prova a riaprirlo.
+
+        Il socket di controllo e' una connessione TCP sul forward adb: se il
+        tunnel ha un singhiozzo il lato locale resta 'aperto' e i tap vanno
+        nel vuoto senza errori. ensure_control() rileva il canale morto e
+        lo riconnette senza riavviare lo stream video.
+        """
+        if not self._streams:
+            return None
+        stream = self._streams.get_stream(serial)
+        if not stream:
+            return None
+        try:
+            return await stream.ensure_control()
+        except Exception:
+            return stream.control
+
+    async def _adb_tap(self, serial: str, x: int, y: int, w: int, h: int) -> None:
+        """Fallback 'adb shell input tap' quando il canale nativo e' giu'."""
+        nx, ny = self._scale_coords(serial, x, y, w, h)
+        try:
+            await self._adb.shell(serial, f"input tap {nx} {ny}")
+            logs.info(f"Tap via adb fallback ({nx},{ny})", serial=serial)
+        except Exception as exc:
+            logs.warn(f"Tap fallback fallito: {exc}", serial=serial)
+
+    async def _adb_swipe(
+        self, serial: str, x1: int, y1: int, x2: int, y2: int,
+        duration_ms: int, w: int, h: int,
+    ) -> None:
+        """Fallback 'adb shell input swipe' quando il canale nativo e' giu'."""
+        nx1, ny1 = self._scale_coords(serial, x1, y1, w, h)
+        nx2, ny2 = self._scale_coords(serial, x2, y2, w, h)
+        try:
+            await self._adb.shell(
+                serial, f"input swipe {nx1} {ny1} {nx2} {ny2} {duration_ms}"
+            )
+        except Exception as exc:
+            logs.warn(f"Swipe fallback fallito: {exc}", serial=serial)
+
     # ------------------------------------------------------------------
     # Touch nativo (pointer events dal browser)
     # ------------------------------------------------------------------
@@ -133,11 +177,20 @@ class InputRelay:
 
         tasks = []
         for serial in targets:
-            ctrl = self._control_for(serial)
+            ctrl = await self._control_or_reconnect(serial)
             if ctrl:
                 tasks.append(ctrl.touch(
                     native_action, x, y, width, height, pressure=pressure,
                 ))
+            else:
+                # Canale giu' anche dopo la riconnessione: un down+up
+                # diventa un 'input tap' via adb, altrimenti il click
+                # dell'utente sparisce senza effetto.
+                if action == "down":
+                    self._pending_down[serial] = (x, y, width, height)
+                elif action == "up" and serial in self._pending_down:
+                    dx, dy, dw, dh = self._pending_down.pop(serial)
+                    tasks.append(self._adb_tap(serial, dx, dy, dw, dh))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -148,9 +201,11 @@ class InputRelay:
             return
         tasks = []
         for serial in targets:
-            ctrl = self._control_for(serial)
+            ctrl = await self._control_or_reconnect(serial)
             if ctrl:
                 tasks.append(self._native_tap(ctrl, x, y, width, height))
+            else:
+                tasks.append(self._adb_tap(serial, x, y, width, height))
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _native_tap(self, ctrl, x: int, y: int, w: int, h: int) -> None:
@@ -167,10 +222,14 @@ class InputRelay:
             return
         tasks = []
         for serial in targets:
-            ctrl = self._control_for(serial)
+            ctrl = await self._control_or_reconnect(serial)
             if ctrl:
                 tasks.append(self._native_swipe(
                     ctrl, x1, y1, x2, y2, duration_ms, width, height,
+                ))
+            else:
+                tasks.append(self._adb_swipe(
+                    serial, x1, y1, x2, y2, duration_ms, width, height,
                 ))
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -204,7 +263,7 @@ class InputRelay:
             return
         tasks = []
         for serial in targets:
-            ctrl = self._control_for(serial)
+            ctrl = await self._control_or_reconnect(serial)
             if ctrl:
                 tasks.append(ctrl.scroll(x, y, width, height, hscroll, vscroll))
         if tasks:
@@ -227,7 +286,7 @@ class InputRelay:
             return
         tasks = []
         for s in targets:
-            ctrl = self._control_for(s)
+            ctrl = await self._control_or_reconnect(s)
             if ctrl:
                 tasks.append(ctrl.key_press(keycode, metastate))
             else:
@@ -245,7 +304,7 @@ class InputRelay:
 
         tasks = []
         for s in targets:
-            ctrl = self._control_for(s)
+            ctrl = await self._control_or_reconnect(s)
             if ctrl:
                 tasks.append(ctrl.text(text))
         await asyncio.gather(*tasks, return_exceptions=True)

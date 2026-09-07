@@ -408,17 +408,8 @@ class DeviceStream:
                     logs.success("Connesso al video socket TCP", serial=self.serial)
 
                     # 5. Connessione al canale di controllo (input nativi)
-                    try:
-                        await asyncio.sleep(0.3)
-                        _, ctrl_writer = await asyncio.wait_for(
-                            asyncio.open_connection("127.0.0.1", self._tcp_port),
-                            timeout=5.0,
-                        )
-                        self._control = ControlChannel(self.serial, ctrl_writer)
-                        logs.success("Canale di controllo attivo", serial=self.serial)
-                    except Exception as ctrl_exc:
-                        logs.warn(f"Canale di controllo non attivo: {ctrl_exc}", serial=self.serial)
-                        self._control = None
+                    await asyncio.sleep(0.3)
+                    await self._connect_control()
 
                 # 6. Watchdog del processo server: se muore in silenzio col
                 #    socket ancora aperto, sblocca la read e riavvia lo stream.
@@ -622,6 +613,62 @@ class DeviceStream:
                     text = "errore ADB"
                 raise RuntimeError(text)
             return stdout.decode("utf-8", errors="replace").strip()
+
+    async def _connect_control(self) -> bool:
+        """Apre il canale di controllo scrcpy sul forward gia' attivo.
+
+        Il socket e' una seconda connessione TCP sulla stessa porta del
+        tunnel adb. Se il tunnel ha un singhiozzo il socket locale resta
+        'aperto' ma il peer e' morto: i write() non danno errore e i tap
+        spariscono nel vuoto. Il keepalive TCP fa emergere il peer morto.
+        """
+        try:
+            _, ctrl_writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", self._tcp_port),
+                timeout=5.0,
+            )
+            sock = ctrl_writer.get_extra_info("socket")
+            if sock is not None:
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                    if hasattr(socket, "TCP_KEEPIDLE"):
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)
+                    if hasattr(socket, "TCP_KEEPINTVL"):
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
+                    if hasattr(socket, "TCP_KEEPCNT"):
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                except OSError:
+                    pass
+            self._control = ControlChannel(self.serial, ctrl_writer)
+            logs.success("Canale di controllo attivo", serial=self.serial)
+            return True
+        except Exception as ctrl_exc:
+            logs.warn(f"Canale di controllo non attivo: {ctrl_exc}", serial=self.serial)
+            self._control = None
+            return False
+
+    async def ensure_control(self) -> Optional[ControlChannel]:
+        """Ritorna il canale di controllo, riconnettendolo se e' caduto.
+
+        Chiamato dal relay input quando un tap non trova canale: se il
+        forward e il server sono ancora su, riapre il socket senza
+        riavviare lo stream video.
+        """
+        if self._control and self._control.alive:
+            return self._control
+        if not self._running or not self._tcp_port or not self._writer:
+            return None
+        if self._writer.is_closing():
+            return None
+        if self._control:
+            try:
+                await self._control.close()
+            except Exception:
+                pass
+            self._control = None
+        logs.info("Canale di controllo caduto: riconnessione...", serial=self.serial)
+        await self._connect_control()
+        return self._control
 
     async def _remove_forward(self) -> None:
         if not self._tcp_port:
