@@ -1,4 +1,4 @@
-﻿{
+{
     "linux":  {
                   "download_url":  "https://raw.githubusercontent.com/outs3t/GridDroid/main/install_linux.sh",
                   "silent_args":  [
