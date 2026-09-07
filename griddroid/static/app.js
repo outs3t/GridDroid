@@ -397,6 +397,9 @@ function showDeviceContextMenu(e, serial) {
     e.preventDefault();
     const menu = document.getElementById("deviceContextMenu");
     if (!menu) return;
+    // Il menu deve stare su <body>: dentro contenitori con overflow/stacking
+    // context il position:fixed viene clippato e il menu si taglia.
+    if (menu.parentElement !== document.body) document.body.appendChild(menu);
     menu.dataset.serial = serial;
 
     const targets = getContextTargetSerials(serial);
@@ -467,15 +470,22 @@ function showDeviceContextMenu(e, serial) {
         };
     });
 
-    // Posizione: misuro la dimensione reale del menu (cresce coi gruppi)
-    // e lo tengo dentro il viewport — prima il clamp usava dimensioni
-    // fisse e in basso a destra finiva fuori schermo.
+    // Posizione: flip stile menu nativi — se non c'e' spazio sotto il
+    // cursore il menu si apre verso l'alto, se non c'e' a destra verso
+    // sinistra. Il clamp semplice lasciava il menu tagliato su schermi
+    // piccoli quando l'altezza superava il viewport.
     menu.style.display = "flex";
     menu.style.left = "0px";
     menu.style.top = "0px";
     const rect = menu.getBoundingClientRect();
-    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - rect.width - 8));
-    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - rect.height - 8));
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = e.clientX;
+    let y = e.clientY;
+    if (x + rect.width > vw - 8) x = Math.max(8, x - rect.width);
+    if (y + rect.height > vh - 8) y = Math.max(8, y - rect.height);
+    x = Math.max(8, Math.min(x, vw - rect.width - 8));
+    y = Math.max(8, Math.min(y, vh - Math.min(rect.height, vh - 16) - 8));
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
 
@@ -1265,6 +1275,16 @@ function scheduleAdaptiveQuality() {
 function exitFullscreen() {
     document.querySelectorAll(".fullscreen-cell").forEach((c) => {
         c.classList.remove("fullscreen-cell");
+        // Ripristina la posizione originale nella griglia; se il parent
+        // non e' piu' nel documento (griglia ri-renderizzata) riattacca
+        // la cella a deviceGrid per non lasciarla orfana su <body>.
+        if (c._fsParent && document.contains(c._fsParent)) {
+            c._fsParent.insertBefore(c, c._fsNext && c._fsNext.parentNode === c._fsParent ? c._fsNext : null);
+        } else {
+            document.getElementById("deviceGrid")?.appendChild(c);
+        }
+        c._fsParent = null;
+        c._fsNext = null;
     });
     document.getElementById("fullscreenBackdrop")?.remove();
     const prev = state.fullscreenSerial;
@@ -1287,6 +1307,12 @@ function toggleFullscreen(serial, cell) {
         backdrop.className = "fullscreen-backdrop";
         backdrop.addEventListener("click", exitFullscreen);
         document.body.appendChild(backdrop);
+        // La cella va spostata su <body>: dentro .main-layout (z-index:1)
+        // resta sotto il backdrop (z-index:199) e il suo backdrop-filter
+        // la sfocava insieme allo sfondo.
+        cell._fsParent = cell.parentNode;
+        cell._fsNext = cell.nextSibling;
+        document.body.appendChild(cell);
         cell.classList.add("fullscreen-cell");
         state.fullscreenSerial = serial;
         setDeviceStreamQuality(serial, FULLSCREEN_MAX_SIZE);
