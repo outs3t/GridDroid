@@ -79,6 +79,8 @@ class AdbManager:
         self._autoclick_tasks: Dict[str, asyncio.Task] = {}
         # Throttle per `adb reconnect` automatico su device bloccati
         self._last_reconnect: Dict[str, float] = {}
+        # Contatore poll consecutivi in cui un device non appare in adb devices
+        self._missing: Dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Proprietà pubbliche
@@ -597,6 +599,33 @@ class AdbManager:
                         )
             if attempt < 4:
                 await asyncio.sleep(0.2)
+
+        # Device visti prima ma assenti ora: senza questo restavano
+        # "online" all'infinito (card fantasma — il log mostrava Focus su
+        # seriali che adb non elencava piu'). Dopo 2 poll senza vederli
+        # li marchiamo offline, come Panda che li mostra disconnessi.
+        for serial, dev in self._devices.items():
+            if serial in seen_serials:
+                self._missing.pop(serial, None)
+                continue
+            misses = self._missing.get(serial, 0) + 1
+            self._missing[serial] = misses
+            if misses >= 2 and dev.status != DeviceStatus.OFFLINE:
+                dev.status = DeviceStatus.OFFLINE
+                dev.streaming = False
+                dev.error = "non rilevato"
+                logs.warn("Device scomparso da adb devices", serial=serial)
+
+        # Calo improvviso: tipico di un altro adb.exe (Panda, scrcpy,
+        # altro GridDroid) che uccide il server per versione diversa.
+        prev = getattr(self, "_last_seen_count", 0)
+        if prev - len(seen_serials) >= 3:
+            logs.warn(
+                f"Calo improvviso device ({prev} -> {len(seen_serials)}): "
+                "possibile conflitto con un altro adb.exe che riavvia il server",
+                throttle_s=60,
+            )
+        self._last_seen_count = len(seen_serials)
 
         # Breakdown per stato: aiuta a capire perche' mancano device
         # (es. 30 collegati ma ADB ne elenca 13, di cui 2 unauthorized).
