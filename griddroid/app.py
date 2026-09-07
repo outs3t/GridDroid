@@ -798,8 +798,12 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         download_url = platform_info.get("download_url")
         silent_args = platform_info.get("silent_args", [])
         if sys.platform == "win32":
-            if updater.is_installed() and platform_info.get("installer_url"):
-                download_url = platform_info["installer_url"]
+            if updater.is_installed():
+                # Installazione Inno: il download e' SEMPRE il setup, anche
+                # se version.json non ha installer_url. Senza questo,
+                # silent_args vuoto faceva copiare l'installer sopra
+                # GridDroid.exe invece di eseguirlo — update rotto.
+                download_url = platform_info.get("installer_url") or download_url
                 silent_args = platform_info.get(
                     "installer_silent_args",
                     ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
