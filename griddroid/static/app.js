@@ -466,12 +466,17 @@ function showDeviceContextMenu(e, serial) {
         };
     });
 
-    // Posizione
-    const x = Math.min(e.clientX, window.innerWidth - 260);
-    const y = Math.min(e.clientY, window.innerHeight - 420);
+    // Posizione: misuro la dimensione reale del menu (cresce coi gruppi)
+    // e lo tengo dentro il viewport — prima il clamp usava dimensioni
+    // fisse e in basso a destra finiva fuori schermo.
+    menu.style.display = "flex";
+    menu.style.left = "0px";
+    menu.style.top = "0px";
+    const rect = menu.getBoundingClientRect();
+    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - rect.width - 8));
+    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - rect.height - 8));
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
-    menu.style.display = "flex";
 
     const createBtn = document.getElementById("contextCreateGroup");
     if (createBtn) {
