@@ -10,6 +10,7 @@ import re
 import shutil
 import socket
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # Nessuna finestra di terminale per i processi figli su Windows
@@ -83,6 +84,11 @@ class AdbManager:
         self._autoclick_tasks: Dict[str, asyncio.Task] = {}
         # Throttle per `adb reconnect` automatico su device bloccati
         self._last_reconnect: Dict[str, float] = {}
+        # True dopo il primo kill-server fatto per caricare le chiavi vendor
+        # (device 'unauthorized': il server gira con una chiave che i
+        # telefoni non hanno autorizzato — tipico dopo il passaggio al
+        # binario adb di un'altra app, es. Panda).
+        self._server_keys_reloaded = False
         # Contatore poll consecutivi in cui un device non appare in adb devices
         self._missing: Dict[str, int] = {}
 
@@ -673,6 +679,44 @@ class AdbManager:
     # Comandi ADB
     # ------------------------------------------------------------------
 
+    def _collect_adb_keys(self) -> List[str]:
+        """Tutte le chiavi adb trovate sul sistema.
+
+        Oltre a ~/.android cerchiamo vicino al binario adb in uso e nelle
+        cartelle tipiche di tool di terzi (Panda): se i telefoni hanno
+        autorizzato quella chiave, il server deve caricarla.
+        """
+        keys: List[str] = []
+        dirs = [Path.home() / ".android"]
+        if self._adb:
+            adb_dir = Path(self._adb).parent
+            dirs += [adb_dir, adb_dir / ".android", adb_dir.parent / ".android"]
+        for d in dirs:
+            try:
+                if not d or not d.exists():
+                    continue
+                for name in ("adbkey", "adbkey.pub"):
+                    p = d / name
+                    if p.exists() and str(p) not in keys:
+                        keys.append(str(p))
+            except Exception:
+                continue
+        return keys
+
+    def _adb_env(self) -> Dict[str, str]:
+        """Env per i subprocess adb: ADB_VENDOR_KEYS con tutte le chiavi.
+
+        Il server adb le carica solo al suo avvio: per questo quando
+        compaiono device 'unauthorized' facciamo un kill-server una tantum
+        cosi' il prossimo comando riparte con l'env completo.
+        """
+        env = dict(os.environ)
+        keys = self._collect_adb_keys()
+        if keys:
+            sep = ";" if os.name == "nt" else ":"
+            env["ADB_VENDOR_KEYS"] = sep.join(keys)
+        return env
+
     async def adb_command(
         self, *args: str, serial: Optional[str] = None, timeout: float = 30.0
     ) -> Tuple[int, str, str]:
@@ -687,6 +731,7 @@ class AdbManager:
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=self._adb_env(),
                     **_SUBPROCESS_KW,
                 )
                 stdout, stderr = await asyncio.wait_for(
@@ -995,6 +1040,35 @@ class AdbManager:
                 continue
             self._last_reconnect[serial] = now
             asyncio.ensure_future(self._try_reconnect(serial))
+
+        # Device 'unauthorized': il server adb sta girando con una chiave
+        # che i telefoni non hanno autorizzato (es. dopo il passaggio al
+        # binario di Panda). Una tantum: kill-server -> il prossimo comando
+        # riparte con ADB_VENDOR_KEYS e carica anche le chiavi di terzi.
+        if not self._server_keys_reloaded:
+            unauth = [
+                s for s in seen_serials
+                if self._devices.get(s)
+                and self._devices[s].status == DeviceStatus.UNAUTHORIZED
+            ]
+            if unauth and len(self._collect_adb_keys()) > 1:
+                self._server_keys_reloaded = True
+                logs.warn(
+                    f"{len(unauth)} device unauthorized: riavvio il server adb "
+                    "caricando tutte le chiavi trovate (inclusa quella di terzi)"
+                )
+                asyncio.ensure_future(self._reload_server_keys())
+
+    async def _reload_server_keys(self) -> None:
+        """kill-server + start-server con ADB_VENDOR_KEYS: il nuovo server
+        carica tutte le chiavi trovate, i device 'unauthorized' che avevano
+        autorizzato una di quelle chiavi tornano 'device'."""
+        await self.adb_command("kill-server", timeout=10.0)
+        await asyncio.sleep(1.0)
+        rc, out, err = await self.adb_command("start-server", timeout=15.0)
+        logs.info(
+            f"Server adb riavviato con chiavi vendor (rc={rc})",
+        )
 
     async def _try_reconnect(self, serial: str) -> None:
         """Tenta `adb reconnect` su un device bloccato offline/unauthorized."""
