@@ -84,11 +84,11 @@ class AdbManager:
         self._autoclick_tasks: Dict[str, asyncio.Task] = {}
         # Throttle per `adb reconnect` automatico su device bloccati
         self._last_reconnect: Dict[str, float] = {}
-        # True dopo il primo kill-server fatto per caricare le chiavi vendor
-        # (device 'unauthorized': il server gira con una chiave che i
-        # telefoni non hanno autorizzato — tipico dopo il passaggio al
-        # binario adb di un'altra app, es. Panda).
-        self._server_keys_reloaded = False
+        # Reload chiavi vendor per i device 'unauthorized': il server gira
+        # con una chiave che i telefoni non hanno autorizzato (tipico dopo
+        # il passaggio al binario adb di un'altra app, es. Panda).
+        self._key_reload_attempts = 0
+        self._keys_loaded: set = set()
         # Contatore poll consecutivi in cui un device non appare in adb devices
         self._missing: Dict[str, int] = {}
 
@@ -682,22 +682,58 @@ class AdbManager:
     def _collect_adb_keys(self) -> List[str]:
         """Tutte le chiavi adb trovate sul sistema.
 
-        Oltre a ~/.android cerchiamo vicino al binario adb in uso e nelle
-        cartelle tipiche di tool di terzi (Panda): se i telefoni hanno
-        autorizzato quella chiave, il server deve caricarla.
+        Oltre a ~/.android cerchiamo vicino al binario adb in uso, nelle
+        cartelle tipiche di tool di terzi (Panda puo' avere una adbkey
+        propria) e nelle env var che ridirezionano lo storage delle chiavi.
         """
         keys: List[str] = []
-        dirs = [Path.home() / ".android"]
-        if self._adb:
-            adb_dir = Path(self._adb).parent
-            dirs += [adb_dir, adb_dir / ".android", adb_dir.parent / ".android"]
-        for d in dirs:
+
+        def _add(d: Optional[Path]) -> None:
+            if not d:
+                return
             try:
-                if not d or not d.exists():
-                    continue
                 for name in ("adbkey", "adbkey.pub"):
                     p = d / name
                     if p.exists() and str(p) not in keys:
+                        keys.append(str(p))
+            except Exception:
+                pass
+
+        # 1. Posizioni standard
+        _add(Path.home() / ".android")
+        for var in ("ANDROID_SDK_HOME", "ANDROID_USER_HOME"):
+            v = os.environ.get(var)
+            if v:
+                _add(Path(v) / ".android")
+                _add(Path(v))
+        # Chiavi gia' indicate da altri tool via env
+        v = os.environ.get("ADB_VENDOR_KEYS")
+        if v:
+            for k in v.split(";" if os.name == "nt" else ":"):
+                if k and Path(k).exists() and k not in keys:
+                    keys.append(k)
+        # 2. Vicino al binario adb in uso (es. tools/ di Panda)
+        if self._adb:
+            adb_dir = Path(self._adb).parent
+            _add(adb_dir)
+            _add(adb_dir / ".android")
+            _add(adb_dir.parent / ".android")
+            _add(adb_dir.parent)
+        # 3. Glob depth-limitato: home e cartelle app — copre tool di
+        #    terzi che tengono la chiave in una sottodir propria
+        for base in (
+            Path.home(),
+            Path(os.environ.get("LOCALAPPDATA", "")),
+            Path(os.environ.get("APPDATA", "")),
+        ):
+            try:
+                if not base.exists():
+                    continue
+                for p in base.glob("*/*/adbkey*"):
+                    if p.is_file() and str(p) not in keys:
+                        keys.append(str(p))
+                for p in base.glob("*/adbkey*"):
+                    if p.is_file() and str(p) not in keys:
                         keys.append(str(p))
             except Exception:
                 continue
@@ -1031,10 +1067,10 @@ class AdbManager:
         now = time.time()
         for serial in seen_serials:
             dev = self._devices.get(serial)
-            if not dev or dev.status not in (
-                DeviceStatus.OFFLINE,
-                DeviceStatus.UNAUTHORIZED,
-            ):
+            # Solo OFFLINE: su 'unauthorized' il reconnect non serve (non e'
+            # un problema di transport) e ogni tentativo forza una
+            # rinegoziazione USB che amplifica il flap.
+            if not dev or dev.status != DeviceStatus.OFFLINE:
                 continue
             if now - self._last_reconnect.get(serial, 0.0) < 20.0:
                 continue
@@ -1043,19 +1079,22 @@ class AdbManager:
 
         # Device 'unauthorized': il server adb sta girando con una chiave
         # che i telefoni non hanno autorizzato (es. dopo il passaggio al
-        # binario di Panda). Una tantum: kill-server -> il prossimo comando
-        # riparte con ADB_VENDOR_KEYS e carica anche le chiavi di terzi.
-        if not self._server_keys_reloaded:
-            unauth = [
-                s for s in seen_serials
-                if self._devices.get(s)
-                and self._devices[s].status == DeviceStatus.UNAUTHORIZED
-            ]
-            if unauth and len(self._collect_adb_keys()) > 1:
-                self._server_keys_reloaded = True
+        # binario di Panda). kill-server -> il prossimo comando riparte con
+        # ADB_VENDOR_KEYS e carica anche le chiavi di terzi. Si riprova se
+        # nel frattempo sono state trovate chiavi nuove (max 3 volte).
+        unauth = [
+            s for s in seen_serials
+            if self._devices.get(s)
+            and self._devices[s].status == DeviceStatus.UNAUTHORIZED
+        ]
+        if unauth and self._key_reload_attempts < 3:
+            keys_now = self._collect_adb_keys()
+            if set(keys_now) != self._keys_loaded:
+                self._key_reload_attempts += 1
+                self._keys_loaded = set(keys_now)
                 logs.warn(
                     f"{len(unauth)} device unauthorized: riavvio il server adb "
-                    "caricando tutte le chiavi trovate (inclusa quella di terzi)"
+                    f"con {len(keys_now)} chiavi ({keys_now})"
                 )
                 asyncio.ensure_future(self._reload_server_keys())
 
