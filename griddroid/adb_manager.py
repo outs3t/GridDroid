@@ -71,10 +71,29 @@ _DEVICE_RE_PLAIN = re.compile(r"^(?P<serial>\S+)\s+(?P<state>\S+)", re.MULTILINE
 _SERIAL_PORT: Dict[str, int] = {}
 
 
+def _adb_port_listening(port: int) -> bool:
+    """True se un server adb e' GIA' in ascolto sulla porta.
+
+    Fondamentale: `adb -P <porta> ...` auto-avvia un daemon se la porta e'
+    libera. Un server clone sulla 5038 con Panda chiuso contenderebbe i
+    device USB al server 5037, resettando i transport e uccidendo tutti i
+    forward (stream morti nello stesso secondo). Quindi le porte extra si
+    interrogano solo se qualcuno (Panda) le sta gia' servendo.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.3)
+            return s.connect_ex(("127.0.0.1", port)) == 0
+    except OSError:
+        return False
+
+
 def adb_server_args(serial: str) -> List[str]:
     """Argomenti -P da anteporre ai comandi adb per un seriale."""
     port = _SERIAL_PORT.get(serial, 5037)
-    return ["-P", str(port)] if port != 5037 else []
+    if port != 5037 and _adb_port_listening(port):
+        return ["-P", str(port)]
+    return []
 
 
 class AdbManager:
@@ -786,7 +805,9 @@ class AdbManager:
             eff_port = port
             if eff_port is None and serial:
                 eff_port = _SERIAL_PORT.get(serial, 5037)
-            if eff_port and eff_port != 5037:
+            # Solo se il server extra e' gia' in ascolto: `-P` su una porta
+            # libera auto-avvia un daemon clone che ruba i device al 5037.
+            if eff_port and eff_port != 5037 and _adb_port_listening(eff_port):
                 cmd += ["-P", str(eff_port)]
             if serial:
                 cmd += ["-s", serial]
@@ -960,6 +981,11 @@ class AdbManager:
         # Multi-server: oltre alla 5037 interroghiamo le porte extra
         # (es. 5038 = QuickForward/Panda che ri-esporta i device come adb).
         for port in self._adb_ports():
+            # MAI interrogare una porta extra senza server in ascolto:
+            # `adb -P <porta> devices` auto-avvia un daemon se la porta e'
+            # libera, e quel clone contenderebbe i device USB al 5037.
+            if port != 5037 and not _adb_port_listening(port):
+                continue
             for attempt in range(5):
                 use_long = attempt % 2 == 1  # 1, 3 con -l
                 rc, out, _ = await self.adb_command(
