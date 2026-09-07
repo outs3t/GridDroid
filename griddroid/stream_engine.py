@@ -12,7 +12,7 @@ import socket
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from PIL import Image
 
@@ -112,6 +112,7 @@ class DeviceStream:
         # set a livello di modulo perche' l'auto-stream ricrea DeviceStream
         # a ogni tentativo e una variabile locale si resetterebbe.
         self._iframe_unsupported = _IFRAME_UNSUPPORTED
+        self._degrade_level = _DEGRADED.get(serial, 0)
         self._task: Optional[asyncio.Task] = None
         self._log_task: Optional[asyncio.Task] = None
         self._native_width: int = 0
@@ -263,7 +264,9 @@ class DeviceStream:
                     stderr=asyncio.subprocess.PIPE,
                     **_SUBPROCESS_KW,
                 )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+                # Timeout corto: un device appeso non deve tenere il lock
+                # adb globale per 30s bloccando il polling di tutti.
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8.0)
                 return stdout.decode("utf-8", errors="replace").strip() == "device"
             except Exception:
                 return False
@@ -291,9 +294,14 @@ class DeviceStream:
                 async with self._start_sem_cm():
                     self._last_heartbeat = time.monotonic()
 
-                    # 0. Sveglia il dispositivo: scrcpy richiede display attivo
+                    # 0. Sveglia il dispositivo: scrcpy richiede display attivo.
+                    #    Timeout corto: un device appeso non deve tenere il
+                    #    lock adb globale bloccando i comandi degli altri.
                     try:
-                        await self._adb_exec(adb, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+                        await self._adb_exec(
+                            adb, "shell", "input", "keyevent", "KEYCODE_WAKEUP",
+                            timeout=8.0,
+                        )
                     except Exception:
                         pass
 
@@ -328,8 +336,7 @@ class DeviceStream:
                         f"show_touches=true stay_awake=true power_off_on_close=true "
                         f"raw_stream=true "
                         f"max_size={self.max_size_override or s.max_size} "
-                        f"max_fps={s.max_fps} "
-                        f"video_bit_rate={s.bit_rate} "
+                        + self._adaptive_params(s)
                         # Keyframe ogni 2s: chi perde frame (rete lenta/VPN)
                         # si riallinea in fretta invece di restare corrotto.
                         + (
@@ -393,12 +400,29 @@ class DeviceStream:
                         logs.warn(f"Canale di controllo non attivo: {ctrl_exc}", serial=self.serial)
                         self._control = None
 
-                # 6. Passthrough H264 → browser (decodifica hardware WebCodecs)
+                # 6. Watchdog del processo server: se muore in silenzio col
+                #    socket ancora aperto, sblocca la read e riavvia lo stream.
+                self._watchdog_task = asyncio.create_task(self._watch_server_proc())
+
+                # 7. Passthrough H264 → browser (decodifica hardware WebCodecs)
                 au_count = await self._stream_h264(reader)
                 if au_count > 0:
                     consecutive_failures = 0
+                    # Stream stabile: riporta la qualita' al livello pieno.
+                    if au_count > 300 and _DEGRADED.get(self.serial, 0) > 0:
+                        _DEGRADED[self.serial] = 0
+                        logs.info("Stream stabile: qualita' ripristinata", serial=self.serial)
                 else:
                     consecutive_failures += 1
+                    # Throttling adattivo: encoder che fallisce di continuo
+                    # riceve fps/bitrate ridotti al prossimo tentativo.
+                    level = _DEGRADED.get(self.serial, 0)
+                    if level < _DEGRADE_MAX:
+                        _DEGRADED[self.serial] = level + 1
+                        logs.warn(
+                            f"Encoder instabile: qualita' ridotta al livello {level + 1}",
+                            serial=self.serial,
+                        )
                     if self.serial not in self._iframe_unsupported:
                         # Encoder morto subito dopo il configure:
                         # i-frame-interval non digerito, si riprova senza.
@@ -427,6 +451,50 @@ class DeviceStream:
                 delay = min(2.0 * (1.5 ** consecutive_failures), 60.0) * random.uniform(0.8, 1.2)
                 logs.info(f"Riconnessione stream tra {delay:.1f}s...", serial=self.serial, throttle_s=30)
                 await asyncio.sleep(delay)
+
+    def _adaptive_params(self, s) -> str:
+        """Parametri video scalati per il livello di degradazione corrente.
+
+        Encoder instabili (timeout, 0 frame) ricevono fps e bitrate ridotti:
+        meno lavoro per l'encoder hardware del telefono, piu' probabilita'
+        che lo stream regga in setup densi.
+        """
+        level = _DEGRADED.get(self.serial, 0)
+        fps_f, br_f = _degrade_factor(level)
+        fps = max(5, int(s.max_fps * fps_f))
+        br = max(500_000, int(s.bit_rate * br_f))
+        return f"max_fps={fps} video_bit_rate={br} "
+
+    async def _watch_server_proc(self) -> None:
+        """Watchdog granulare: sorveglia il processo scrcpy-server.
+
+        Se il processo muore in silenzio mentre il socket video resta aperto
+        (server crashato senza riga ERROR), la read() resterebbe appesa per
+        sempre. Chiudiamo il writer per sbloccarla e far ripartire SOLO
+        questo stream — gli altri non vengono toccati.
+        """
+        proc = self._server_proc
+        if proc is None:
+            return
+        try:
+            while self._running:
+                if proc.returncode is not None:
+                    # Processo morto: se il socket e' ancora aperto lo chiudiamo
+                    if self._writer is not None and not self._writer.is_closing():
+                        logs.warn(
+                            "scrcpy-server terminato in silenzio: riavvio stream",
+                            serial=self.serial,
+                        )
+                        try:
+                            self._writer.close()
+                        except Exception:
+                            pass
+                    return
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
 
     async def _stream_h264(self, tcp_reader: asyncio.StreamReader) -> int:
         """Legge H264 Annex-B dal socket TCP, lo divide in access unit e le
@@ -546,6 +614,13 @@ class DeviceStream:
         self._tcp_port = 0
 
     async def _cleanup_server(self) -> None:
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await asyncio.wait_for(self._watchdog_task, timeout=0.5)
+            except Exception:
+                pass
+            self._watchdog_task = None
         if self._log_task:
             try:
                 self._log_task.cancel()
