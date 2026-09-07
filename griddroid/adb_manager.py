@@ -636,6 +636,14 @@ class AdbManager:
                 dev.streaming = False
                 dev.error = "non rilevato"
                 logs.warn("Device scomparso da adb devices", serial=serial)
+            elif misses == 10:
+                # Sparito da ~5 minuti: se torna solo col riavvio del PC e'
+                # la sospensione selettiva USB di Windows, non adb.
+                logs.warn(
+                    "Device assente da 10 poll: se torna solo riavviando il PC, "
+                    "disattiva la sospensione selettiva USB di Windows",
+                    serial=serial,
+                )
 
         # Calo improvviso: tipico di un altro adb.exe (Panda, scrcpy,
         # altro GridDroid) che uccide il server per versione diversa.
