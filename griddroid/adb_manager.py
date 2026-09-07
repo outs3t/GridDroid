@@ -65,6 +65,18 @@ _DEVICE_RE = re.compile(
 _DEVICE_RE_PLAIN = re.compile(r"^(?P<serial>\S+)\s+(?P<state>\S+)", re.MULTILINE)
 
 
+# Mappa seriale -> porta del server adb che lo enumera (5037 standard,
+# 5038 = QuickForward/Panda). Modulo-level perche' stream_engine crea
+# subprocess adb propri e deve instradarsi sul server giusto.
+_SERIAL_PORT: Dict[str, int] = {}
+
+
+def adb_server_args(serial: str) -> List[str]:
+    """Argomenti -P da anteporre ai comandi adb per un seriale."""
+    port = _SERIAL_PORT.get(serial, 5037)
+    return ["-P", str(port)] if port != 5037 else []
+
+
 class AdbManager:
     """Worker asincrono per il monitoraggio dei dispositivi ADB."""
 
@@ -93,7 +105,7 @@ class AdbManager:
         self._missing: Dict[str, int] = {}
 
     # ------------------------------------------------------------------
-    # Proprietà pubbliche
+    # Proprieta' pubbliche
     # ------------------------------------------------------------------
 
     @property
@@ -753,12 +765,29 @@ class AdbManager:
             env["ADB_VENDOR_KEYS"] = sep.join(keys)
         return env
 
+    def _adb_ports(self) -> List[int]:
+        """Porte dei server adb da interrogare: 5037 + extra da settings."""
+        ports = [5037]
+        for p in (self._settings.adb_extra_ports or "").split(","):
+            p = p.strip()
+            if p.isdigit() and int(p) not in ports:
+                ports.append(int(p))
+        return ports
+
     async def adb_command(
-        self, *args: str, serial: Optional[str] = None, timeout: float = 30.0
+        self, *args: str, serial: Optional[str] = None,
+        timeout: float = 30.0, port: Optional[int] = None,
     ) -> Tuple[int, str, str]:
         """Esegue un comando ADB e ritorna (returncode, stdout, stderr)."""
         async with adb_cmd_lock():
             cmd = [self._adb]
+            # Instradamento multi-server: il device va comandato sul server
+            # che lo enumera (5037 standard, 5038 QuickForward/Panda).
+            eff_port = port
+            if eff_port is None and serial:
+                eff_port = _SERIAL_PORT.get(serial, 5037)
+            if eff_port and eff_port != 5037:
+                cmd += ["-P", str(eff_port)]
             if serial:
                 cmd += ["-s", serial]
             cmd += list(args)
@@ -837,6 +866,7 @@ class AdbManager:
         product: str = "",
         usb: str = "",
         tid: str = "",
+        port: int = 5037,
     ) -> None:
         """Aggiorna o crea lo stato di un dispositivo da un rigo adb devices."""
         status = {
@@ -846,10 +876,12 @@ class AdbManager:
         }.get(state_str, DeviceStatus.OFFLINE)
 
         now = time.time()
+        _SERIAL_PORT[serial] = port
         if serial in self._known:
             self._known[serial]["last_seen"] = now
         if serial in self._devices:
             dev = self._devices[serial]
+            dev.adb_port = port
             old_status = dev.status
             # aggiorna le info senza perdere quelle gia' presenti
             dev.info.model = (model or dev.info.model).replace("_", " ")
@@ -886,6 +918,7 @@ class AdbManager:
                 status=status,
                 played=serial in self._played_serials,
                 skipped=serial in self._skipped_serials,
+                adb_port=port,
             )
             self._devices[serial] = dev
             # Registra il dispositivo nel file persistente
@@ -918,35 +951,40 @@ class AdbManager:
         # Rilevazione: alterna `adb devices` e `adb devices -l` perche' con
         # molti dispositivi uno puo' riuscire dove l'altro tronca.
         seen_serials: set = set()
-        for attempt in range(5):
-            use_long = attempt % 2 == 1  # 1, 3 con -l
-            rc, out, _ = await self.adb_command(
-                "devices",
-                *("-l",) if use_long else (),
-                timeout=15.0,
-            )
-            if rc == 0 and out:
-                regex = _DEVICE_RE if use_long else _DEVICE_RE_PLAIN
-                for match in regex.finditer(out):
-                    serial = match.group("serial")
-                    if serial == "List":
-                        continue
-                    if serial not in seen_serials:
-                        seen_serials.add(serial)
-                        model = match.group("model") if use_long else ""
-                        product = match.group("product") if use_long else ""
-                        usb = match.group("usb") if use_long else ""
-                        tid = match.group("tid") if use_long else ""
-                        self._upsert_device(
-                            serial,
-                            match.group("state"),
-                            model=model,
-                            product=product,
-                            usb=usb,
-                            tid=tid,
-                        )
-            if attempt < 4:
-                await asyncio.sleep(0.2)
+        # Multi-server: oltre alla 5037 interroghiamo le porte extra
+        # (es. 5038 = QuickForward/Panda che ri-esporta i device come adb).
+        for port in self._adb_ports():
+            for attempt in range(5):
+                use_long = attempt % 2 == 1  # 1, 3 con -l
+                rc, out, _ = await self.adb_command(
+                    "devices",
+                    *("-l",) if use_long else (),
+                    timeout=15.0,
+                    port=port,
+                )
+                if rc == 0 and out:
+                    regex = _DEVICE_RE if use_long else _DEVICE_RE_PLAIN
+                    for match in regex.finditer(out):
+                        serial = match.group("serial")
+                        if serial == "List":
+                            continue
+                        if serial not in seen_serials:
+                            seen_serials.add(serial)
+                            model = match.group("model") if use_long else ""
+                            product = match.group("product") if use_long else ""
+                            usb = match.group("usb") if use_long else ""
+                            tid = match.group("tid") if use_long else ""
+                            self._upsert_device(
+                                serial,
+                                match.group("state"),
+                                model=model,
+                                product=product,
+                                usb=usb,
+                                tid=tid,
+                                port=port,
+                            )
+                if attempt < 4:
+                    await asyncio.sleep(0.2)
 
         # Device visti prima ma assenti ora: senza questo restavano
         # "online" all'infinito (card fantasma — il log mostrava Focus su
@@ -1207,7 +1245,8 @@ class AdbManager:
 
     async def take_screenshot_raw(self, serial: str) -> Optional[bytes]:
         """Screenshot come bytes raw via subprocess."""
-        cmd = [self._adb, "-s", serial, "exec-out", "screencap", "-p"]
+        cmd = [self._adb, *adb_server_args(serial),
+               "-s", serial, "exec-out", "screencap", "-p"]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,

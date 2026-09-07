@@ -45,6 +45,9 @@ class DeviceState:
     error: str = ""
     stream_failures: int = 0
     next_stream_attempt: float = 0.0
+    # Porta del server adb che enumera questo device (5037 standard,
+    # 5038 = server QuickForward/Panda). I comandi -s vanno instradati li'.
+    adb_port: int = 5037
 
     @property
     def serial(self) -> str:

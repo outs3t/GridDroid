@@ -105,6 +105,9 @@ class AppSettings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8470
     adb_path: str = Field(default_factory=_find_bundled_adb)
+    # Server adb extra oltre alla 5037 (es. 5038 = QuickForward/Panda che
+    # ri-esporta i device come adb anche senza debug USB attivo).
+    adb_extra_ports: str = "5038"
     scrcpy_server_path: str = ""
     update_url: str = "https://outs3t.github.io/GridDroid/version.json"
     poll_interval_s: float = 5.0

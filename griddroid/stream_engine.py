@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from PIL import Image
 
-from .adb_manager import adb_cmd_lock
+from .adb_manager import adb_cmd_lock, adb_server_args
 from .config import AppSettings
 from .control_channel import ControlChannel
 from .log_manager import logs
@@ -276,7 +276,8 @@ class DeviceStream:
         async with adb_cmd_lock():
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    adb, "-s", self.serial, "get-state",
+                    adb, *adb_server_args(self.serial),
+                    "-s", self.serial, "get-state",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **_SUBPROCESS_KW,
@@ -363,7 +364,8 @@ class DeviceStream:
                         + f"scid={scid_hex}"
                     )
                     self._server_proc = await asyncio.create_subprocess_exec(
-                        adb, "-s", self.serial, "shell", server_cmd,
+                        adb, *adb_server_args(self.serial),
+                        "-s", self.serial, "shell", server_cmd,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         **_SUBPROCESS_KW,
@@ -596,7 +598,7 @@ class DeviceStream:
     async def _adb_exec(self, adb: str, *args: str, timeout: float = 30.0) -> str:
         async with adb_cmd_lock():
             proc = await asyncio.create_subprocess_exec(
-                adb, "-s", self.serial, *args,
+                adb, *adb_server_args(self.serial), "-s", self.serial, *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 **_SUBPROCESS_KW,
@@ -745,7 +747,8 @@ class DeviceStream:
         while self._running:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    adb, "-s", self.serial, "exec-out", "screencap", "-p",
+                    adb, *adb_server_args(self.serial),
+                    "-s", self.serial, "exec-out", "screencap", "-p",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **_SUBPROCESS_KW,
