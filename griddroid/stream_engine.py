@@ -35,6 +35,23 @@ _BASE_PORT = 27183
 # DeviceStream a ogni tentativo: lo stato deve sopravvivere.
 _IFRAME_UNSUPPORTED: Set[str] = set()
 
+# Throttling adattivo: livello di degradazione per seriale (0 = pieno).
+# A ogni fallimento encoder consecutivo si alza (fps e bitrate ridotti),
+# dopo uno stream stabile si azzera. Sopravvive alla ricreazione di
+# DeviceStream perche' l'auto-stream ne crea uno nuovo a ogni tentativo.
+_DEGRADED: Dict[str, int] = {}
+_DEGRADE_MAX = 3  # livelli: 0=100%, 1=50% fps, 2=25% fps+meta' bitrate, 3=minimo
+
+
+def _degrade_factor(level: int) -> Tuple[float, float]:
+    """Ritorna (fattore_fps, fattore_bitrate) per il livello di degradazione."""
+    return {
+        0: (1.0, 1.0),
+        1: (0.5, 0.75),
+        2: (0.25, 0.5),
+        3: (0.15, 0.35),
+    }.get(level, (0.15, 0.35))
+
 
 def _tools_dir() -> Path:
     if getattr(sys, "frozen", False):
