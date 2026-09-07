@@ -13,9 +13,25 @@ import platform
 import subprocess
 import sys
 import tempfile
+import ssl
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from .log_manager import logs
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Contesto SSL con i certificati di certifi.
+
+    Nell'exe PyInstaller i certificati CA del sistema non vengono trovati:
+    senza certifi ogni chiamata HTTPS fallisce con CERTIFICATE_VERIFY_FAILED.
+    """
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 
 DEFAULT_REMOTE = "https://outs3t.github.io/GridDroid/version.json"
@@ -66,13 +82,11 @@ async def fetch_remote_info(
                     "Expires": "0",
                 },
             )
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
                 data = r.read().decode("utf-8")
                 return json.loads(data)
         except Exception as exc:
-            # Logga l'errore per debug
-            import sys
-            print(f"[updater] fetch error: {exc}", file=sys.stderr)
+            logs.warn(f"Updater: fetch remoto fallito ({exc})")
             return None
 
     return await asyncio.to_thread(_fetch)
@@ -103,7 +117,7 @@ async def download_file(
                 if downloaded:
                     headers["Range"] = f"bytes={downloaded}-"
                 req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=60.0) as r:
+                with urllib.request.urlopen(req, timeout=60.0, context=_ssl_context()) as r:
                     # Se il server ignora Range (200 invece di 206), ricomincia da zero
                     if downloaded and r.status == 200:
                         downloaded = 0

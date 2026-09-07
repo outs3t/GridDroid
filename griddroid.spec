@@ -50,6 +50,7 @@ a = Analysis(
         'pythonnet',
         'clr',
         'psutil',
+        'certifi',
     ],
     hookspath=[],
     hooksconfig={},

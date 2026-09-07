@@ -41,6 +41,7 @@ class DeviceState:
     selected: bool = False
     played: bool = False  # nascosto dalla griglia come "giocato"
     skipped: bool = False  # nascosto dalla griglia come "non giocato"
+    autoclick: bool = False  # auto-clicker attivo
     error: str = ""
     stream_failures: int = 0
     next_stream_attempt: float = 0.0
@@ -69,6 +70,7 @@ class DeviceState:
             "selected": self.selected,
             "played": self.played,
             "skipped": self.skipped,
+            "autoclick": self.autoclick,
             "display_name": self.display_name,
             "error": self.error,
         }

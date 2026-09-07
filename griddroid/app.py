@@ -283,6 +283,33 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             dev.selected = selected
         return {"ok": True}
 
+    @app.post("/api/balances/read")
+    async def read_balances():
+        """Legge il saldo a schermo di ogni device online e lo salva in CSV."""
+        from .config import append_balances, BALANCES_FILE
+
+        ts = datetime.now().isoformat(timespec="seconds")
+        results = []
+        for serial, dev in adb.devices.items():
+            if dev.status != DeviceStatus.ONLINE:
+                continue
+            saldo = await adb.read_balance(serial)
+            results.append(
+                {"serial": serial, "nome": dev.display_name, "saldo": saldo}
+            )
+        rows = [
+            {"timestamp": ts, "serial": r["serial"], "nome": r["nome"], "saldo": r["saldo"]}
+            for r in results
+            if r["saldo"]
+        ]
+        if rows:
+            append_balances(rows)
+        return {
+            "results": results,
+            "saved": len(rows),
+            "file": str(BALANCES_FILE),
+        }
+
     @app.post("/api/devices/{serial}/screen-on")
     async def screen_on(serial: str):
         await adb.screen_on(serial)
@@ -942,6 +969,18 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
         elif action == "reset_skipped":
             adb.reset_skipped()
+
+        elif action == "autoclick_start":
+            adb.start_autoclick(
+                serial,
+                int(cmd.get("x", 0)),
+                int(cmd.get("y", 0)),
+                int(cmd.get("interval_ms", 1000)),
+                int(cmd.get("jitter_px", 8)),
+            )
+
+        elif action == "autoclick_stop":
+            adb.stop_autoclick(serial)
 
         elif action == "start_stream":
             dev = adb.get_device(serial)

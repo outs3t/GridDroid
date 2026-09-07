@@ -75,6 +75,8 @@ class AdbManager:
         self._running = False
         self._poll_task: Optional[asyncio.Task] = None
         self._change_callbacks: List = []
+        # Auto-clicker per device: serial -> task asyncio
+        self._autoclick_tasks: Dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Proprietà pubbliche
@@ -124,6 +126,141 @@ class AdbManager:
             dev.skipped = False
         save_skipped([])
         logs.info("Ripristinati tutti i dispositivi non giocati")
+
+    # ------------------------------------------------------------------
+    # Auto-clicker (anti-rilevamento)
+    # ------------------------------------------------------------------
+
+    def autoclick_active(self, serial: str) -> bool:
+        task = self._autoclick_tasks.get(serial)
+        return bool(task and not task.done())
+
+    def start_autoclick(
+        self,
+        serial: str,
+        x: int,
+        y: int,
+        interval_ms: int = 1000,
+        jitter_px: int = 8,
+    ) -> bool:
+        """Avvia l'auto-clicker su un device in (x, y) con timing umano."""
+        if serial not in self._devices:
+            return False
+        self.stop_autoclick(serial)
+        dev = self._devices[serial]
+        dev.autoclick = True
+        self._autoclick_tasks[serial] = asyncio.create_task(
+            self._autoclick_loop(serial, x, y, max(150, interval_ms), jitter_px)
+        )
+        logs.info(
+            f"Auto-click avviato ({x},{y} ogni ~{interval_ms}ms)", serial=serial
+        )
+        return True
+
+    def stop_autoclick(self, serial: str) -> None:
+        """Ferma l'auto-clicker di un device."""
+        task = self._autoclick_tasks.pop(serial, None)
+        if task and not task.done():
+            task.cancel()
+        if serial in self._devices:
+            self._devices[serial].autoclick = False
+            logs.info("Auto-click fermato", serial=serial)
+
+    async def _autoclick_loop(
+        self, serial: str, x: int, y: int, interval_ms: int, jitter_px: int
+    ) -> None:
+        """Loop di click con pattern il piu' possibile umano.
+
+        Anti-rilevamento:
+        - intervallo randomizzato attorno alla media (+-40%)
+        - posizione con jitter casuale entro jitter_px
+        - pressione simulata con 'input swipe' a durata variabile (60-140ms)
+          invece di 'input tap' (troppo istantaneo/meccanico)
+        - ~4% di probabilita' di una pausa lunga (2-6s), come farebbe una persona
+        """
+        import random
+
+        try:
+            while True:
+                dev = self._devices.get(serial)
+                if not dev or dev.status != DeviceStatus.ONLINE:
+                    break
+
+                jx = x + random.randint(-jitter_px, jitter_px)
+                jy = y + random.randint(-jitter_px, jitter_px)
+                duration = random.randint(60, 140)
+                await self.shell(
+                    serial,
+                    f"input swipe {jx} {jy} {jx} {jy} {duration}",
+                    timeout=10.0,
+                )
+
+                # Pausa lunga occasionale: rompe la regolarita' del pattern
+                if random.random() < 0.04:
+                    await asyncio.sleep(random.uniform(2.0, 6.0))
+
+                wait = interval_ms / 1000.0 * random.uniform(0.6, 1.4)
+                await asyncio.sleep(wait)
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logs.warn(f"Auto-click interrotto: {exc}", serial=serial)
+        finally:
+            if serial in self._devices:
+                self._devices[serial].autoclick = False
+            self._autoclick_tasks.pop(serial, None)
+
+    # ------------------------------------------------------------------
+    # Lettura saldo a schermo
+    # ------------------------------------------------------------------
+
+    async def read_balance(self, serial: str) -> Optional[str]:
+        """Legge il saldo visibile a schermo via uiautomator dump.
+
+        L'utente fa login manualmente sul sito/app: qui si legge solo
+        l'importo mostrato. Strategia: prima un importo con simbolo di
+        valuta, poi un numero vicino a parole chiave (saldo/balance/totale).
+        """
+        import re
+
+        try:
+            await self.shell(
+                serial, "uiautomator dump /sdcard/griddroid_ui.xml", timeout=15.0
+            )
+            xml = await self.shell(
+                serial, "cat /sdcard/griddroid_ui.xml", timeout=15.0
+            )
+        except Exception as exc:
+            logs.warn(f"Lettura saldo fallita: {exc}", serial=serial)
+            return None
+        if not xml:
+            return None
+
+        texts = re.findall(r'text="([^"]+)"', xml)
+        money = re.compile(
+            r"(?:€|eur|usd|\$|£)\s*([0-9][0-9.,\s]*[0-9])"
+            r"|([0-9][0-9.,]*[0-9])\s*(?:€|eur|usd|\$|£)",
+            re.IGNORECASE,
+        )
+        # 1) importo con simbolo di valuta
+        for t in texts:
+            m = money.search(t)
+            if m:
+                return (m.group(1) or m.group(2)).strip()
+        # 2) numero nel nodo che contiene 'saldo'/'balance'/'totale'
+        kw = re.compile(r"saldo|balance|totale|available|disponibil", re.IGNORECASE)
+        num = re.compile(r"[0-9]+[.,][0-9]{2}")
+        for i, t in enumerate(texts):
+            if kw.search(t):
+                m = num.search(t)
+                if m:
+                    return m.group(0)
+                # a volte label e importo sono in nodi separati e adiacenti
+                for t2 in texts[i + 1 : i + 3]:
+                    m = num.search(t2)
+                    if m:
+                        return m.group(0)
+        return None
 
     # ------------------------------------------------------------------
     # Etichette

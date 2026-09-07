@@ -9,6 +9,7 @@ const state = {
     broadcastMode: false,
     focusedSerial: null,
     fullscreenSerial: null,
+    lastTap: {}, // serial -> {x, y} ultimo tap reale (target auto-click)
     logCount: 0,
     ws: null,
     gridCols: 15,
@@ -394,6 +395,13 @@ function showDeviceContextMenu(e, serial) {
     if (setSkippedItem) {
         setSkippedItem.textContent = targetCount === 1 ? "Segna come non giocato" : `Segna ${targetCount} come non giocati`;
     }
+    const autoclickItem = menu.querySelector('[data-action="autoclick"]');
+    if (autoclickItem) {
+        const dev = state.devices.find((d) => d.serial === serial);
+        autoclickItem.textContent = dev && dev.autoclick
+            ? "Ferma auto-click"
+            : "Auto-click sull'ultimo punto toccato";
+    }
 
     // Lista gruppi esistenti
     const groupList = document.getElementById("contextGroupList");
@@ -558,6 +566,7 @@ function updateDeviceCell(cell, dev) {
     // Classi celle
     cell.classList.toggle("focused", dev.serial === state.focusedSerial);
     cell.classList.toggle("offline", dev.status !== "online");
+    cell.classList.toggle("autoclick", !!dev.autoclick);
     cell.classList.toggle("selected", dev.selected);
 
     // Checkbox
@@ -953,6 +962,9 @@ function setupInputHandlers(feedEl, serial) {
 
         feedEl.setPointerCapture(ev.pointerId);
         dragging = true;
+
+        // Ultimo punto toccato: usato come target dell'auto-clicker
+        state.lastTap[serial] = { x: c.x, y: c.y };
 
         // Il focus deve arrivare prima dell'evento: i comandi sono ordinati
         wsSend({ action: "focus", serial: serial });
@@ -1932,6 +1944,29 @@ function initHeaderButtons() {
         btnResetSkipped.addEventListener("click", () => {
             if (confirm("Ripristinare tutti i dispositivi non giocati?")) {
                 wsSend({ action: "reset_skipped" });
+            }
+        });
+    }
+
+    // Legge il saldo a schermo di ogni device online e lo salva in CSV
+    const btnReadBalances = document.getElementById("btnReadBalances");
+    if (btnReadBalances) {
+        btnReadBalances.addEventListener("click", async () => {
+            btnReadBalances.disabled = true;
+            try {
+                const res = await fetch("/api/balances/read", { method: "POST" });
+                const data = await res.json();
+                const found = (data.results || []).filter((r) => r.saldo);
+                if (found.length) {
+                    const lines = found.map((r) => `${r.nome}: ${r.saldo}`).join(" — ");
+                    toast(`${data.saved} saldi salvati in CSV: ${lines}`, "success");
+                } else {
+                    toast("Nessun saldo rilevato a schermo", "error");
+                }
+            } catch (e) {
+                toast("Errore lettura saldi: " + e.message, "error");
+            } finally {
+                btnReadBalances.disabled = false;
             }
         });
     }
@@ -3181,6 +3216,26 @@ function initContextMenu() {
             const serial = menu.dataset.serial;
             const cell = serial && document.querySelector(`.device-cell[data-serial="${serial}"]`);
             if (cell) toggleFullscreen(serial, cell);
+            hideDeviceContextMenu();
+            return;
+        }
+        const acItem = e.target.closest('[data-action="autoclick"]');
+        if (acItem) {
+            const serial = menu.dataset.serial;
+            const dev = serial && state.devices.find((d) => d.serial === serial);
+            if (dev) {
+                if (dev.autoclick) {
+                    wsSend({ action: "autoclick_stop", serial });
+                } else {
+                    const tap = state.lastTap[serial];
+                    if (!tap) {
+                        toast("Tocca prima un punto sul telefono: l'auto-clicker cliccherà lì", "error");
+                    } else {
+                        wsSend({ action: "autoclick_start", serial, x: tap.x, y: tap.y, interval_ms: 1000 });
+                        toast(`Auto-click avviato su ${dev.display_name}`, "success");
+                    }
+                }
+            }
             hideDeviceContextMenu();
         }
     });

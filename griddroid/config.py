@@ -18,6 +18,7 @@ LABELS_FILE = CONFIG_DIR / "labels.json"
 TAGS_FILE = CONFIG_DIR / "tags.json"
 PLAYED_FILE = CONFIG_DIR / "played.json"
 SKIPPED_FILE = CONFIG_DIR / "skipped.json"
+BALANCES_FILE = CONFIG_DIR / "balances.csv"
 KNOWN_FILE = CONFIG_DIR / "known.json"
 
 
@@ -168,6 +169,20 @@ def save_skipped(skipped: List[str]) -> None:
     SKIPPED_FILE.write_text(
         json.dumps(skipped, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def append_balances(rows: List[dict]) -> None:
+    """Accoda letture di saldo al CSV (timestamp, serial, nome, saldo)."""
+    import csv
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    new_file = not BALANCES_FILE.exists()
+    with BALANCES_FILE.open("a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if new_file:
+            w.writerow(["timestamp", "serial", "nome", "saldo"])
+        for r in rows:
+            w.writerow([r["timestamp"], r["serial"], r["nome"], r["saldo"]])
 
 
 def load_known() -> Dict[str, dict]:

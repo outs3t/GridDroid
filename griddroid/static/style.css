@@ -409,6 +409,26 @@ body::before {
         0 0 0 1px rgba(74,222,128,0.45);
 }
 
+/* Auto-clicker attivo: angolino arancione pulsante */
+.device-cell.autoclick::after {
+    content: "AC";
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    z-index: 5;
+    background: #f59e0b;
+    color: #111;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 6px;
+    animation: acPulse 1.6s ease-in-out infinite;
+}
+@keyframes acPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+
 /* Overlay "in rilievo": il telefono viene ingrandito e centrato sopra la
    griglia, come una seconda finestra. Backdrop scuro cliccabile per chiudere. */
 .fullscreen-backdrop {
