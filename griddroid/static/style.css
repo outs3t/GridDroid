@@ -591,6 +591,21 @@ body::before {
     box-shadow: 0 0 0 2px rgba(74,222,128,0.2);
 }
 
+.device-saldo {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--accent);
+    min-height: 12px;
+    line-height: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.device-saldo:empty {
+    display: none;
+}
+
 .device-tags {
     display: flex;
     flex-wrap: nowrap;

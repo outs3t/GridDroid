@@ -291,6 +291,7 @@ function wrapDeviceCard(cell, dev) {
             <input type="text" class="device-name" spellcheck="false" title="Clicca per rinominare" value="${escapeHtml(dev.display_name)}" size="${nameSize}" />
             <span class="status-dot ${dev.status}"></span>
         </div>
+        <div class="device-saldo">${dev.saldo ? `€ ${escapeHtml(String(dev.saldo))}` : ""}</div>
         <div class="device-tags"></div>
     `;
 
@@ -2232,6 +2233,14 @@ function initHeaderButtons() {
                     body: JSON.stringify({ serials }),
                 });
                 const data = await res.json();
+                // Saldo sulla card: valore letto o N/D (app chiusa/background)
+                (data.results || []).forEach((r) => {
+                    const dev = state.devices.find((d) => d.serial === r.serial);
+                    if (dev) dev.saldo = r.saldo || "N/D";
+                    const cell = document.querySelector(`.device-cell[data-serial="${r.serial}"]`);
+                    const el = cell?.parentElement?.querySelector(".device-saldo");
+                    if (el) el.textContent = r.saldo ? `€ ${r.saldo}` : "N/D";
+                });
                 const found = (data.results || []).filter((r) => r.saldo);
                 if (found.length) {
                     const lines = found.map((r) => {
