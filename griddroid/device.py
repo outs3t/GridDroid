@@ -40,6 +40,7 @@ class DeviceState:
     last_seen: float = field(default_factory=time.time)
     selected: bool = False
     played: bool = False  # nascosto dalla griglia come "giocato"
+    skipped: bool = False  # nascosto dalla griglia come "non giocato"
     error: str = ""
     stream_failures: int = 0
     next_stream_attempt: float = 0.0
@@ -67,6 +68,7 @@ class DeviceState:
             "streaming": self.streaming,
             "selected": self.selected,
             "played": self.played,
+            "skipped": self.skipped,
             "display_name": self.display_name,
             "error": self.error,
         }

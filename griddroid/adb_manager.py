@@ -23,6 +23,8 @@ from .config import (
     save_tags,
     load_played,
     save_played,
+    load_skipped,
+    save_skipped,
     load_known,
     save_known,
 )
@@ -68,6 +70,7 @@ class AdbManager:
         self._labels: Dict[str, str] = load_labels()
         self._tags: Dict[str, List[str]] = load_tags()
         self._played_serials: set = set(load_played())
+        self._skipped_serials: set = set(load_skipped())
         self._known: Dict[str, dict] = load_known()
         self._running = False
         self._poll_task: Optional[asyncio.Task] = None
@@ -102,6 +105,25 @@ class AdbManager:
             dev.played = False
         save_played([])
         logs.info("Ripristinati tutti i dispositivi giocati")
+
+    def set_skipped(self, serial: str, skipped: bool = True) -> None:
+        """Segna un dispositivo come non giocato e lo salva su disco."""
+        if skipped:
+            self._skipped_serials.add(serial)
+        else:
+            self._skipped_serials.discard(serial)
+        if serial in self._devices:
+            self._devices[serial].skipped = skipped
+        save_skipped(sorted(self._skipped_serials))
+        logs.info("Dispositivo segnato come non giocato" if skipped else "Dispositivo rimosso dai non giocati", serial=serial)
+
+    def reset_skipped(self) -> None:
+        """Ripristina tutti i dispositivi non giocati."""
+        self._skipped_serials.clear()
+        for dev in self._devices.values():
+            dev.skipped = False
+        save_skipped([])
+        logs.info("Ripristinati tutti i dispositivi non giocati")
 
     # ------------------------------------------------------------------
     # Etichette
@@ -170,10 +192,17 @@ class AdbManager:
                 )
                 out_str = stdout.decode("utf-8", errors="replace")
                 err_str = stderr.decode("utf-8", errors="replace")
-                # Se un dispositivo specifico sparisce da ADB, sincronizziamo subito lo stato
+                # Se un dispositivo specifico sparisce da ADB, sincronizziamo subito lo stato.
+                # Solo errori adb di trasporto: l'output della shell (es. "sh: cmd: not found")
+                # non deve marcare il device offline.
                 if serial and serial in self._devices:
                     combined = (out_str + err_str).lower()
-                    if "not found" in combined or "device offline" in combined or "no devices" in combined:
+                    if (
+                        f"device '{serial.lower()}' not found" in combined
+                        or f"device {serial.lower()} not found" in combined
+                        or "device offline" in combined
+                        or "no devices/emulators found" in combined
+                    ):
                         dev = self._devices[serial]
                         if dev.status != DeviceStatus.DISCONNECTED:
                             dev.status = DeviceStatus.DISCONNECTED
@@ -246,6 +275,7 @@ class AdbManager:
             dev.info.usb_port = usb or dev.info.usb_port
             dev.status = status
             dev.played = serial in self._played_serials
+            dev.skipped = serial in self._skipped_serials
             dev.last_seen = now
             dev.error = ""
             if old_status != status:
@@ -272,6 +302,7 @@ class AdbManager:
                 tags=tags,
                 status=status,
                 played=serial in self._played_serials,
+                skipped=serial in self._skipped_serials,
             )
             self._devices[serial] = dev
             # Registra il dispositivo nel file persistente

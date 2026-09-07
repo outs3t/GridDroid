@@ -55,6 +55,9 @@
             <button class="btn btn-accent has-badge" id="btnResetPlayed" title="Ripristina dispositivi giocati" style="display:inline-flex" disabled>
                 Ripristina giocati <span class="badge" id="resetPlayedBadge">0</span>
             </button>
+            <button class="btn btn-accent has-badge" id="btnResetSkipped" title="Ripristina dispositivi non giocati" style="display:inline-flex" disabled>
+                Ripristina non giocati <span class="badge" id="resetSkippedBadge">0</span>
+            </button>
             <button class="btn" id="btnCheckUpdate" title="Controlla aggiornamenti">⬇ Aggiorna</button>
             <div class="zoom-controls">
                 <button class="btn-icon" id="btnZoomOut" title="Riduci zoom -5%">−</button>
@@ -338,6 +341,18 @@
     <!-- CONTEXT MENU -->
     <div class="context-menu" id="deviceContextMenu" style="display:none;">
         <div class="context-menu-item" data-action="set-played">Segna come giocati</div>
+        <div class="context-menu-item" data-action="set-skipped">Segna come non giocati</div>
+        <div class="context-menu-item" data-action="fullscreen">Schermo intero</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item context-menu-title">Comandi</div>
+        <div class="context-menu-item" data-cmd="unlock">Sblocca schermo</div>
+        <div class="context-menu-item" data-cmd="lock">Blocca schermo</div>
+        <div class="context-menu-item" data-cmd="screen_on">Accendi schermo</div>
+        <div class="context-menu-item" data-cmd="vol_up">Volume +</div>
+        <div class="context-menu-item" data-cmd="vol_down">Volume −</div>
+        <div class="context-menu-item" data-cmd="mute">Muto / Riattiva audio</div>
+        <div class="context-menu-item" data-cmd="rotate">Ruota schermo</div>
+        <div class="context-menu-item" data-cmd="restart_stream">Riavvia stream</div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item context-menu-title">Gruppi</div>
         <div class="context-menu-item context-menu-new-group">
@@ -394,7 +409,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=67"></script>
+    <script src="/static/app.js?v=74"></script>
     <script>
     (async () => {
         try {

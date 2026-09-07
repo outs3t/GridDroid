@@ -409,12 +409,29 @@ body::before {
         0 0 0 1px rgba(74,222,128,0.45);
 }
 
+/* Overlay "in rilievo": il telefono viene ingrandito e centrato sopra la
+   griglia, come una seconda finestra. Backdrop scuro cliccabile per chiudere. */
+.fullscreen-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.62);
+    backdrop-filter: blur(3px);
+    z-index: 199;
+    cursor: pointer;
+}
+
 .device-cell.fullscreen-cell {
     position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    z-index: 100;
-    border-radius: 0;
-    aspect-ratio: unset;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    height: min(88vh, 950px);
+    width: auto;
+    aspect-ratio: 9 / 18;
+    z-index: 200;
+    border-color: var(--accent);
+    box-shadow:
+        0 30px 90px rgba(0, 0, 0, 0.75),
+        0 0 0 1px rgba(74, 222, 128, 0.35);
 }
 
 .device-cell.fullscreen-cell .device-feed {
@@ -682,19 +699,20 @@ body::before {
 }
 .nav-btn:hover { color: #fff; border-color: var(--accent, #4a5058); }
 
-/* Checkbox */
+/* Checkbox selezione: sempre visibile e grande, click singolo per
+   selezionare/deselezionare senza modificatori */
 .device-select {
     position: absolute;
     top: 6px; right: 6px;
     z-index: 3;
-    width: 16px; height: 16px;
+    width: 24px; height: 24px;
     cursor: pointer;
     accent-color: var(--accent);
-    opacity: 0;
-    transition: opacity var(--dur) var(--ease);
+    opacity: 1;
+    transition: transform var(--dur-fast) var(--ease);
 }
-.device-cell:hover .device-select { opacity: 1; }
-.device-select:checked { opacity: 1; }
+.device-select:hover { transform: scale(1.15); }
+.device-select:checked { transform: scale(1.15); }
 
 /* ===== SIDEBAR ===== */
 .sidebar {
@@ -1941,6 +1959,32 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
     height: 1px;
     background: #2a2e35;
     margin: 6px 0;
+}
+
+/* Mini-conferma inline: appare vicino al punto del click, non al centro */
+.inline-confirm {
+    position: fixed;
+    z-index: 10001;
+    background: #1a1c22;
+    border: 1px solid #2a2e35;
+    border-radius: 10px;
+    padding: 10px 12px;
+    box-shadow: 0 14px 40px rgba(0,0,0,0.5);
+    font-size: 12px;
+    color: #d1d5db;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 260px;
+}
+.inline-confirm-btns {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+.inline-confirm-btns .btn {
+    padding: 4px 12px;
+    font-size: 12px;
 }
 .context-menu-new-group {
     display: flex;

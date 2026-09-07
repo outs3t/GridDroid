@@ -104,6 +104,10 @@ function wsSend(obj) {
 
 function renderGrid() {
     const grid = document.getElementById("deviceGrid");
+    const container = document.getElementById("gridContainer");
+    // Preserva lo scroll: il re-render non deve riportare la vista in cima
+    const scrollTop = container ? container.scrollTop : 0;
+    const scrollLeft = container ? container.scrollLeft : 0;
     let devices = [...state.devices];
 
     // Filtro per gruppo attivo
@@ -125,8 +129,8 @@ function renderGrid() {
     // A-Z automatico, indipendentemente dallo stato online/offline
     devices.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || ""));
 
-    // Nascondi i dispositivi segnati come "giocati"
-    devices = devices.filter((dev) => !dev.played);
+    // Nascondi i dispositivi segnati come "giocati" o "non giocati"
+    devices = devices.filter((dev) => !dev.played && !dev.skipped);
 
     // Aggiorna colonne CSS in base a zoom e larghezza container
     updateGridColumns();
@@ -180,6 +184,17 @@ function renderGrid() {
     renderGroups();
     renderAssignDevice();
     renderPhoneSelection();
+
+    // Ripristina lo scroll dopo il reflow (sincrono + frame successivo:
+    // lo scroll anchoring del browser puo' spostarlo dopo il layout)
+    if (container) {
+        container.scrollTop = scrollTop;
+        container.scrollLeft = scrollLeft;
+        requestAnimationFrame(() => {
+            container.scrollTop = scrollTop;
+            container.scrollLeft = scrollLeft;
+        });
+    }
 }
 
 function createDeviceCell(dev) {
@@ -212,7 +227,8 @@ function createDeviceCell(dev) {
         </div>
     `;
 
-    // Click sul feed → focus; Ctrl+click → selezione multipla; doppio clic → fullscreen
+    // Click sul feed → focus; Ctrl+click → selezione multipla
+    // (lo schermo intero si apre solo dal menu contestuale, niente gesture)
     cell.addEventListener("click", (e) => {
         if (e.target.closest(".toolbar-btn") || e.target.closest(".device-select")) return;
         if (e.ctrlKey || e.metaKey) {
@@ -221,11 +237,6 @@ function createDeviceCell(dev) {
             return;
         }
         wsSend({ action: "focus", serial: dev.serial });
-    });
-    cell.addEventListener("dblclick", (e) => {
-        if (e.target.closest(".device-name") || e.target.closest(".toolbar-btn") || e.target.closest(".device-select")) return;
-        e.stopPropagation();
-        toggleFullscreen(dev.serial, cell);
     });
 
     // Checkbox selezione
@@ -379,6 +390,10 @@ function showDeviceContextMenu(e, serial) {
     if (setPlayedItem) {
         setPlayedItem.textContent = targetCount === 1 ? "Segna come giocato" : `Segna ${targetCount} come giocati`;
     }
+    const setSkippedItem = menu.querySelector('[data-action="set-skipped"]');
+    if (setSkippedItem) {
+        setSkippedItem.textContent = targetCount === 1 ? "Segna come non giocato" : `Segna ${targetCount} come non giocati`;
+    }
 
     // Lista gruppi esistenti
     const groupList = document.getElementById("contextGroupList");
@@ -416,9 +431,17 @@ function showDeviceContextMenu(e, serial) {
         }
     }
 
+    // Comandi rapidi: applicati a tutti i device target
+    menu.querySelectorAll("[data-cmd]").forEach((item) => {
+        item.onclick = () => {
+            runContextCommand(item.dataset.cmd, targets);
+            hideDeviceContextMenu();
+        };
+    });
+
     // Posizione
     const x = Math.min(e.clientX, window.innerWidth - 260);
-    const y = Math.min(e.clientY, window.innerHeight - 200);
+    const y = Math.min(e.clientY, window.innerHeight - 420);
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
     menu.style.display = "flex";
@@ -451,6 +474,52 @@ function showDeviceContextMenu(e, serial) {
 function hideDeviceContextMenu() {
     const menu = document.getElementById("deviceContextMenu");
     if (menu) menu.style.display = "none";
+}
+
+// Comandi rapidi del menu contestuale: applicati a tutti i device target
+// (il cliccato, oppure tutta la selezione se il cliccato e' selezionato).
+function runContextCommand(cmd, serials) {
+    const labels = {
+        unlock: "Sblocca schermo",
+        lock: "Blocca schermo",
+        screen_on: "Accendi schermo",
+        vol_up: "Volume +",
+        vol_down: "Volume −",
+        mute: "Muto",
+        rotate: "Ruota schermo",
+        restart_stream: "Riavvia stream",
+    };
+    serials.forEach((serial) => {
+        switch (cmd) {
+            case "unlock":
+                // KEYCODE_MENU: su molte ROM mostra direttamente il tastierino PIN
+                wsSend({ action: "keyevent", serial, keycode: 82 });
+                break;
+            case "lock":
+                wsSend({ action: "keyevent", serial, keycode: 26 });
+                break;
+            case "screen_on":
+                wsSend({ action: "screen_on", serial });
+                break;
+            case "vol_up":
+                wsSend({ action: "keyevent", serial, keycode: 24 });
+                break;
+            case "vol_down":
+                wsSend({ action: "keyevent", serial, keycode: 25 });
+                break;
+            case "mute":
+                wsSend({ action: "keyevent", serial, keycode: 164 });
+                break;
+            case "rotate":
+                wsSend({ action: "rotate", serial });
+                break;
+            case "restart_stream":
+                wsSend({ action: "stop_stream", serial });
+                setTimeout(() => wsSend({ action: "start_stream", serial }), 600);
+                break;
+        }
+    });
+    toast(`${labels[cmd] || cmd} → ${serials.length} dispositivo/i`, "success");
 }
 
 function updateDeviceCell(cell, dev) {
@@ -1067,15 +1136,25 @@ function handleToolbarAction(action, serial, cell) {
     }
 }
 
+function exitFullscreen() {
+    document.querySelectorAll(".fullscreen-cell").forEach((c) => {
+        c.classList.remove("fullscreen-cell");
+    });
+    document.getElementById("fullscreenBackdrop")?.remove();
+    state.fullscreenSerial = null;
+}
+
 function toggleFullscreen(serial, cell) {
     if (state.fullscreenSerial === serial) {
-        cell.classList.remove("fullscreen-cell");
-        state.fullscreenSerial = null;
+        exitFullscreen();
     } else {
-        // Rimuovi fullscreen da eventuali altre celle
-        document.querySelectorAll(".fullscreen-cell").forEach((c) => {
-            c.classList.remove("fullscreen-cell");
-        });
+        exitFullscreen();
+        // Backdrop scuro: il telefono resta "in rilievo" sopra la griglia
+        const backdrop = document.createElement("div");
+        backdrop.id = "fullscreenBackdrop";
+        backdrop.className = "fullscreen-backdrop";
+        backdrop.addEventListener("click", exitFullscreen);
+        document.body.appendChild(backdrop);
         cell.classList.add("fullscreen-cell");
         state.fullscreenSerial = serial;
     }
@@ -1098,13 +1177,10 @@ async function takeScreenshot(serial) {
     }
 }
 
-// Escape per uscire da fullscreen
+// Escape per uscire dall'overlay ingrandito
 document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && state.fullscreenSerial) {
-        document.querySelectorAll(".fullscreen-cell").forEach((c) => {
-            c.classList.remove("fullscreen-cell");
-        });
-        state.fullscreenSerial = null;
+        exitFullscreen();
     }
 });
 
@@ -1116,10 +1192,12 @@ function updateHeader() {
     const online = state.devices.filter((d) => d.status === "online").length;
     const total = state.devices.length;
     const played = state.devices.filter((d) => d.played).length;
+    const skipped = state.devices.filter((d) => d.skipped).length;
     const countEl = document.getElementById("deviceCount");
     if (countEl) {
         let text = `${online}/${total} dispositivi`;
         if (played > 0) text += ` (${played} giocati)`;
+        if (skipped > 0) text += ` (${skipped} non giocati)`;
         countEl.textContent = text;
     }
 
@@ -1134,6 +1212,17 @@ function updateHeader() {
         if (badgeResetPlayed) {
             badgeResetPlayed.textContent = String(played);
             badgeResetPlayed.style.display = played > 0 ? "" : "none";
+        }
+    }
+
+    const btnResetSkipped = document.getElementById("btnResetSkipped");
+    const badgeResetSkipped = document.getElementById("resetSkippedBadge");
+    if (btnResetSkipped) {
+        btnResetSkipped.disabled = skipped === 0;
+        btnResetSkipped.style.opacity = skipped > 0 ? "1" : "0.6";
+        if (badgeResetSkipped) {
+            badgeResetSkipped.textContent = String(skipped);
+            badgeResetSkipped.style.display = skipped > 0 ? "" : "none";
         }
     }
 }
@@ -1833,6 +1922,16 @@ function initHeaderButtons() {
         btnResetPlayed.addEventListener("click", () => {
             if (confirm("Ripristinare tutti i dispositivi giocati?")) {
                 wsSend({ action: "reset_played" });
+            }
+        });
+    }
+
+    // Ripristina i dispositivi segnati come non giocati
+    const btnResetSkipped = document.getElementById("btnResetSkipped");
+    if (btnResetSkipped) {
+        btnResetSkipped.addEventListener("click", () => {
+            if (confirm("Ripristinare tutti i dispositivi non giocati?")) {
+                wsSend({ action: "reset_skipped" });
             }
         });
     }
@@ -3023,6 +3122,31 @@ function initCommandPalette() {
 // Context Menu Init
 // =====================================================================
 
+// Mini-conferma posizionata vicino al punto del click (sostituisce
+// window.confirm che appare sempre al centro dello schermo)
+function confirmAt(x, y, message, onConfirm) {
+    document.getElementById("inlineConfirm")?.remove();
+    const box = document.createElement("div");
+    box.id = "inlineConfirm";
+    box.className = "inline-confirm";
+    box.innerHTML = `<div>${message}</div>
+        <div class="inline-confirm-btns">
+            <button class="btn btn-accent" data-yes>Sì</button>
+            <button class="btn" data-no>No</button>
+        </div>`;
+    document.body.appendChild(box);
+    const rect = box.getBoundingClientRect();
+    box.style.left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)) + "px";
+    box.style.top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)) + "px";
+    box.querySelector("[data-yes]").addEventListener("click", () => { box.remove(); onConfirm(); });
+    box.querySelector("[data-no]").addEventListener("click", () => box.remove());
+    setTimeout(() => {
+        document.addEventListener("click", function h(ev) {
+            if (!box.contains(ev.target)) { box.remove(); document.removeEventListener("click", h); }
+        });
+    }, 0);
+}
+
 function initContextMenu() {
     const menu = document.getElementById("deviceContextMenu");
     if (!menu) return;
@@ -3033,9 +3157,30 @@ function initContextMenu() {
             const serial = menu.dataset.serial;
             if (!serial) return;
             const targets = getContextTargetSerials(serial);
-            if (window.confirm(`Segnare ${targets.length === 1 ? "il dispositivo" : targets.length + " dispositivi"} come giocati?`)) {
+            const msg = `Segnare ${targets.length === 1 ? "il dispositivo" : targets.length + " dispositivi"} come giocati?`;
+            confirmAt(e.clientX, e.clientY, msg, () => {
                 targets.forEach((s) => wsSend({ action: "set_played", serial: s, played: true }));
-            }
+            });
+            hideDeviceContextMenu();
+            return;
+        }
+        const skippedItem = e.target.closest('[data-action="set-skipped"]');
+        if (skippedItem) {
+            const serial = menu.dataset.serial;
+            if (!serial) return;
+            const targets = getContextTargetSerials(serial);
+            const msg = `Segnare ${targets.length === 1 ? "il dispositivo" : targets.length + " dispositivi"} come non giocati?`;
+            confirmAt(e.clientX, e.clientY, msg, () => {
+                targets.forEach((s) => wsSend({ action: "set_skipped", serial: s, skipped: true }));
+            });
+            hideDeviceContextMenu();
+            return;
+        }
+        const fsItem = e.target.closest('[data-action="fullscreen"]');
+        if (fsItem) {
+            const serial = menu.dataset.serial;
+            const cell = serial && document.querySelector(`.device-cell[data-serial="${serial}"]`);
+            if (cell) toggleFullscreen(serial, cell);
             hideDeviceContextMenu();
         }
     });

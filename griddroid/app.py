@@ -204,10 +204,11 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                             pass
                         continue
 
-                    # Dispositivi segnati come giocati vengono nascosti e non riavviati
-                    if dev.played:
+                    # Dispositivi segnati come giocati/non giocati vengono
+                    # nascosti e non riavviati
+                    if dev.played or dev.skipped:
                         if dev.streaming:
-                            logs.info("Dispositivo giocato, interrompo stream", serial=serial)
+                            logs.info("Dispositivo giocato/non giocato, interrompo stream", serial=serial)
                             dev.streaming = False
                             try:
                                 await streams.stop_stream(serial)
@@ -822,8 +823,9 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                             "focused": input_relay.focused_serial,
                         }
                         await ws.send_json(msg)
-                    except Exception as exc:
-                        logs.warn(f"Errore invio aggiornamenti WS: {exc}", throttle_s=30)
+                    except Exception:
+                        # Socket chiuso: termina il task invece di loggare all'infinito
+                        return
                     await asyncio.sleep(1.0)
 
             # Task per inviare log in tempo reale
@@ -934,6 +936,12 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
         elif action == "reset_played":
             adb.reset_played()
+
+        elif action == "set_skipped":
+            adb.set_skipped(serial, cmd.get("skipped", True))
+
+        elif action == "reset_skipped":
+            adb.reset_skipped()
 
         elif action == "start_stream":
             dev = adb.get_device(serial)

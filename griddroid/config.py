@@ -17,6 +17,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 LABELS_FILE = CONFIG_DIR / "labels.json"
 TAGS_FILE = CONFIG_DIR / "tags.json"
 PLAYED_FILE = CONFIG_DIR / "played.json"
+SKIPPED_FILE = CONFIG_DIR / "skipped.json"
 KNOWN_FILE = CONFIG_DIR / "known.json"
 
 
@@ -149,6 +150,23 @@ def save_played(played: List[str]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     PLAYED_FILE.write_text(
         json.dumps(played, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_skipped() -> List[str]:
+    """Carica la lista di seriali segnati come non giocati."""
+    if SKIPPED_FILE.exists():
+        data = json.loads(SKIPPED_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    return []
+
+
+def save_skipped(skipped: List[str]) -> None:
+    """Salva la lista dei dispositivi non giocati su disco."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    SKIPPED_FILE.write_text(
+        json.dumps(skipped, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
 
