@@ -216,15 +216,71 @@ class AdbManager:
     # Lettura saldo a schermo
     # ------------------------------------------------------------------
 
-    async def read_balance(self, serial: str) -> Optional[str]:
-        """Legge il saldo visibile a schermo via uiautomator dump.
+    # Package -> nome bookmaker (app di gioco piu' diffuse)
+    _BOOKMAKERS = {
+        "bet365": "Bet365", "snai": "SNAI", "eurobet": "Eurobet",
+        "goldbet": "Goldbet", "planetwin": "PlanetWin365", "sisal": "Sisal",
+        "lottomatica": "Lottomatica", "betflag": "Betflag",
+        "betfair": "Betfair", "starcasino": "StarCasino",
+        "williamhill": "William Hill", "bwin": "Bwin",
+        "pokerstars": "PokerStars", "888": "888", "unibet": "Unibet",
+        "betway": "Betway", "leovegas": "LeoVegas", "admiral": "AdmiralBet",
+        "betsson": "Betsson", "netbet": "NetBet", "fantasyteam": "FantasyTeam",
+        "betclic": "Betclic", "novibet": "Novibet", "stake": "Stake",
+    }
 
-        L'utente fa login manualmente sul sito/app: qui si legge solo
-        l'importo mostrato. Strategia: prima un importo con simbolo di
-        valuta, poi un numero vicino a parole chiave (saldo/balance/totale).
+    @staticmethod
+    def _normalize_amount(raw: str) -> Optional[str]:
+        """Normalizza un importo in formato canonico '1234.56'.
+
+        Gestisce sia il formato italiano (1.234,56) sia quello anglosassone
+        (1,234.56): il separatore decimale e' quello seguito da 1-2 cifre
+        finali, gli altri sono separatori delle migliaia.
         """
-        import re
+        s = re.sub(r"[^\d.,]", "", raw)
+        if not s:
+            return None
+        # Ultimo separatore seguito da 1-2 cifre a fine stringa = decimale
+        m = re.search(r"([.,])(\d{1,2})$", s)
+        if m:
+            int_part = re.sub(r"[.,]", "", s[: m.start()])
+            dec = m.group(2).ljust(2, "0")
+            return f"{int_part}.{dec}" if int_part else f"0.{dec}"
+        # Nessun decimale: intero puro
+        digits = re.sub(r"[.,]", "", s)
+        return f"{digits}.00" if digits else None
 
+    async def _foreground_package(self, serial: str) -> str:
+        """Package dell'app in foreground (per identificare il bookmaker)."""
+        try:
+            out = await self.shell(
+                serial,
+                "dumpsys activity activities | grep -i resumed",
+                timeout=10.0,
+            )
+            m = re.search(r"(?:mResumedActivity|topResumedActivity)[^\s]*\s+([\w.]+)/", out)
+            if not m:
+                m = re.search(r"([\w.]+)/[\w.]+", out)
+            return m.group(1) if m else ""
+        except Exception:
+            return ""
+
+    def _bookmaker_from_package(self, package: str) -> str:
+        low = package.lower()
+        for key, name in self._BOOKMAKERS.items():
+            if key in low:
+                return name
+        return package
+
+    async def read_account_info(self, serial: str) -> dict:
+        """Legge saldo, bookmaker e username visibili a schermo.
+
+        Saldo: prima i nodi con parole chiave (saldo/balance/totale), poi gli
+        importi con simbolo di valuta — sempre normalizzati a '1234.56'.
+        Bookmaker: dal package dell'app in foreground.
+        Username: nodi vicino a 'ciao'/'benvenuto'/'account'/'profilo'.
+        """
+        info = {"saldo": None, "bookmaker": "", "username": ""}
         try:
             await self.shell(
                 serial, "uiautomator dump /sdcard/griddroid_ui.xml", timeout=15.0
@@ -234,35 +290,73 @@ class AdbManager:
             )
         except Exception as exc:
             logs.warn(f"Lettura saldo fallita: {exc}", serial=serial)
-            return None
+            return info
         if not xml:
-            return None
+            return info
 
-        texts = re.findall(r'text="([^"]+)"', xml)
+        texts = [t for t in re.findall(r'text="([^"]+)"', xml) if t.strip()]
+
+        # --- Bookmaker: app in foreground ---
+        pkg = await self._foreground_package(serial)
+        if pkg:
+            info["bookmaker"] = self._bookmaker_from_package(pkg)
+
+        # --- Saldo ---
+        kw = re.compile(
+            r"saldo|balance|totale|available|disponibil|conto|wallet|fondi",
+            re.IGNORECASE,
+        )
         money = re.compile(
             r"(?:€|eur|usd|\$|£)\s*([0-9][0-9.,\s]*[0-9])"
             r"|([0-9][0-9.,]*[0-9])\s*(?:€|eur|usd|\$|£)",
             re.IGNORECASE,
         )
-        # 1) importo con simbolo di valuta
-        for t in texts:
-            m = money.search(t)
-            if m:
-                return (m.group(1) or m.group(2)).strip()
-        # 2) numero nel nodo che contiene 'saldo'/'balance'/'totale'
-        kw = re.compile(r"saldo|balance|totale|available|disponibil", re.IGNORECASE)
-        num = re.compile(r"[0-9]+[.,][0-9]{2}")
+        num = re.compile(r"[0-9]+(?:[.,][0-9]+)*[.,][0-9]{1,2}\b")
+        # 1) numero nel nodo con keyword, o nei 2 nodi successivi
         for i, t in enumerate(texts):
             if kw.search(t):
-                m = num.search(t)
-                if m:
-                    return m.group(0)
-                # a volte label e importo sono in nodi separati e adiacenti
-                for t2 in texts[i + 1 : i + 3]:
-                    m = num.search(t2)
+                for t2 in [t] + texts[i + 1 : i + 3]:
+                    m = num.search(t2) or money.search(t2)
                     if m:
-                        return m.group(0)
-        return None
+                        raw = m.group(0) if m.re is num else (m.group(1) or m.group(2))
+                        val = self._normalize_amount(raw)
+                        if val:
+                            info["saldo"] = val
+                            break
+                if info["saldo"]:
+                    break
+        # 2) fallback: primo importo con simbolo di valuta
+        if not info["saldo"]:
+            for t in texts:
+                m = money.search(t)
+                if m:
+                    val = self._normalize_amount(m.group(1) or m.group(2))
+                    if val:
+                        info["saldo"] = val
+                        break
+
+        # --- Username: nodo dopo 'ciao'/'benvenuto' o vicino ad account ---
+        user_kw = re.compile(
+            r"ciao|benvenut|salve|account|profilo|utente|user", re.IGNORECASE
+        )
+        for i, t in enumerate(texts):
+            if user_kw.search(t):
+                # 'Ciao Mario' -> 'Mario'; altrimenti il nodo successivo
+                m = re.search(
+                    r"(?:ciao|benvenut\w*|salve)\s+([A-Za-z0-9_.'-]{2,30})",
+                    t, re.IGNORECASE,
+                )
+                cand = m.group(1) if m else (texts[i + 1] if i + 1 < len(texts) else "")
+                cand = cand.strip()
+                if cand and not kw.search(cand) and not money.search(cand) and len(cand) <= 40:
+                    info["username"] = cand
+                    break
+
+        return info
+
+    async def read_balance(self, serial: str) -> Optional[str]:
+        """Compatibilita': restituisce solo il saldo normalizzato."""
+        return (await self.read_account_info(serial))["saldo"]
 
     # ------------------------------------------------------------------
     # Etichette

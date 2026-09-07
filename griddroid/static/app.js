@@ -2222,7 +2222,10 @@ function initHeaderButtons() {
                 const data = await res.json();
                 const found = (data.results || []).filter((r) => r.saldo);
                 if (found.length) {
-                    const lines = found.map((r) => `${r.nome}: ${r.saldo}`).join(" — ");
+                    const lines = found.map((r) => {
+                        const meta = [r.bookmaker, r.username].filter(Boolean).join("/");
+                        return `${r.nome}: ${r.saldo}${meta ? ` (${meta})` : ""}`;
+                    }).join(" — ");
                     toast(`${data.saved} saldi salvati in CSV: ${lines}`, "success");
                     await downloadBalancesCsv();
                 } else {

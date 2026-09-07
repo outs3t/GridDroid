@@ -315,19 +315,32 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             if d.status == DeviceStatus.ONLINE and (not wanted or s in wanted)
         ]
         # In parallelo: in sequenza 26 device richiederebbero ~80s
-        saldi = await asyncio.gather(
-            *(adb.read_balance(s) for s, _ in online),
+        infos = await asyncio.gather(
+            *(adb.read_account_info(s) for s, _ in online),
             return_exceptions=True,
         )
         results = []
-        for (serial, dev), saldo in zip(online, saldi):
-            if isinstance(saldo, Exception):
-                saldo = None
+        for (serial, dev), info in zip(online, infos):
+            if isinstance(info, Exception):
+                info = {"saldo": None, "bookmaker": "", "username": ""}
             results.append(
-                {"serial": serial, "nome": dev.display_name, "saldo": saldo}
+                {
+                    "serial": serial,
+                    "nome": dev.display_name,
+                    "saldo": info.get("saldo"),
+                    "bookmaker": info.get("bookmaker", ""),
+                    "username": info.get("username", ""),
+                }
             )
         rows = [
-            {"timestamp": ts, "serial": r["serial"], "nome": r["nome"], "saldo": r["saldo"]}
+            {
+                "timestamp": ts,
+                "serial": r["serial"],
+                "nome": r["nome"],
+                "bookmaker": r["bookmaker"],
+                "username": r["username"],
+                "saldo": r["saldo"],
+            }
             for r in results
             if r["saldo"]
         ]

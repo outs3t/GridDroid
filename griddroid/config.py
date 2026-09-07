@@ -172,7 +172,11 @@ def save_skipped(skipped: List[str]) -> None:
 
 
 def append_balances(rows: List[dict]) -> None:
-    """Accoda letture di saldo al CSV (timestamp, serial, nome, saldo)."""
+    """Accoda letture di saldo al CSV.
+
+    Colonne: timestamp, serial, nome, bookmaker, username, saldo
+    (saldo normalizzato '1234.56' — pronto per l'import nel ledger).
+    """
     import csv
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -180,9 +184,20 @@ def append_balances(rows: List[dict]) -> None:
     with BALANCES_FILE.open("a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         if new_file:
-            w.writerow(["timestamp", "serial", "nome", "saldo"])
+            w.writerow(
+                ["timestamp", "serial", "nome", "bookmaker", "username", "saldo"]
+            )
         for r in rows:
-            w.writerow([r["timestamp"], r["serial"], r["nome"], r["saldo"]])
+            w.writerow(
+                [
+                    r["timestamp"],
+                    r["serial"],
+                    r["nome"],
+                    r.get("bookmaker", ""),
+                    r.get("username", ""),
+                    r["saldo"],
+                ]
+            )
 
 
 def load_known() -> Dict[str, dict]:
