@@ -2326,8 +2326,23 @@ function initHeaderButtons() {
                     if (data.save_error) {
                         toast(`${data.save_error} — saldi letti: ${lines}`, "warn");
                     } else {
+                        // Niente auto-download: showSaveFilePicker richiede un
+                        // gesto utente recente (~5s dal click) e la lettura dura
+                        // troppo — scadrebbe e partirebbe il download automatico
+                        // in Download. Toast persistente con bottone: il click
+                        // e' un gesto vero e il "Salva con nome" si apre.
                         toast(`${data.saved} saldi salvati in CSV: ${lines}`, "success");
-                        await downloadBalancesCsv();
+                        const t = document.createElement("div");
+                        t.className = "toast success";
+                        const b = document.createElement("button");
+                        b.className = "btn btn-accent";
+                        b.style.marginLeft = "8px";
+                        b.textContent = "Scarica CSV";
+                        b.onclick = () => { t.remove(); downloadBalancesCsv(); };
+                        t.appendChild(document.createTextNode("CSV pronto."));
+                        t.appendChild(b);
+                        document.getElementById("toastContainer").appendChild(t);
+                        setTimeout(() => t.remove(), 30000);
                     }
                 } else {
                     toast(`Nessun saldo rilevato a schermo (${(data.results || []).length} device letti)`, "error");
