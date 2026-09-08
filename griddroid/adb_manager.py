@@ -978,6 +978,10 @@ class AdbManager:
         # Rilevazione: alterna `adb devices` e `adb devices -l` perche' con
         # molti dispositivi uno puo' riuscire dove l'altro tronca.
         seen_serials: set = set()
+        # Porte il cui poll e' fallito del tutto (timeout per adb saturo,
+        # es. durante la lettura saldi): un poll fallito NON e' prova che
+        # i device siano spariti — saltiamo il conteggio missing per loro.
+        ports_failed: set = set()
         # Multi-server: oltre alla 5037 interroghiamo le porte extra
         # (es. 5038 = QuickForward/Panda che ri-esporta i device come adb).
         for port in self._adb_ports():
@@ -986,6 +990,7 @@ class AdbManager:
             # libera, e quel clone contenderebbe i device USB al 5037.
             if port != 5037 and not _adb_port_listening(port):
                 continue
+            poll_ok = False
             for attempt in range(5):
                 use_long = attempt % 2 == 1  # 1, 3 con -l
                 rc, out, _ = await self.adb_command(
@@ -995,6 +1000,7 @@ class AdbManager:
                     port=port,
                 )
                 if rc == 0 and out:
+                    poll_ok = True
                     regex = _DEVICE_RE if use_long else _DEVICE_RE_PLAIN
                     for match in regex.finditer(out):
                         serial = match.group("serial")
@@ -1017,6 +1023,8 @@ class AdbManager:
                             )
                 if attempt < 4:
                     await asyncio.sleep(0.2)
+            if not poll_ok:
+                ports_failed.add(port)
 
         # Device visti prima ma assenti ora: senza questo restavano
         # "online" all'infinito (card fantasma — il log mostrava Focus su
@@ -1026,6 +1034,12 @@ class AdbManager:
         for serial, dev in self._devices.items():
             if serial in seen_serials:
                 self._missing.pop(serial, None)
+                continue
+            # Poll della sua porta fallito (adb saturo): non e' una
+            # scomparsa, salta il conteggio — altrimenti durante la lettura
+            # saldi marchiamo offline mezzo farm e spariamo 'adb reconnect'
+            # in raffica, uccidendo gli stream scrcpy.
+            if getattr(dev, "adb_port", _SERIAL_PORT.get(serial, 5037)) in ports_failed:
                 continue
             misses = self._missing.get(serial, 0) + 1
             self._missing[serial] = misses
@@ -1060,7 +1074,9 @@ class AdbManager:
         # Calo improvviso: tipico di un altro adb.exe (Panda, scrcpy,
         # altro GridDroid) che uccide il server per versione diversa.
         prev = getattr(self, "_last_seen_count", 0)
-        if prev - len(seen_serials) >= 3:
+        # Se qualche porta non ha risposto il conteggio e' incompleto:
+        # non e' un calo reale, salta il check (e lo switch di binario).
+        if not ports_failed and prev - len(seen_serials) >= 3:
             logs.warn(
                 f"Calo improvviso device ({prev} -> {len(seen_serials)}): "
                 "possibile conflitto con un altro adb.exe che riavvia il server",

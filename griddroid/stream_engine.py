@@ -416,6 +416,7 @@ class DeviceStream:
                 self._watchdog_task = asyncio.create_task(self._watch_server_proc())
 
                 # 7. Passthrough H264 → browser (decodifica hardware WebCodecs)
+                self._last_video_data = time.monotonic()
                 au_count = await self._stream_h264(reader)
                 if au_count > 0:
                     consecutive_failures = 0
@@ -489,6 +490,24 @@ class DeviceStream:
             return
         try:
             while self._running:
+                # Stallo video: tunnel adb morto a meta' (socket locale
+                # ancora aperto, peer andato — es. saturazione USB durante
+                # la lettura saldi). La read() resterebbe appesa per
+                # sempre: chiudo il writer e il loop riavvia lo stream.
+                # 30s: uno schermo statico puo' restare muto a lungo, ma
+                # un falso positivo costa solo una riconnessione.
+                last_vd = getattr(self, "_last_video_data", 0)
+                if last_vd and time.monotonic() - last_vd > 30.0:
+                    logs.warn(
+                        "Stream video in stallo da 30s: riavvio automatico",
+                        serial=self.serial,
+                    )
+                    if self._writer is not None and not self._writer.is_closing():
+                        try:
+                            self._writer.close()
+                        except Exception:
+                            pass
+                    return
                 if proc.returncode is not None:
                     # Processo morto: se il socket e' ancora aperto lo chiudiamo
                     if self._writer is not None and not self._writer.is_closing():
@@ -531,6 +550,7 @@ class DeviceStream:
                 logs.info(f"TCP stream chiuso ({au_count} frame)", serial=self.serial)
                 break
             self._last_heartbeat = time.monotonic()
+            self._last_video_data = self._last_heartbeat
             buf.extend(data)
 
             # Sincronizza il buffer sul primo start code

@@ -97,6 +97,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     app = FastAPI(title="GridDroid", version="0.1.0")
 
+    # Stato progresso lettura saldi (aggiornato da /api/balances/read,
+    # letto da /api/balances/progress per la barra in UI)
+    _balance_progress = {"running": False, "done": 0, "total": 0, "current": ""}
+
     # Protezione CSRF / Origin: accettiamo richieste dalla stessa origine.
     # L'origine valida e' dedotta dall'header Host della richiesta, cosi'
     # funziona sia in locale (127.0.0.1/localhost) sia da un altro PC
@@ -319,6 +323,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         # simultanei saturano il canale adb/USB e chiudono TUTTI i socket
         # video scrcpy nello stesso secondo (ondata di 'TCP stream chiuso').
         sem = asyncio.Semaphore(2)
+        # Progresso esposto via /api/balances/progress per la barra in UI
+        _balance_progress.update(
+            {"running": True, "done": 0, "total": len(online), "current": ""}
+        )
 
         async def _read(serial, delay: float):
             # Stagger: evita la raffica di 'adb shell uiautomator dump'
@@ -326,12 +334,17 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             if delay:
                 await asyncio.sleep(delay)
             async with sem:
-                return await adb.read_account_info(serial)
+                _balance_progress["current"] = serial
+                try:
+                    return await adb.read_account_info(serial)
+                finally:
+                    _balance_progress["done"] += 1
 
         infos = await asyncio.gather(
             *(_read(s, i * 0.4) for i, (s, _) in enumerate(online)),
             return_exceptions=True,
         )
+        _balance_progress["running"] = False
         results = []
         for (serial, dev), info in zip(online, infos):
             if isinstance(info, Exception):
@@ -375,6 +388,11 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             "save_error": save_error,
             "file": str(BALANCES_FILE),
         }
+
+    @app.get("/api/balances/progress")
+    async def balances_progress():
+        """Progresso della lettura saldi in corso (per la barra in UI)."""
+        return dict(_balance_progress)
 
     @app.get("/api/balances/csv")
     async def download_balances():

@@ -2274,6 +2274,27 @@ function initHeaderButtons() {
             const oldText = btnReadBalances.textContent;
             btnReadBalances.textContent = "Lettura in corso…";
             toast(`Lettura saldi su ${serials.length} device…`, "info");
+            // Barra progresso nella barra del log, aggiornata via polling
+            const progWrap = document.getElementById("balanceProgress");
+            const progBar = document.getElementById("balanceProgressBar");
+            const progText = document.getElementById("balanceProgressText");
+            const t0 = Date.now();
+            if (progWrap) progWrap.style.display = "flex";
+            if (progBar) progBar.style.width = "0%";
+            if (progText) progText.textContent = `0/${serials.length}`;
+            const progTimer = setInterval(async () => {
+                try {
+                    const r = await fetch("/api/balances/progress");
+                    const p = await r.json();
+                    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+                    if (progBar) progBar.style.width = pct + "%";
+                    if (progText) {
+                        const el = Math.round((Date.now() - t0) / 1000);
+                        const eta = p.done ? Math.round((el / p.done) * (p.total - p.done)) : null;
+                        progText.textContent = `${p.done}/${p.total}` + (eta ? ` · ~${eta}s` : "");
+                    }
+                } catch {}
+            }, 700);
             try {
                 const res = await fetch("/api/balances/read", {
                     method: "POST",
@@ -2314,6 +2335,9 @@ function initHeaderButtons() {
             } catch (e) {
                 toast("Errore lettura saldi: " + e.message, "error");
             } finally {
+                clearInterval(progTimer);
+                if (progBar) progBar.style.width = "100%";
+                setTimeout(() => { if (progWrap) progWrap.style.display = "none"; }, 1500);
                 btnReadBalances.disabled = false;
                 btnReadBalances.textContent = oldText;
             }

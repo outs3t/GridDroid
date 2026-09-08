@@ -336,6 +336,12 @@
     <!-- LOG TOGGLE BAR -->
     <div class="log-toggle-bar" id="logToggle">
         <h4>Log di Sistema</h4>
+        <div id="balanceProgress" style="display:none;align-items:center;gap:8px;margin-left:12px;flex:1;max-width:420px">
+            <div style="flex:1;height:8px;background:#333;border-radius:4px;overflow:hidden">
+                <div id="balanceProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#4ade80,#22c55e);transition:width .3s"></div>
+            </div>
+            <span id="balanceProgressText" style="font-size:11px;color:var(--text-3);white-space:nowrap"></span>
+        </div>
         <div style="display:flex;align-items:center;gap:8px;margin-left:auto;margin-right:8px">
             <button class="log-action-btn" id="btnCopyLog" title="Copia log" onclick="event.stopPropagation();copyLog()">Copia</button>
             <button class="log-action-btn" id="btnClearLog" title="Azzera log" onclick="event.stopPropagation();clearLog()">Azzera</button>
