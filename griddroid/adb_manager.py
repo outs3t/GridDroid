@@ -1182,13 +1182,30 @@ class AdbManager:
         if unauth and self._key_reload_attempts < 3:
             keys_now = self._collect_adb_keys()
             if set(keys_now) != self._keys_loaded:
-                self._key_reload_attempts += 1
-                self._keys_loaded = set(keys_now)
-                logs.warn(
-                    f"{len(unauth)} device unauthorized: riavvio il server adb "
-                    f"con {len(keys_now)} chiavi ({keys_now})"
+                # kill-server ammazza TUTTI i tunnel forward: se ci sono
+                # stream attivi e' una strage (1 device unauthorized ->
+                # 20 stream morti, WinError 64 a raffica). Il reload si fa
+                # solo a farm fermo; con stream attivi il device resta
+                # unauthorized finche' l'utente non accetta il prompt RSA
+                # sul telefono o riavvia adb a mano.
+                streaming_now = any(
+                    d.streaming for d in self._devices.values()
                 )
-                asyncio.ensure_future(self._reload_server_keys())
+                if streaming_now:
+                    logs.warn(
+                        f"{len(unauth)} device unauthorized ma ci sono stream "
+                        f"attivi: niente riavvio server adb. Autorizza sul "
+                        f"telefono o usa 'Riavvia ADB'.",
+                        throttle_s=60,
+                    )
+                else:
+                    self._key_reload_attempts += 1
+                    self._keys_loaded = set(keys_now)
+                    logs.warn(
+                        f"{len(unauth)} device unauthorized: riavvio il server adb "
+                        f"con {len(keys_now)} chiavi ({keys_now})"
+                    )
+                    asyncio.ensure_future(self._reload_server_keys())
 
     async def _reload_server_keys(self) -> None:
         """kill-server + start-server con ADB_VENDOR_KEYS: il nuovo server

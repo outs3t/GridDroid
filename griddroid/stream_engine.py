@@ -352,7 +352,7 @@ class DeviceStream:
                         f"app_process / com.genymobile.scrcpy.Server {_SCRCPY_VERSION} "
                         f"tunnel_forward=true "
                         f"audio=false control=true cleanup=false "
-                        f"show_touches=true stay_awake=true power_off_on_close=true "
+                        f"show_touches=true stay_awake=true power_off_on_close=false "
                         f"raw_stream=true "
                         f"max_size={self.max_size_override or s.max_size} "
                         + self._adaptive_params(s)
