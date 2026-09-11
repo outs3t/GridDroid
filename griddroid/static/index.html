@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-<link rel="stylesheet" href="/static/style.css?v=50">
+<link rel="stylesheet" href="/static/style.css?v=56">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -113,6 +113,9 @@
                         </div>
                         <div class="input-group" style="margin-top:4px;">
                             <button class="btn" id="btnSlotMode" style="width:100%;">🎰 Modalità Slot: OFF</button>
+                        </div>
+                        <div class="input-group" style="margin-top:4px;">
+                            <button class="btn" id="btnPandaMode" style="width:100%;">🐼 Modalità Panda: OFF</button>
                         </div>
                         <div class="input-group" style="margin-top:4px;">
                             <button class="btn" id="btnRemoteLite" style="width:100%;">🌐 Modalità Remota: OFF</button>
@@ -427,7 +430,8 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=83"></script>
+    <script src="/static/jmuxer.min.js?v=87"></script>
+    <script src="/static/app.js?v=98"></script>
     <script>
     (async () => {
         try {

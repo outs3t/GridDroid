@@ -165,6 +165,9 @@ class ScriptEngine:
             logs.success(f"Script '{script.nome}' completato su {ok} dispositivi")
         else:
             logs.warn(f"Script '{script.nome}': {ok}/{len(finali)} riusciti")
+            for r in finali:
+                if not r.ok:
+                    logs.warn(f"{script.nome} fallito su {r.serial}: {r.messaggio}")
         return finali
 
     async def _esegui_su(
@@ -249,9 +252,11 @@ class ScriptEngine:
         # input text non accetta spazi letterali: vanno passati come %s
         pin_text = shlex.quote(pin.replace(" ", "%s"))
 
-        # 1. Riattiva lo schermo
+        # 1. Riattiva lo schermo e attende che sia davvero acceso:
+        #    sui device lenti 1s fisso non basta e lo swipe parte
+        #    a display ancora spento (tastierino mai mostrato).
         await self._key(serial, KEY_WAKEUP)
-        await asyncio.sleep(1.0)
+        await self._attendi(lambda: self._schermo_acceso(serial), 4.0)
 
         # Se non e' bloccato, non serve fare altro
         if not await self._bloccato(serial):
@@ -265,19 +270,22 @@ class ScriptEngine:
         if match:
             larghezza, altezza = int(match.group(1)), int(match.group(2))
         cx = larghezza // 2
-        await self._shell(
-            serial,
-            f"input swipe {cx} {int(altezza * 0.62)} {cx} {int(altezza * 0.2)} 200",
-        )
-        await asyncio.sleep(1.0)
 
-        # 3. PIN + invio
-        await self._shell(serial, f"input text {pin_text}")
-        await self._key(serial, KEY_ENTER)
+        # 3. PIN + invio, con un secondo tentativo: la verifica passa per
+        #    dumpsys nel lock adb globale e con N device in parallelo la
+        #    coda allunga i tempi — un solo giro da 3s puo' non bastare.
+        for _ in range(2):
+            await self._shell(
+                serial,
+                f"input swipe {cx} {int(altezza * 0.62)} "
+                f"{cx} {int(altezza * 0.2)} 200",
+            )
+            await asyncio.sleep(1.0)
+            await self._shell(serial, f"input text {pin_text}")
+            await self._key(serial, KEY_ENTER)
+            if await self._attendi(lambda: self._non_bloccato(serial), 6.0):
+                return ScriptResult(serial, True, "Dispositivo sbloccato")
 
-        # Verifica finale: il keyguard puo' impiegare un attimo a cadere
-        if await self._attendi(lambda: self._non_bloccato(serial), 3.0):
-            return ScriptResult(serial, True, "Dispositivo sbloccato")
         return ScriptResult(
             serial, False, "Sblocco fallito: PIN errato o lockout attivo",
         )

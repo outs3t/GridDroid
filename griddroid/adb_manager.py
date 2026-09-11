@@ -32,14 +32,28 @@ from .config import (
     save_skipped,
     load_known,
     save_known,
+    load_label_colors,
+    save_label_colors,
+    load_device_order,
+    save_device_order,
 )
-from .device import DeviceInfo, DeviceState, DeviceStatus
+from .device import (
+    DeviceInfo,
+    DeviceState,
+    DeviceStatus,
+    SCREEN_OFF_REQUESTED,
+)
 from .log_manager import logs
 
 
 # Lock globale per serializzare i comandi ADB (piu' stabile su hub USB).
 # Creato lazy per evitare errori in fase di import senza event loop.
 _ADB_CMD_LOCK: Optional[asyncio.Lock] = None
+
+# Oltre questo numero di poll consecutivi senza vedere un device smettiamo
+# di tentare 'adb reconnect': se non e' tornato entro ~5 minuti e' staccato
+# fisicamente, e insistere disturba i transport di tutti gli altri.
+_RECONNECT_MAX_MISSES = 9
 
 
 def adb_cmd_lock() -> asyncio.Lock:
@@ -104,6 +118,8 @@ class AdbManager:
         self._adb = settings.adb_path or "adb"
         self._devices: Dict[str, DeviceState] = {}
         self._labels: Dict[str, str] = load_labels()
+        self._label_colors: Dict[str, str] = load_label_colors()
+        self._order: Dict[str, int] = load_device_order()
         self._tags: Dict[str, List[str]] = load_tags()
         self._played_serials: set = set(load_played())
         self._skipped_serials: set = set(load_skipped())
@@ -187,6 +203,7 @@ class AdbManager:
         y: int,
         interval_ms: int = 1000,
         jitter_px: int = 8,
+        count: int = 0,
     ) -> bool:
         """Avvia l'auto-clicker su un device in (x, y) con timing umano."""
         if serial not in self._devices:
@@ -195,10 +212,10 @@ class AdbManager:
         dev = self._devices[serial]
         dev.autoclick = True
         self._autoclick_tasks[serial] = asyncio.create_task(
-            self._autoclick_loop(serial, x, y, max(150, interval_ms), jitter_px)
+            self._autoclick_loop(serial, x, y, max(150, interval_ms), jitter_px, count)
         )
         logs.info(
-            f"Auto-click avviato ({x},{y} ogni ~{interval_ms}ms)", serial=serial
+            f"Auto-click avviato ({x},{y} ogni ~{interval_ms}ms, count={count or 'inf'})", serial=serial
         )
         return True
 
@@ -212,7 +229,7 @@ class AdbManager:
             logs.info("Auto-click fermato", serial=serial)
 
     async def _autoclick_loop(
-        self, serial: str, x: int, y: int, interval_ms: int, jitter_px: int
+        self, serial: str, x: int, y: int, interval_ms: int, jitter_px: int, count: int = 0
     ) -> None:
         """Loop di click con pattern il piu' possibile umano.
 
@@ -226,7 +243,11 @@ class AdbManager:
         import random
 
         try:
+            i = 0
             while True:
+                if count and i >= count:
+                    break
+                i += 1
                 dev = self._devices.get(serial)
                 if not dev or dev.status != DeviceStatus.ONLINE:
                     break
@@ -324,6 +345,7 @@ class AdbManager:
         Username: nodi vicino a 'ciao'/'benvenuto'/'account'/'profilo'.
         """
         info = {"saldo": None, "bookmaker": "", "username": ""}
+        t0 = time.monotonic()
 
         # --- Canale 1: CDP/DOM (Chrome in foreground) ---
         # Se il device ha Chrome aperto, il saldo si legge direttamente dal
@@ -332,6 +354,11 @@ class AdbManager:
         cdp = await self._saldo_via_cdp(serial)
         if cdp.get("saldo"):
             info.update(cdp)
+            logs.info(
+                f"Saldo {info['saldo']} via CDP "
+                f"in {time.monotonic() - t0:.1f}s",
+                serial=serial,
+            )
             return info
 
         # --- Canale 2: accessibility tree (uiautomator dump) ---
@@ -431,6 +458,18 @@ class AdbManager:
                     info["username"] = cand
                     break
 
+        dur = time.monotonic() - t0
+        if info["saldo"]:
+            logs.info(
+                f"Saldo {info['saldo']} via uiautomator in {dur:.1f}s",
+                serial=serial,
+            )
+        else:
+            logs.warn(
+                f"Saldo non trovato dopo {dur:.1f}s "
+                f"(CDP fallito, dump senza importi)",
+                serial=serial,
+            )
         return info
 
     def _saldo_from_position(self, xml: str) -> Optional[str]:
@@ -498,24 +537,33 @@ class AdbManager:
   const kw = /saldo|balance|totale|available|disponibil|conto|wallet|fondi|credit/i;
   const pick = t => { const m = t.match(money); return m ? m[0] : null; };
   const out = v => ({saldo: v, site: location.hostname});
+  // Testo VISIBILE: innerText e' vuoto su display:none, ma textContent no —
+  // il fallback va usato solo se l'elemento e' davvero visibile, altrimenti
+  // si leggono saldi nascosti (es. 'bonus 0,00') al posto di quello reale.
+  const vis = el => {
+    const it = (el.innerText || '').trim();
+    if (it) return it;
+    const visible = el.checkVisibility ? el.checkVisibility() : el.offsetParent !== null;
+    return visible ? (el.textContent || '').trim() : '';
+  };
   const sels = ['[class*="balance" i]','[class*="saldo" i]','[id*="balance" i]',
                 '[id*="saldo" i]','[class*="wallet" i]','[class*="credit" i]',
                 '[data-testid*="balance" i]'];
   for (const s of sels) {
     for (const el of document.querySelectorAll(s)) {
-      const t = (el.innerText || el.textContent || '').trim();
+      const t = vis(el);
       if (t && t.length < 80) { const v = pick(t); if (v) return out(v); }
     }
   }
   const leaves = document.querySelectorAll('body *');
   for (const el of leaves) {
     if (el.children.length) continue;
-    const t = (el.innerText || '').trim();
+    const t = vis(el);
     if (t && t.length < 80 && kw.test(t)) { const v = pick(t); if (v) return out(v); }
   }
   for (const el of leaves) {
     if (el.children.length) continue;
-    const t = (el.innerText || '').trim();
+    const t = vis(el);
     if (t && t.length < 40) { const v = pick(t); if (v) return out(v); }
   }
   return null;
@@ -654,6 +702,26 @@ class AdbManager:
         save_labels(self._labels)
         logs.info(f"Etichetta '{label}' assegnata a {serial}", serial=serial)
 
+    def set_label_color(self, serial: str, color: str) -> None:
+        if color:
+            self._label_colors[serial] = color
+        else:
+            self._label_colors.pop(serial, None)
+        if serial in self._devices:
+            self._devices[serial].label_color = color
+        save_label_colors(self._label_colors)
+        logs.info(f"Colore etichetta '{color}' assegnato a {serial}", serial=serial)
+
+    def set_order(self, serial: str, order: int) -> None:
+        if order:
+            self._order[serial] = order
+        else:
+            self._order.pop(serial, None)
+        if serial in self._devices:
+            self._devices[serial].order = order
+        save_device_order(self._order)
+        logs.info(f"Ordine {order} assegnato a {serial}", serial=serial)
+
     def set_tags(self, serial: str, tags: List[str]) -> None:
         self._tags[serial] = tags
         if serial in self._devices:
@@ -686,6 +754,8 @@ class AdbManager:
                     usb_port=k.get("usb_port", ""),
                 ),
                 label=self._labels.get(serial, k.get("label", "")),
+                label_color=self._label_colors.get(serial, k.get("label_color", "")),
+                order=self._order.get(serial, k.get("order", 0)),
                 tags=self._tags.get(serial, k.get("tags", [])),
                 status=DeviceStatus.OFFLINE,
                 played=serial in self._played_serials,
@@ -796,9 +866,24 @@ class AdbManager:
     async def adb_command(
         self, *args: str, serial: Optional[str] = None,
         timeout: float = 30.0, port: Optional[int] = None,
+        lock_timeout: Optional[float] = None,
     ) -> Tuple[int, str, str]:
-        """Esegue un comando ADB e ritorna (returncode, stdout, stderr)."""
-        async with adb_cmd_lock():
+        """Esegue un comando ADB e ritorna (returncode, stdout, stderr).
+
+        lock_timeout: se specificato, attende al massimo quel tempo per
+        acquisire il lock ADB globale. Per gli input e i tap serve un
+        valore breve, altrimenti un click resta bloccato dietro un bulk
+        shell di 25 device per decine di secondi.
+        """
+        lock = adb_cmd_lock()
+        if lock_timeout is None:
+            await lock.acquire()
+        else:
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=lock_timeout)
+            except asyncio.TimeoutError:
+                return -1, "", "adb lock busy"
+        try:
             cmd = [self._adb]
             # Instradamento multi-server: il device va comandato sul server
             # che lo enumera (5037 standard, 5038 QuickForward/Panda).
@@ -858,11 +943,17 @@ class AdbManager:
             except Exception as exc:
                 logs.error(f"Errore ADB: {exc}")
                 return -1, "", str(exc)
+        finally:
+            lock.release()
 
-    async def shell(self, serial: str, command: str, timeout: float = 30.0) -> str:
+    async def shell(
+        self, serial: str, command: str,
+        timeout: float = 30.0, lock_timeout: Optional[float] = None,
+    ) -> str:
         """Esegue un comando shell su un dispositivo specifico."""
         rc, out, err = await self.adb_command(
-            "shell", command, serial=serial, timeout=timeout
+            "shell", command, serial=serial, timeout=timeout,
+            lock_timeout=lock_timeout,
         )
         return out.strip()
 
@@ -937,10 +1028,14 @@ class AdbManager:
                 usb_port=usb or "",
             )
             label = self._labels.get(serial, "")
+            label_color = self._label_colors.get(serial, "")
+            order = self._order.get(serial, 0)
             tags = self._tags.get(serial, [])
             dev = DeviceState(
                 info=info,
                 label=label,
+                label_color=label_color,
+                order=order,
                 tags=tags,
                 status=status,
                 played=serial in self._played_serials,
@@ -991,8 +1086,14 @@ class AdbManager:
             if port != 5037 and not _adb_port_listening(port):
                 continue
             poll_ok = False
+            # Ogni tentativo e' un comando adb sotto lock globale: farne 5
+            # fissi a ogni ciclo satura adb e fa singhiozzare stream e touch.
+            # Ci fermiamo appena una coppia plain + '-l' non porta seriali
+            # nuovi, mantenendo la ridondanza solo quando serve davvero.
+            stable_rounds = 0
             for attempt in range(5):
                 use_long = attempt % 2 == 1  # 1, 3 con -l
+                before = len(seen_serials)
                 rc, out, _ = await self.adb_command(
                     "devices",
                     *("-l",) if use_long else (),
@@ -1021,6 +1122,13 @@ class AdbManager:
                                 tid=tid,
                                 port=port,
                             )
+                if poll_ok and len(seen_serials) == before and before > 0:
+                    stable_rounds += 1
+                    # Una lettura plain e una '-l' concordi: elenco completo.
+                    if stable_rounds >= 2:
+                        break
+                else:
+                    stable_rounds = 0
                 if attempt < 4:
                     await asyncio.sleep(0.2)
             if not poll_ok:
@@ -1056,17 +1164,24 @@ class AdbManager:
                     "disattiva la sospensione selettiva USB di Windows",
                     serial=serial,
                 )
-            # Recovery attivo (come Panda): ogni ~3 poll senza vederlo
-            # forziamo 'adb reconnect' per far ri-enumerare il device al
-            # server, invece di aspettare che torni da solo.
-            if misses >= 2 and misses % 3 == 0:
+            # Recovery attivo, ma SOLO nei primi poll dopo la scomparsa.
+            # Un device staccato fisicamente non torna con 'adb reconnect':
+            # insistere all'infinito faceva ri-negoziare i transport del
+            # server adb, e a ogni giro cadevano i forward di TUTTI gli
+            # altri device (stream chiusi a grappolo nello stesso secondo).
+            # Oltre questa soglia lo lasciamo offline, come fa Panda.
+            if 2 <= misses <= _RECONNECT_MAX_MISSES and misses % 3 == 0:
                 reconnect_due.append(serial)
 
         if reconnect_due:
+            # Il lock adb globale serializza comunque questi comandi: con
+            # molti device assenti si accumulavano decine di secondi di adb
+            # bloccato, e nel frattempo i forward degli stream vivi cadevano.
+            # Ne facciamo pochi per ciclo, con timeout corto.
             await asyncio.gather(
                 *(
-                    self.adb_command("reconnect", serial=s, timeout=10.0)
-                    for s in reconnect_due
+                    self.adb_command("reconnect", serial=s, timeout=5.0)
+                    for s in reconnect_due[:2]
                 ),
                 return_exceptions=True,
             )
@@ -1232,13 +1347,39 @@ class AdbManager:
     # ------------------------------------------------------------------
 
     async def screen_on(self, serial: str) -> None:
+        SCREEN_OFF_REQUESTED.discard(serial)
         await self.shell(serial, "input keyevent KEYCODE_WAKEUP")
         if serial in self._devices:
             self._devices[serial].screen_on = True
         logs.info("Schermo acceso", serial=serial)
 
+    async def _is_screen_on(self, serial: str) -> Optional[bool]:
+        """Stato reale del display, None se non determinabile."""
+        try:
+            out = await self.shell(
+                serial, "dumpsys power | grep -m1 mWakefulness=", timeout=10.0
+            )
+        except Exception:
+            return None
+        if "mWakefulness=" not in out:
+            return None
+        return "Awake" in out
+
     async def screen_off(self, serial: str) -> None:
+        # Registriamo l'intenzione PRIMA di spegnere: se nel frattempo lo
+        # stream si riavvia, il suo KEYCODE_WAKEUP viene saltato invece di
+        # riaccendere il device appena bloccato.
+        SCREEN_OFF_REQUESTED.add(serial)
         await self.shell(serial, "input keyevent KEYCODE_SLEEP")
+        # Il keyevent puo' andare perso se il device e' occupato: verifichiamo
+        # l'esito e ritentiamo una volta invece di dichiarare successo al buio.
+        await asyncio.sleep(0.4)
+        if await self._is_screen_on(serial):
+            await self.shell(serial, "input keyevent KEYCODE_SLEEP")
+            await asyncio.sleep(0.4)
+            if await self._is_screen_on(serial):
+                logs.warn("Blocco schermo non riuscito", serial=serial)
+                return
         if serial in self._devices:
             self._devices[serial].screen_on = False
         logs.info("Schermo spento", serial=serial)

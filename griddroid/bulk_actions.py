@@ -112,7 +112,10 @@ class BulkActionRunner:
 
         async def _run(serial: str) -> None:
             async with self._semaphore:
-                out = await self._adb.shell(serial, command, timeout=60.0)
+                # Timeout corto: am start non puo' monopolizzare il lock ADB
+                # globale per un minuto, altrimenti tutti i click restano
+                # bloccati finche' non finisce il bulk.
+                out = await self._adb.shell(serial, command, timeout=8.0)
                 results[serial] = out
                 logs.info(f"Output: {out[:200]}", serial=serial)
 

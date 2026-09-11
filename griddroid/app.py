@@ -21,13 +21,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Q
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .adb_manager import AdbManager
+from .adb_manager import AdbManager, adb_server_args
 from .bulk_actions import BulkActionRunner
 from .config import AppSettings, CONFIG_DIR, load_settings, save_settings, load_labels, load_tags, load_played, load_known
 from .device import DeviceStatus
 from .input_relay import InputRelay
 from .log_manager import logs
 from . import __version__, startup, updater
+from .native_viewer import NativeViewerManager
 from .scripts import ScriptEngine
 from .stream_engine import StreamManager
 
@@ -131,6 +132,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     # Servizi
     adb = AdbManager(settings)
     streams = StreamManager(settings)
+    native = NativeViewerManager()
     input_relay = InputRelay(adb, streams)
     bulk = BulkActionRunner(adb, max_concurrent=settings.max_concurrent_installs)
     script_engine = ScriptEngine(adb)
@@ -138,6 +140,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     # Salva riferimenti nell'app state
     app.state.adb = adb
     app.state.streams = streams
+    app.state.native = native
     app.state.input_relay = input_relay
     app.state.bulk = bulk
     app.state.scripts = script_engine
@@ -280,6 +283,16 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         adb.set_label(serial, label)
         return {"ok": True}
 
+    @app.post("/api/devices/{serial}/label-color")
+    async def set_label_color(serial: str, color: str = Query(...)):
+        adb.set_label_color(serial, color)
+        return {"ok": True}
+
+    @app.post("/api/devices/{serial}/order")
+    async def set_device_order(serial: str, order: int = Query(0)):
+        adb.set_order(serial, order)
+        return {"ok": True}
+
     @app.post("/api/devices/{serial}/select")
     async def select_device(serial: str, selected: bool = Query(True)):
         dev = adb.get_device(serial)
@@ -287,23 +300,53 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             dev.selected = selected
         return {"ok": True}
 
-    @app.post("/api/devices/{serial}/stream-quality")
-    async def set_device_stream_quality(serial: str, max_size: int = Query(0)):
-        """Risoluzione dedicata per un singolo device (0 = torna al valore globale).
+    @app.post("/api/devices/{serial}/zoom")
+    async def zoom_device(serial: str):
+        dev = adb.get_device(serial)
+        if dev is None or dev.status != DeviceStatus.ONLINE:
+            return JSONResponse({"ok": False, "error": "device non online"}, status_code=400)
+        await streams.set_device_zoom(serial)
+        return {"ok": True}
 
-        Usato dal fullscreen: alla risoluzione della griglia l'immagine
-        ingrandita risulta sfocata perche' il browser fa upscaling.
+    @app.post("/api/devices/{serial}/unzoom")
+    async def unzoom_device(serial: str):
+        await streams.unset_device_zoom(serial)
+        return {"ok": True}
+
+    @app.post("/api/devices/{serial}/stream-quality")
+    async def set_device_stream_quality(
+        serial: str,
+        max_size: int = Query(0),
+        max_fps: int = Query(0),
+        bit_rate: int = Query(0),
+    ):
+        """Parametri video dedicati per un singolo device (0 = valore globale).
+
+        Usato dal fullscreen: permette di cambiare risoluzione, fps e bitrate
+        senza toccare le impostazioni globali.
         """
         dev = adb.get_device(serial)
         if dev is None or dev.status != DeviceStatus.ONLINE:
             return JSONResponse({"ok": False, "error": "device non online"}, status_code=400)
-        override = max_size if max_size > 0 else None
+        override_size = max_size if max_size > 0 else None
+        override_fps = max_fps if max_fps > 0 else None
+        override_br = bit_rate if bit_rate > 0 else None
         try:
-            await streams.set_device_max_size(serial, override)
+            await streams.set_device_stream_params(
+                serial,
+                max_size=override_size,
+                max_fps=override_fps,
+                bit_rate=override_br,
+            )
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
         dev.streaming = True
-        return {"ok": True, "max_size": override or settings.stream.max_size}
+        return {
+            "ok": True,
+            "max_size": override_size or settings.stream.max_size,
+            "max_fps": override_fps or settings.stream.max_fps,
+            "bit_rate": override_br or settings.stream.bit_rate,
+        }
 
     @app.post("/api/balances/read")
     async def read_balances(request: Request):
@@ -319,10 +362,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             if d.status == DeviceStatus.ONLINE and (not wanted or s in wanted)
         ]
         # In parallelo: in sequenza 26 device richiederebbero ~80s.
-        # Max 2 dump uiautomator alla volta + stagger: anche solo 4 dump
-        # simultanei saturano il canale adb/USB e chiudono TUTTI i socket
-        # video scrcpy nello stesso secondo (ondata di 'TCP stream chiuso').
-        sem = asyncio.Semaphore(2)
+        # Max 1 dump uiautomator alla volta + stagger: anche solo 2 dump
+        # paralleli sull'hub USB saturano ADB e fanno lampeggiare TUTTI gli
+        # stream scrcpy. 1 dump alla volta + 1s di pausa mantiene stabile.
+        sem = asyncio.Semaphore(1)
         # Progresso esposto via /api/balances/progress per la barra in UI
         _balance_progress.update(
             {"running": True, "done": 0, "total": len(online), "current": ""}
@@ -341,7 +384,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                     _balance_progress["done"] += 1
 
         infos = await asyncio.gather(
-            *(_read(s, i * 0.4) for i, (s, _) in enumerate(online)),
+            *(_read(s, i * 1.0) for i, (s, _) in enumerate(online)),
             return_exceptions=True,
         )
         _balance_progress["running"] = False
@@ -505,46 +548,6 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             dev.streaming = False
         return {"ok": True}
 
-    @app.get("/api/stream/{serial}/mjpeg")
-    async def mjpeg_feed(serial: str):
-        """Endpoint MJPEG per lo streaming continuo di frame JPEG."""
-        stream = streams.get_stream(serial)
-        if not stream:
-            return JSONResponse({"error": "stream non attivo"}, status_code=404)
-
-        async def generate():
-            q = stream.subscribe()
-            try:
-                while True:
-                    try:
-                        frame = await asyncio.wait_for(q.get(), timeout=10.0)
-                        yield (
-                            b"--frame\r\n"
-                            b"Content-Type: image/jpeg\r\n\r\n"
-                            + frame
-                            + b"\r\n"
-                        )
-                    except asyncio.TimeoutError:
-                        # Invia un frame vuoto per keepalive
-                        yield b"--frame\r\n\r\n"
-            finally:
-                stream.unsubscribe(q)
-
-        return StreamingResponse(
-            generate(),
-            media_type="multipart/x-mixed-replace; boundary=frame",
-        )
-
-    @app.get("/api/stream/{serial}/frame")
-    async def last_frame(serial: str):
-        """Ritorna l'ultimo frame JPEG catturato."""
-        stream = streams.get_stream(serial)
-        if stream and stream.last_frame:
-            return StreamingResponse(
-                iter([stream.last_frame]), media_type="image/jpeg"
-            )
-        return JSONResponse({"error": "nessun frame"}, status_code=404)
-
     # ------------------------------------------------------------------
     # REST API – Input
     # ------------------------------------------------------------------
@@ -656,7 +659,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         nonlocal settings
         ALLOWED = {"poll_interval_s", "grid_columns", "max_concurrent_installs",
                    "start_with_windows", "start_minimized", "minimize_to_tray"}
-        STREAM_KEYS = {"max_fps", "max_size", "bit_rate", "video_codec"}
+        STREAM_KEYS = {"max_fps", "max_size", "bit_rate", "video_codec",
+                       "software_encoder"}
         for key, value in data.items():
             if key in ALLOWED:
                 if key in ("poll_interval_s", "max_concurrent_installs"):
@@ -680,9 +684,11 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                     elif sk == "max_fps":
                         sv = max(1, min(60, int(sv)))
                     elif sk == "bit_rate":
-                        sv = max(500_000, min(20_000_000, int(sv)))
+                        sv = max(50_000, min(20_000_000, int(sv)))
                     elif sk == "video_codec":
                         sv = "h264" if sv not in ("h264", "h265") else sv
+                    elif sk == "software_encoder":
+                        sv = bool(sv)
                     setattr(settings.stream, sk, sv)
         save_settings(settings)
         app.state.settings = settings
@@ -768,6 +774,25 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     @app.get("/api/logs")
     async def get_logs(limit: int = Query(200)):
         return logs.history(limit)
+
+    @app.post("/api/client-log")
+    async def client_log(request: Request):
+        """Raccoglie log dal client JS senza richiedere DevTools sul farm."""
+        try:
+            data = await request.json()
+        except Exception:
+            return {"ok": False}
+        level = data.get("level", "info")
+        message = (data.get("message") or "").strip()
+        serial = data.get("serial")
+        if not message:
+            return {"ok": False}
+        log_fn = getattr(logs, level, logs.info)
+        try:
+            log_fn(f"[CLIENT] {message}", serial=serial)
+        except Exception:
+            logs.info(f"[CLIENT] {message}", serial=serial)
+        return {"ok": True}
 
     # ------------------------------------------------------------------
     # Script ADB
@@ -980,6 +1005,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 await ws.send_bytes(keyframe)
             while True:
                 frame = await q.get()
+                # None = stream terminato: chiudiamo il WS cosi' il browser
+                # riceve onclose e schedula la riconnessione.
+                if frame is None:
+                    break
                 if lite and frame[:1] != b"\x01":
                     continue
                 await ws.send_bytes(frame)
@@ -987,6 +1016,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             pass
         finally:
             stream.unsubscribe(q)
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
@@ -1107,6 +1140,12 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         elif action == "label":
             adb.set_label(serial, cmd.get("label", ""))
 
+        elif action == "label_color":
+            adb.set_label_color(serial, cmd.get("color", ""))
+
+        elif action == "order":
+            adb.set_order(serial, int(cmd.get("order", 0)))
+
         elif action == "tags":
             adb.set_tags(serial, cmd.get("tags", []))
 
@@ -1134,6 +1173,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 int(cmd.get("y", 0)),
                 int(cmd.get("interval_ms", 1000)),
                 int(cmd.get("jitter_px", 8)),
+                int(cmd.get("count", 0)),
             )
 
         elif action == "autoclick_stop":
@@ -1142,14 +1182,98 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         elif action == "start_stream":
             dev = adb.get_device(serial)
             if dev and dev.status == DeviceStatus.ONLINE:
-                await streams.start_stream(serial)
-                dev.streaming = True
+                # Riavvio manuale: azzera il backoff dell'auto-loop,
+                # altrimenti dopo fallimenti il retry attende fino a 120s
+                # e all'utente sembra che il comando non faccia nulla.
+                # Se il player nativo scrcpy e' aperto, lo chiudiamo
+                # per evitare due scrcpy-server sul device.
+                if native.is_running(serial):
+                    await native.stop(serial)
+                dev.stream_failures = 0
+                dev.next_stream_attempt = 0.0
+                stream = None
+                try:
+                    stream = await streams.start_stream(serial)
+                except Exception as exc:
+                    logs.error(f"Errore avvio stream: {exc}", serial=serial)
+                # Stato reale: se la task e' morta subito, lo segnaliamo
+                # al frontend cosi' il pulsante riflette la situazione.
+                dev.streaming = bool(stream and stream.alive)
+                if dev.streaming:
+                    logs.success("Stream attivo", serial=serial)
+            elif dev:
+                logs.warn(
+                    f"Riavvio stream ignorato: device {dev.status.value}",
+                    serial=serial,
+                )
+
+        elif action == "restart_stream":
+            dev = adb.get_device(serial)
+            if dev and dev.status == DeviceStatus.ONLINE:
+                # Riavvio istantaneo: stop + start atomici, senza i 600ms di attesa
+                # Chiude eventuale finestra nativa per evitare conflitto scrcpy.
+                if native.is_running(serial):
+                    await native.stop(serial)
+                dev.stream_failures = 0
+                dev.next_stream_attempt = 0.0
+                try:
+                    stream = await streams.restart_stream(serial)
+                    dev.streaming = bool(stream and stream.alive)
+                    if dev.streaming:
+                        logs.success("Stream riavviato", serial=serial)
+                    else:
+                        logs.warn("Riavvio stream fallito", serial=serial)
+                except Exception as exc:
+                    dev.streaming = False
+                    logs.error(f"Errore riavvio stream: {exc}", serial=serial)
+            elif dev:
+                logs.warn(
+                    f"Riavvio stream ignorato: device {dev.status.value}",
+                    serial=serial,
+                )
 
         elif action == "stop_stream":
-            await streams.stop_stream(serial)
+            try:
+                await streams.stop_stream(serial)
+            except Exception as exc:
+                logs.warn(f"Errore stop stream: {exc}", serial=serial)
             dev = adb.get_device(serial)
             if dev:
                 dev.streaming = False
+                dev.stream_failures = 0
+                dev.next_stream_attempt = 0.0
+
+        elif action == "open_native_viewer":
+            dev = adb.get_device(serial)
+            if dev and dev.status == DeviceStatus.ONLINE:
+                # Chiude lo stream web per non avere due server scrcpy sul device.
+                try:
+                    await streams.stop_stream(serial)
+                except Exception:
+                    pass
+                if dev:
+                    dev.streaming = False
+                try:
+                    s = settings.stream
+                    port_args = adb_server_args(serial)
+                    adb_port = int(port_args[1]) if port_args else 5037
+                    await native.start(
+                        serial,
+                        adb_path=settings.adb_path,
+                        adb_port=adb_port,
+                        max_size=s.max_size,
+                        max_fps=s.max_fps,
+                        bit_rate=s.bit_rate,
+                        video_encoder="OMX.google.h264.encoder" if s.software_encoder else "",
+                    )
+                except Exception as exc:
+                    logs.error(f"Errore apertura finestra nativa: {exc}", serial=serial)
+
+        elif action == "close_native_viewer":
+            try:
+                await native.stop(serial)
+            except Exception as exc:
+                logs.warn(f"Errore chiusura finestra nativa: {exc}", serial=serial)
 
         elif action == "start_all_streams":
             for s, d in adb.devices.items():

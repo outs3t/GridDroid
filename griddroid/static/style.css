@@ -363,15 +363,23 @@ body::before {
     overflow: hidden;
     aspect-ratio: 9 / 18;
     cursor: pointer;
-    transition: all var(--dur-slow) var(--ease-out);
+    /* 0.22s invece di 0.40s: transizioni lunghe danno sensazione di
+       app "pesante". will-change evita riflussi durante il lift. */
+    transition:
+        border-color var(--dur) var(--ease),
+        box-shadow var(--dur) var(--ease),
+        transform var(--dur) var(--ease-out),
+        opacity var(--dur) var(--ease),
+        filter var(--dur) var(--ease);
     box-shadow:
         0 1px 0 rgba(255,255,255,0.04) inset,
         0 2px 6px rgba(0,0,0,0.25),
         0 10px 30px rgba(0,0,0,0.35);
 }
 
-.device-cell:hover {
+.device-cell:not(.fullscreen-cell):hover {
     border-color: var(--border-hover);
+    transform: translateY(-2px);
     box-shadow:
         0 1px 0 rgba(255,255,255,0.06) inset,
         0 6px 14px rgba(0,0,0,0.30),
@@ -406,7 +414,8 @@ body::before {
     border-color: var(--green);
     box-shadow:
         inset 0 0 0 1px rgba(74,222,128,0.35),
-        0 0 0 1px rgba(74,222,128,0.45);
+        0 0 0 1px rgba(74,222,128,0.45),
+        0 0 22px rgba(74,222,128,0.18);
 }
 
 /* Auto-clicker attivo: angolino arancione pulsante */
@@ -442,23 +451,130 @@ body::before {
 
 .device-cell.fullscreen-cell {
     position: fixed;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    height: min(88vh, 950px);
-    width: auto;
-    aspect-ratio: 9 / 18;
+    top: 0; left: 0;
+    transform: none;
+    /* dimensioni calcolate in JS in base alla risoluzione del feed */
+    width: 90vw;
+    height: 90vh;
+    aspect-ratio: unset;
     z-index: 200;
     border-color: var(--accent);
     box-shadow:
         0 30px 90px rgba(0, 0, 0, 0.75),
         0 0 0 1px rgba(74, 222, 128, 0.35);
+    will-change: top, left;
+}
+
+.device-cell.fullscreen-cell .device-toolbar {
+    cursor: grab;
+    user-select: none;
+}
+
+.device-cell.fullscreen-cell .device-toolbar.dragging {
+    cursor: grabbing;
+}
+
+/* Pannello nome device a sinistra in fullscreen */
+.fs-left-label {
+    position: fixed;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 210;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-0, #e8eaed);
+    background: rgba(0, 0, 0, 0.55);
+    padding: 10px 6px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(4px);
+    pointer-events: none;
+    max-height: 80vh;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Pannello destro zoom/qualità/fps in fullscreen */
+.fs-right-panel {
+    position: fixed;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 210;
+    width: 150px;
+    padding: 12px 10px;
+    background: rgba(15, 17, 21, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    backdrop-filter: blur(8px);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7);
+}
+
+.fs-panel-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-3, #8a9199);
+    margin-bottom: 2px;
+}
+
+.fs-zoom-slider {
+    width: 100%;
+    accent-color: var(--accent, #4ade80);
+}
+
+.fs-zoom-value {
+    font-size: 11px;
+    color: var(--text-1, #c8cfd6);
+    text-align: center;
+}
+
+.fs-right-panel select,
+.fs-right-panel button {
+    width: 100%;
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px solid #2a2e35;
+    background: #15171c;
+    color: var(--text-0, #e8eaed);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.fs-right-panel button:hover {
+    background: #1e2229;
+    border-color: #3e444d;
+}
+
+.fs-apply-btn {
+    background: var(--accent-grad, linear-gradient(135deg, #4ade80, #22c55e)) !important;
+    color: #000 !important;
+    font-weight: 600;
+    border: none !important;
+}
+
+.fs-apply-btn:hover {
+    filter: brightness(1.08);
+}
+
+.fs-close-btn {
+    margin-top: 4px;
+    color: var(--text-2, #a0a8b0) !important;
 }
 
 .device-cell.fullscreen-cell .device-feed {
     transform: none;
     transition: none;
     width: 100%;
-    height: calc(100% - 28px);
+    height: calc(100% - 32px);
     object-fit: contain;
 }
 
@@ -474,8 +590,16 @@ body::before {
     user-select: none;
     -webkit-user-drag: none;
     cursor: crosshair;
+    /* Fade-in quando il canvas passa da display:none a visibile:
+       l'animazione riparte a ogni ricomparsa dello stream. */
+    animation: feedIn 0.3s var(--ease-out);
     display: block;
     z-index: 1;
+}
+
+@keyframes feedIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 
 .device-feed-placeholder {
@@ -483,6 +607,10 @@ body::before {
     top: 0; left: 0;
     width: 100%;
     height: calc(100% - 28px);
+    /* Solo informativo: sta sopra il canvas e non deve intercettare
+       i click, altrimenti mentre e' visibile l'input resta bloccato
+       (es. in fullscreen durante il riavvio dello stream). */
+    pointer-events: none;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -589,6 +717,39 @@ body::before {
     background: rgba(0,0,0,0.65);
     border-color: var(--accent);
     box-shadow: 0 0 0 2px rgba(74,222,128,0.2);
+}
+
+.device-color {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    cursor: pointer;
+    flex-shrink: 0;
+    pointer-events: auto;
+    overflow: hidden;
+}
+.device-color::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+.device-color::-webkit-color-swatch {
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 50%;
+}
+
+.device-order {
+    width: 38px;
+    height: 20px;
+    background: #15171c;
+    border: 1px solid #2e333a;
+    border-radius: var(--r-xs);
+    color: #c8cfd6;
+    padding: 1px 3px;
+    font-size: 11px;
+    text-align: center;
+    pointer-events: auto;
 }
 
 .device-saldo {
@@ -733,6 +894,54 @@ body::before {
     fill: none;
 }
 .nav-btn:hover { color: #fff; border-color: var(--accent, #4a5058); }
+
+/* Pannello qualita' stream per singolo device */
+.device-quality-panel {
+    position: absolute;
+    bottom: 34px;
+    left: 0;
+    right: 0;
+    display: flex;
+    gap: 4px;
+    padding: 6px;
+    background: rgba(11, 12, 15, 0.95);
+    border-top: 1px solid #2a2e35;
+    z-index: 4;
+    align-items: center;
+}
+.device-quality-panel input {
+    width: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+    background: #15171c;
+    border: 1px solid #2e333a;
+    border-radius: var(--r-xs);
+    color: #c8cfd6;
+    padding: 3px 5px;
+    font-size: 11px;
+}
+.device-quality-panel .q-preset {
+    flex: 0 0 auto;
+    width: 24px;
+    padding: 3px 0;
+    background: #1e2229;
+    border: 1px solid #2e333a;
+    border-radius: var(--r-xs);
+    color: #c8cfd6;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+}
+.device-quality-panel .q-save {
+    flex: 0 0 auto;
+    padding: 3px 8px;
+    background: var(--accent, #4a5058);
+    border: none;
+    border-radius: var(--r-xs);
+    color: #fff;
+    font-size: 11px;
+    cursor: pointer;
+}
 
 /* Checkbox selezione: sempre visibile e grande, click singolo per
    selezionare/deselezionare senza modificatori */

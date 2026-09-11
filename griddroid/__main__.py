@@ -88,7 +88,7 @@ def _find_free_port(host: str, start_port: int, count: int = 50) -> int:
     raise RuntimeError(f"Nessuna porta libera tra {start_port} e {start_port + count}")
 
 
-def _wait_for_server(host: str, port: int, timeout: float = 20.0) -> bool:
+def _wait_for_server(host: str, port: int, timeout: float = 60.0) -> bool:
     """Attende che il server risponda su http://host:port."""
     url = f"http://{host}:{port}"
     start = time.time()
@@ -219,6 +219,7 @@ def _server_thread(bind_host: str, port: int) -> None:
     except Exception as exc:
         _log(f"Server crash: {exc}")
         _log(traceback.format_exc())
+        _server_state["error"] = f"{exc}"
     finally:
         _server_state["server"] = None
         _server_state["loop"] = None
@@ -532,6 +533,24 @@ def main() -> None:
     url = f"http://{ui_host}:{port}"
     _log(f"URL finale: {url}")
 
+    # Pre-riscalda il daemon ADB: dopo un riavvio di Windows e' spento,
+    # e il primo comando adb devices lo avvia richiedendo parecchi secondi.
+    # Facendolo qui, prima di uvicorn, evitiamo che il primo poll blocchi
+    # l'evento startup di FastAPI.
+    adb_bin = settings.adb_path or "adb"
+    _log(f"Avvio ADB daemon: {adb_bin}")
+    try:
+        subprocess.run(
+            [adb_bin, "start-server"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20.0,
+            creationflags=0x08000000,
+        )
+        _log("ADB daemon pronto")
+    except Exception as adb_exc:
+        _log(f"ADB start-server: {adb_exc}")
+
     # Applica le preferenze di avvio di Windows
     try:
         startup.set_run_at_boot(settings.start_with_windows)
@@ -549,7 +568,11 @@ def main() -> None:
     # Attende che il server risponda prima di aprire la finestra
     if not _wait_for_server(ui_host, port):
         _log("ERRORE: il server non si e avviato.")
-        _show_message(f"Il server non si e avviato.\nProva ad aprire manualmente:\n{url}")
+        err = _server_state.get("error")
+        if err:
+            _show_message(f"Il server non si e avviato.\nErrore: {err}\n\nProva ad aprire manualmente:\n{url}")
+        else:
+            _show_message(f"Il server non si e avviato.\nProva ad aprire manualmente:\n{url}")
         _stop_server(5.0)
         sys.exit(1)
 

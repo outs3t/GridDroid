@@ -1,10 +1,9 @@
-"""Motore di streaming: scrcpy-server standalone → TCP raw H264 → ffmpeg → JPEG."""
+"""Motore di streaming: scrcpy-server standalone → TCP raw H264 → WebSocket."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import io
 import os
 import random
 import shutil
@@ -14,11 +13,10 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from PIL import Image
-
 from .adb_manager import adb_cmd_lock, adb_server_args
-from .config import AppSettings
+from .config import AppSettings, load_device_overrides, save_device_overrides
 from .control_channel import ControlChannel
+from .device import SCREEN_OFF_REQUESTED
 from .log_manager import logs
 
 # Nessuna finestra di terminale per i processi figli su Windows
@@ -40,7 +38,15 @@ _IFRAME_UNSUPPORTED: Set[str] = set()
 # dopo uno stream stabile si azzera. Sopravvive alla ricreazione di
 # DeviceStream perche' l'auto-stream ne crea uno nuovo a ogni tentativo.
 _DEGRADED: Dict[str, int] = {}
-_DEGRADE_MAX = 3  # livelli: 0=100%, 1=50% fps, 2=25% fps+meta' bitrate, 3=minimo
+# livelli: 0=100%, 1=50% fps, 2=25% fps+meta' bitrate, 3=minimo
+_DEGRADE_MAX = 3
+
+# Risoluzione fisica per seriale: costante nel tempo, la rileviamo una volta
+# sola invece che a ogni riavvio di stream.
+_NATIVE_SIZE_CACHE: Dict[str, tuple] = {}
+
+# Seriali su cui scrcpy-server.jar e' gia' stato copiato in questa sessione.
+_JAR_PUSHED: Set[str] = set()
 
 
 def _degrade_factor(level: int) -> Tuple[float, float]:
@@ -106,18 +112,22 @@ class DeviceStream:
         settings: AppSettings,
         start_sem: Optional[asyncio.Semaphore] = None,
         max_size_override: Optional[int] = None,
+        max_fps_override: Optional[int] = None,
+        bit_rate_override: Optional[int] = None,
     ) -> None:
         self.serial = serial
         self._settings = settings
         # Risoluzione dedicata a questo device (fullscreen): se impostata
         # sovrascrive il max_size globale solo per questo stream.
         self.max_size_override = max_size_override
+        self.max_fps_override = max_fps_override
+        self.bit_rate_override = bit_rate_override
+        self._pre_zoom: Optional[Tuple[Optional[int], Optional[int], Optional[int]]] = None
         # Limite avvii concorrenti per non sovraccaricare ADB (default 4)
         self._start_sem: Optional[asyncio.Semaphore] = start_sem
         self._last_heartbeat = time.monotonic()
         self._server_proc: Optional[asyncio.subprocess.Process] = None
         self._running = False
-        self._current_frame: Optional[bytes] = None
         self._sps: bytes = b""
         self._pps: bytes = b""
         self._h264_config: bytes = b""
@@ -153,10 +163,6 @@ class DeviceStream:
         return not self._task.done()
 
     @property
-    def last_frame(self) -> Optional[bytes]:
-        return self._current_frame
-
-    @property
     def native_size(self) -> tuple:
         return (self._native_width, self._native_height)
 
@@ -181,6 +187,9 @@ class DeviceStream:
 
     async def stop(self) -> None:
         self._running = False
+        # Sblocca subito i subscriber: il WS video deve chiudersi anche se
+        # la task e' gia' morta o impiega tempo a terminare.
+        self._signal_stream_end()
         if self._control:
             try:
                 await self._control.close()
@@ -219,7 +228,7 @@ class DeviceStream:
             self._task = None
 
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=60)
+        q: asyncio.Queue = asyncio.Queue(maxsize=120)
         self._subscribers.add(q)
         return q
 
@@ -264,13 +273,34 @@ class DeviceStream:
                     pass
 
     async def _run(self) -> None:
-        server_jar = _find_scrcpy_server()
-        if server_jar:
-            await self._run_scrcpy_server(server_jar)
-        else:
-            logs.warn("scrcpy-server non trovato", serial=self.serial)
-            logs.info("Fallback a screenshot periodici", serial=self.serial)
-            await self._screenshot_fallback()
+        try:
+            server_jar = _find_scrcpy_server()
+            if server_jar:
+                await self._run_scrcpy_server(server_jar)
+            else:
+                logs.error("scrcpy-server non trovato, stream impossibile", serial=self.serial)
+                self._running = False
+        finally:
+            self._signal_stream_end()
+
+    def _signal_stream_end(self) -> None:
+        """Sveglia i subscriber bloccati su q.get() con un sentinel None.
+
+        Senza questo il WS /ws/stream resta aperto all'infinito quando lo
+        stream muore: il browser non riceve onclose, non schedula il retry
+        e il feed resta fermo (bug del 'Riavvia stream' che non riparte).
+        """
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(None)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     async def _is_device_online(self) -> bool:
         adb = self._settings.adb_path or "adb"
@@ -316,17 +346,27 @@ class DeviceStream:
                     # 0. Sveglia il dispositivo: scrcpy richiede display attivo.
                     #    Timeout corto: un device appeso non deve tenere il
                     #    lock adb globale bloccando i comandi degli altri.
-                    try:
-                        await self._adb_exec(
-                            adb, "shell", "input", "keyevent", "KEYCODE_WAKEUP",
-                            timeout=8.0,
-                        )
-                    except Exception:
-                        pass
+                    #    Saltato se l'utente ha bloccato lo schermo di questo
+                    #    device: altrimenti il primo riavvio di stream lo
+                    #    riaccendeva e il blocco sembrava fallire a caso.
+                    if self.serial not in SCREEN_OFF_REQUESTED:
+                        try:
+                            await self._adb_exec(
+                                adb, "shell", "input", "keyevent", "KEYCODE_WAKEUP",
+                                timeout=8.0,
+                            )
+                        except Exception:
+                            pass
 
-                    # 1. Push server jar
+                    # 1. Push server jar — una volta sola per sessione.
+                    #    Ripusharlo a ogni riavvio di stream significa, con
+                    #    una farm che ricicla, un trasferimento continuo
+                    #    sotto il lock adb globale. Se l'avvio poi fallisce
+                    #    la cache viene invalidata e si ripusha.
                     remote_jar = "/data/local/tmp/scrcpy-server.jar"
-                    await self._adb_exec(adb, "push", server_jar, remote_jar, timeout=60.0)
+                    if self.serial not in _JAR_PUSHED:
+                        await self._adb_exec(adb, "push", server_jar, remote_jar, timeout=60.0)
+                        _JAR_PUSHED.add(self.serial)
 
                     # 2. Setup forward con porta libera (evita collisioni)
                     async with _port_lock():
@@ -352,18 +392,19 @@ class DeviceStream:
                         f"app_process / com.genymobile.scrcpy.Server {_SCRCPY_VERSION} "
                         f"tunnel_forward=true "
                         f"audio=false control=true cleanup=false "
+                        f"clipboard_autosync=false "
                         f"show_touches=true stay_awake=true power_off_on_close=false "
                         f"raw_stream=true "
                         f"max_size={self.max_size_override or s.max_size} "
                         + self._adaptive_params(s)
-                        # Keyframe ogni 2s: chi perde frame (rete lenta/VPN)
-                        # si riallinea in fretta invece di restare corrotto.
-                        + (
-                            "video_codec_options=i-frame-interval=2 "
-                            if self.serial not in self._iframe_unsupported else ""
-                        )
+                        # i-frame-interval disabilitato: anche con encoder hw
+                        # ha causato 'encoder senza frame' e riavvii in loop.
+                        # Panda non lo usa e i log confermano che e' piu' stabile
+                        # senza forzare keyframe ogni 2s.
+                        + ""
                         + f"scid={scid_hex}"
                     )
+                    iframe_requested = "video_codec_options=i-frame-interval" in server_cmd
                     self._server_proc = await asyncio.create_subprocess_exec(
                         adb, *adb_server_args(self.serial),
                         "-s", self.serial, "shell", server_cmd,
@@ -420,34 +461,27 @@ class DeviceStream:
                 au_count = await self._stream_h264(reader)
                 if au_count > 0:
                     consecutive_failures = 0
-                    # Stream stabile: riporta la qualita' al livello pieno.
-                    if au_count > 300 and _DEGRADED.get(self.serial, 0) > 0:
-                        _DEGRADED[self.serial] = 0
-                        logs.info("Stream stabile: qualita' ripristinata", serial=self.serial)
                 else:
                     consecutive_failures += 1
-                    # Throttling adattivo: encoder che fallisce di continuo
-                    # riceve fps/bitrate ridotti al prossimo tentativo.
-                    level = _DEGRADED.get(self.serial, 0)
-                    if level < _DEGRADE_MAX:
-                        _DEGRADED[self.serial] = level + 1
+                    if (
+                        iframe_requested
+                        and self.serial not in self._iframe_unsupported
+                    ):
+                        _IFRAME_UNSUPPORTED.add(self.serial)
                         logs.warn(
-                            f"Encoder instabile: qualita' ridotta al livello {level + 1}",
+                            "Encoder non produce frame con i-frame-interval; "
+                            f"disabilitato per {self.serial}",
                             serial=self.serial,
-                        )
-                    if self.serial not in self._iframe_unsupported:
-                        # Encoder morto subito dopo il configure:
-                        # i-frame-interval non digerito, si riprova senza.
-                        self._iframe_unsupported.add(self.serial)
-                        logs.warn(
-                            "Encoder senza frame: disattivo i-frame-interval e riprovo",
-                            serial=self.serial,
+                            throttle_s=30,
                         )
 
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 consecutive_failures += 1
+                # Il jar remoto potrebbe essere sparito (pulizia /data/local/tmp
+                # o device riavviato): al prossimo giro lo ricopiamo.
+                _JAR_PUSHED.discard(self.serial)
                 logs.warn(f"Errore stream: {exc}", serial=self.serial, throttle_s=30)
             finally:
                 await self._cleanup_server()
@@ -465,17 +499,26 @@ class DeviceStream:
                 await asyncio.sleep(delay)
 
     def _adaptive_params(self, s) -> str:
-        """Parametri video scalati per il livello di degradazione corrente.
-
-        Encoder instabili (timeout, 0 frame) ricevono fps e bitrate ridotti:
-        meno lavoro per l'encoder hardware del telefono, piu' probabilita'
-        che lo stream regga in setup densi.
-        """
-        level = _DEGRADED.get(self.serial, 0)
-        fps_f, br_f = _degrade_factor(level)
-        fps = max(5, int(s.max_fps * fps_f))
-        br = max(500_000, int(s.bit_rate * br_f))
-        return f"max_fps={fps} video_bit_rate={br} "
+        """Parametri video con override per device e bitrate scalato."""
+        max_fps = self.max_fps_override or s.max_fps
+        max_size = self.max_size_override or s.max_size
+        base_bit_rate = self.bit_rate_override or s.bit_rate
+        # Scala bitrate con risoluzione e fps per evitare artefatti
+        # su fullscreen / alta qualita': 480@2fps come riferimento.
+        factor = (max_size / 480.0) ** 2 * (max(max_fps, 1) / 2.0)
+        bit_rate = int(base_bit_rate * factor)
+        # Panda usa bitrate molto bassi con encoder software; teniamo un
+        # tetto per non sovraccaricare l'encoder e l'USB su farm dense.
+        max_bit_rate = 1_000_000 if getattr(s, "software_encoder", False) else 8_000_000
+        bit_rate = max(min(bit_rate, max_bit_rate), min(base_bit_rate, max_bit_rate))
+        params = f"max_fps={max_fps} video_bit_rate={bit_rate} "
+        # Encoder SOFTWARE (OMX.google) invece di quello hardware: stessa
+        # scelta di Panda — piu' lento ma non crasha mai.
+        if getattr(s, "software_encoder", False):
+            params += "video_encoder=OMX.google.h264.encoder "
+            # Panda non forza i-frame interval; evitiamo l'opzione che su
+            # alcuni encoder software blocca la produzione di frame.
+        return params
 
     async def _watch_server_proc(self) -> None:
         """Watchdog granulare: sorveglia il processo scrcpy-server.
@@ -488,26 +531,49 @@ class DeviceStream:
         proc = self._server_proc
         if proc is None:
             return
+        stalls = 0
         try:
             while self._running:
                 # Stallo video: tunnel adb morto a meta' (socket locale
                 # ancora aperto, peer andato — es. saturazione USB durante
                 # la lettura saldi). La read() resterebbe appesa per
                 # sempre: chiudo il writer e il loop riavvia lo stream.
-                # 30s: uno schermo statico puo' restare muto a lungo, ma
-                # un falso positivo costa solo una riconnessione.
+                # ATTENZIONE ai falsi positivi: uno schermo statico non
+                # emette frame per minuti — riavviare uno stream sano costa
+                # un flash nero + pressione adb che fa stallare gli altri.
+                # Quindi: al primo silenzio verifico se il device e' vivo;
+                # riavvio subito solo se morto, altrimenti tollero ~90s.
                 last_vd = getattr(self, "_last_video_data", 0)
                 if last_vd and time.monotonic() - last_vd > 30.0:
-                    logs.warn(
-                        "Stream video in stallo da 30s: riavvio automatico",
-                        serial=self.serial,
+                    proc_dead = proc.returncode is not None
+                    online = (
+                        not proc_dead and await self._is_device_online()
                     )
-                    if self._writer is not None and not self._writer.is_closing():
-                        try:
-                            self._writer.close()
-                        except Exception:
-                            pass
-                    return
+                    if proc_dead or not online or stalls >= 3:
+                        logs.warn(
+                            "Stream video in stallo"
+                            + (" (server morto)" if proc_dead else "")
+                            + (" (device non raggiungibile)" if not online and not proc_dead else "")
+                            + ": riavvio automatico",
+                            serial=self.serial,
+                        )
+                        if self._writer is not None and not self._writer.is_closing():
+                            try:
+                                self._writer.close()
+                            except Exception:
+                                pass
+                        return
+                    # Device vivo e server vivo: schermo statico, non stallo.
+                    stalls += 1
+                    self._last_video_data = time.monotonic()
+                    logs.info(
+                        "Stream muto da 30s ma device attivo: "
+                        "probabile schermo statico, attendo",
+                        serial=self.serial,
+                        throttle_s=120,
+                    )
+                    continue
+                stalls = 0
                 if proc.returncode is not None:
                     # Processo morto: se il socket e' ancora aperto lo chiudiamo
                     if self._writer is not None and not self._writer.is_closing():
@@ -788,6 +854,13 @@ class DeviceStream:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _detect_native_resolution(self) -> None:
+        # La risoluzione fisica non cambia tra un riavvio di stream e
+        # l'altro: senza cache ogni ciclo spendeva un 'adb shell wm size'
+        # sotto il lock globale, moltiplicato per tutti i device.
+        cached = _NATIVE_SIZE_CACHE.get(self.serial)
+        if cached:
+            self._native_width, self._native_height = cached
+            return
         adb = self._settings.adb_path or "adb"
         try:
             text = await self._adb_exec(adb, "shell", "wm", "size")
@@ -797,67 +870,22 @@ class DeviceStream:
                     if len(parts) == 2:
                         self._native_width = int(parts[0])
                         self._native_height = int(parts[1])
+                        _NATIVE_SIZE_CACHE[self.serial] = (
+                            self._native_width, self._native_height,
+                        )
                         logs.info(f"Risoluzione nativa: {self._native_width}x{self._native_height}", serial=self.serial)
                         return
         except Exception:
             pass
 
     # ------------------------------------------------------------------
-    # Fallback screenshot
+    # Distribuzione frame
     # ------------------------------------------------------------------
-
-    async def _screenshot_fallback(self) -> None:
-        adb = self._settings.adb_path or "adb"
-        if self._native_width == 0:
-            await self._detect_native_resolution()
-
-        frame_count = 0
-        while self._running:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    adb, *adb_server_args(self.serial),
-                    "-s", self.serial, "exec-out", "screencap", "-p",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **_SUBPROCESS_KW,
-                )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-                if proc.returncode == 0 and stdout and len(stdout) > 100:
-                    try:
-                        img = Image.open(io.BytesIO(stdout))
-                        if img.mode != "RGB":
-                            img = img.convert("RGB")
-                        max_size = self._settings.stream.max_size
-                        if img.width > max_size or img.height > max_size:
-                            ratio = max_size / max(img.width, img.height)
-                            new_size = (int(img.width * ratio), int(img.height * ratio))
-                            img = img.resize(new_size, Image.NEAREST)
-                        buf = io.BytesIO()
-                        img.save(buf, format="JPEG", quality=85)
-                        jpeg_bytes = buf.getvalue()
-                    except Exception as img_exc:
-                        logs.warn(f"Errore elaborazione immagine: {img_exc}", serial=self.serial)
-                        jpeg_bytes = stdout
-                    self._current_frame = jpeg_bytes
-                    self._distribute_frame(jpeg_bytes)
-                    frame_count += 1
-                    if frame_count == 1:
-                        logs.success(f"Primo frame screenshot ({len(jpeg_bytes)} bytes)", serial=self.serial)
-                else:
-                    err_msg = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
-                    if frame_count == 0:
-                        logs.warn(f"screencap fallito: {err_msg}", serial=self.serial)
-            except asyncio.TimeoutError:
-                logs.warn("Screenshot timeout", serial=self.serial)
-            except Exception as exc:
-                logs.warn(f"Errore screenshot: {exc}", serial=self.serial)
-            await asyncio.sleep(0.05)
 
     def _distribute_frame(self, frame: bytes) -> None:
         self._last_heartbeat = time.monotonic()
-        # Keyframe H264 (flag 0x01) o JPEG completo del fallback:
-        # entrambi riallineano un client che ha perso frame.
-        is_key = frame[:1] == b"\x01" or frame[:2] == b"\xff\xd8"
+        # Keyframe H264 (flag 0x01): riallinea un client che ha perso frame.
+        is_key = frame[:1] == b"\x01"
         dead: List[asyncio.Queue] = []
         for q in self._subscribers:
             try:
@@ -895,57 +923,163 @@ class StreamManager:
         self._streams: Dict[str, DeviceStream] = {}
         starts = max(1, settings.stream.max_concurrent_stream_starts)
         self._start_sem = asyncio.Semaphore(starts)
+        self._device_overrides = load_device_overrides()
 
     @property
     def streams(self) -> Dict[str, DeviceStream]:
         return self._streams
 
     async def start_stream(
-        self, serial: str, max_size_override: Optional[int] = None
+        self,
+        serial: str,
+        max_size_override: Optional[int] = None,
+        max_fps_override: Optional[int] = None,
+        bit_rate_override: Optional[int] = None,
     ) -> DeviceStream:
+        ov = self._device_overrides.get(serial, {})
+        if max_size_override is None and "max_size" in ov:
+            max_size_override = ov["max_size"]
+        if max_fps_override is None and "max_fps" in ov:
+            max_fps_override = ov["max_fps"]
+        if bit_rate_override is None and "bit_rate" in ov:
+            bit_rate_override = ov["bit_rate"]
+
         if serial in self._streams:
             stream = self._streams[serial]
             if stream.alive:
                 return stream
-            # Conserva la risoluzione dedicata (es. fullscreen attivo) quando
-            # lo stream viene ricreato dopo una caduta
+            # Conserva gli override per device (es. fullscreen attivo)
             if max_size_override is None:
                 max_size_override = stream.max_size_override
+            if max_fps_override is None:
+                max_fps_override = stream.max_fps_override
+            if bit_rate_override is None:
+                bit_rate_override = stream.bit_rate_override
             await stream.stop()
         stream = DeviceStream(
-            serial, self._settings, self._start_sem, max_size_override
+            serial,
+            self._settings,
+            self._start_sem,
+            max_size_override,
+            max_fps_override,
+            bit_rate_override,
         )
         self._streams[serial] = stream
         await stream.start()
         return stream
 
-    async def set_device_max_size(
-        self, serial: str, max_size: Optional[int]
+    async def set_device_stream_params(
+        self,
+        serial: str,
+        max_size: Optional[int] = None,
+        max_fps: Optional[int] = None,
+        bit_rate: Optional[int] = None,
     ) -> Optional[DeviceStream]:
-        """Cambia la risoluzione di un singolo device riavviando il suo stream.
+        """Cambia risoluzione/fps/bitrate di un singolo device riavviando il suo stream."""
+        # Aggiorna e persiste gli override per device.
+        ov = self._device_overrides.setdefault(serial, {})
+        if max_size is not None:
+            ov["max_size"] = max_size
+        elif "max_size" in ov:
+            del ov["max_size"]
+        if max_fps is not None:
+            ov["max_fps"] = max_fps
+        elif "max_fps" in ov:
+            del ov["max_fps"]
+        if bit_rate is not None:
+            ov["bit_rate"] = bit_rate
+        elif "bit_rate" in ov:
+            del ov["bit_rate"]
+        if not ov:
+            self._device_overrides.pop(serial, None)
+        save_device_overrides(self._device_overrides)
 
-        Serve al fullscreen: alla risoluzione della griglia l'immagine ingrandita
-        risulterebbe sfocata perche' il browser fa upscaling del bitmap decodificato.
-        """
         stream = self._streams.get(serial)
         if stream is not None:
-            # Confronta la risoluzione EFFETTIVA (override o globale):
-            # la qualita' adattiva puo' chiedere un valore uguale al
-            # globale con override ancora None — senza questo check
-            # riavviava tutti gli stream al primo giro.
-            current = stream.max_size_override or self._settings.stream.max_size
-            wanted = max_size or self._settings.stream.max_size
-            if current == wanted:
+            # Se nessun parametro cambia, non riavviare.
+            current_size = stream.max_size_override or self._settings.stream.max_size
+            current_fps = stream.max_fps_override or self._settings.stream.max_fps
+            current_br = stream.bit_rate_override or self._settings.stream.bit_rate
+            wanted_size = max_size if max_size is not None else stream.max_size_override
+            wanted_fps = max_fps if max_fps is not None else stream.max_fps_override
+            wanted_br = bit_rate if bit_rate is not None else stream.bit_rate_override
+            if (
+                (max_size is None or current_size == wanted_size)
+                and (max_fps is None or current_fps == wanted_fps)
+                and (bit_rate is None or current_br == wanted_br)
+            ):
                 stream.max_size_override = max_size
+                stream.max_fps_override = max_fps
+                stream.bit_rate_override = bit_rate
                 return stream
             await stream.stop()
             self._streams.pop(serial, None)
-        return await self.start_stream(serial, max_size_override=max_size)
+        return await self.start_stream(
+            serial,
+            max_size_override=max_size,
+            max_fps_override=max_fps,
+            bit_rate_override=bit_rate,
+        )
+
+    async def set_device_max_size(
+        self, serial: str, max_size: Optional[int]
+    ) -> Optional[DeviceStream]:
+        """Alias compatibilita' per chi chiama solo con max_size."""
+        return await self.set_device_stream_params(serial, max_size=max_size)
+
+    async def set_device_zoom(self, serial: str) -> Optional[DeviceStream]:
+        """Entra in zoom fullscreen: salva i parametri attuali e passa a 1080p/20fps/1M."""
+        stream = self._streams.get(serial)
+        if stream is None:
+            return None
+        stream._pre_zoom = (
+            stream.max_size_override,
+            stream.max_fps_override,
+            stream.bit_rate_override,
+        )
+        return await self.set_device_stream_params(serial, max_size=1080, max_fps=20, bit_rate=1000000)
+
+    async def unset_device_zoom(self, serial: str) -> Optional[DeviceStream]:
+        """Esce dallo zoom e ripristina i parametri precedenti."""
+        stream = self._streams.get(serial)
+        if stream is None:
+            return None
+        pre = stream._pre_zoom
+        if pre is None:
+            return stream
+        stream._pre_zoom = None
+        return await self.set_device_stream_params(serial, max_size=pre[0], max_fps=pre[1], bit_rate=pre[2])
 
     async def stop_stream(self, serial: str) -> None:
         if serial in self._streams:
             await self._streams[serial].stop()
             del self._streams[serial]
+
+    async def restart_stream(
+        self,
+        serial: str,
+        max_size_override: Optional[int] = None,
+        max_fps_override: Optional[int] = None,
+        bit_rate_override: Optional[int] = None,
+    ) -> Optional[DeviceStream]:
+        """Stop + start immediato: evita il race dei 600ms del frontend."""
+        stream = self._streams.get(serial)
+        if stream is not None:
+            # Conserva gli override fullscreen/qualita' dello stream precedente
+            if max_size_override is None:
+                max_size_override = stream.max_size_override
+            if max_fps_override is None:
+                max_fps_override = stream.max_fps_override
+            if bit_rate_override is None:
+                bit_rate_override = stream.bit_rate_override
+            await stream.stop()
+            self._streams.pop(serial, None)
+        return await self.start_stream(
+            serial,
+            max_size_override=max_size_override,
+            max_fps_override=max_fps_override,
+            bit_rate_override=bit_rate_override,
+        )
 
     async def stop_all(self) -> None:
         for stream in list(self._streams.values()):

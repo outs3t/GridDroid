@@ -21,7 +21,7 @@ else:
 
 from . import control_channel as cc
 from .adb_manager import AdbManager
-from .device import DeviceState, DeviceStatus
+from .device import DeviceState, DeviceStatus, SCREEN_OFF_REQUESTED
 from .log_manager import logs
 
 
@@ -71,29 +71,35 @@ class InputRelay:
             return
         self._focused_serial = serial
         if serial:
-            logs.info(f"Focus su dispositivo", serial=serial)
+            # Il focus cambia a ogni passaggio del mouse sulla griglia:
+            # senza throttle il log diventa illeggibile e ogni riga viene
+            # rimbalzata a tutti i client WebSocket.
+            logs.info(f"Focus su dispositivo", serial=serial, throttle_s=30)
 
     def _get_targets(self) -> List[str]:
         """Ritorna la lista di seriali su cui inviare gli input.
 
-        Priorita': dispositivi selezionati > broadcast (tutti online) > focused.
+        Il device sotto il mouse (focus) vince sempre: toccare un telefono
+        non selezionato deve funzionare. La selezione multipla si applica
+        solo quando il device toccato e' esso stesso tra i selezionati —
+        altrimenti selezionare un device rendeva gli altri inerti.
         """
-        selected = [
-            s for s, d in self._adb.devices.items()
-            if d.status == DeviceStatus.ONLINE and d.selected
-        ]
-        if selected:
-            return selected
-
         if self._broadcast_mode:
             return [
                 s for s, d in self._adb.devices.items()
                 if d.status == DeviceStatus.ONLINE
             ]
 
+        selected = [
+            s for s, d in self._adb.devices.items()
+            if d.status == DeviceStatus.ONLINE and d.selected
+        ]
+        if selected and self._focused_serial in selected:
+            return selected
+
         if self._focused_serial:
             return [self._focused_serial]
-        return []
+        return selected
 
     def _control_for(self, serial: str):
         """Ritorna il canale di controllo scrcpy del dispositivo, se attivo."""
@@ -133,7 +139,12 @@ class InputRelay:
         """Fallback 'adb shell input tap' quando il canale nativo e' giu'."""
         nx, ny = self._scale_coords(serial, x, y, w, h)
         try:
-            await self._adb.shell(serial, f"input tap {nx} {ny}")
+            # Timeout corti e lock_timeout: un click non puo' attendere 30s
+            # che finisca un bulk shell di 25 device.
+            await self._adb.shell(
+                serial, f"input tap {nx} {ny}",
+                timeout=3.0, lock_timeout=1.0,
+            )
             logs.info(f"Tap via adb fallback ({nx},{ny})", serial=serial)
         except Exception as exc:
             logs.warn(f"Tap fallback fallito: {exc}", serial=serial)
@@ -147,7 +158,8 @@ class InputRelay:
         nx2, ny2 = self._scale_coords(serial, x2, y2, w, h)
         try:
             await self._adb.shell(
-                serial, f"input swipe {nx1} {ny1} {nx2} {ny2} {duration_ms}"
+                serial, f"input swipe {nx1} {ny1} {nx2} {ny2} {duration_ms}",
+                timeout=3.0, lock_timeout=1.0,
             )
         except Exception as exc:
             logs.warn(f"Swipe fallback fallito: {exc}", serial=serial)
@@ -177,6 +189,13 @@ class InputRelay:
         targets = self._get_targets()
         if not targets:
             return
+
+        # Toccare un device significa volerlo usare: annulla la richiesta di
+        # schermo spento, altrimenti resterebbe escluso dal wakeup allo
+        # start dello stream.
+        if action == "down":
+            for serial in targets:
+                SCREEN_OFF_REQUESTED.discard(serial)
 
         action_map = {
             "down": cc.ACTION_DOWN,
@@ -309,7 +328,10 @@ class InputRelay:
             else:
                 # Il canale scrcpy esiste solo con stream attivo: senza di
                 # esso il comando verrebbe scartato. Fallback via ADB shell.
-                tasks.append(self._adb.shell(s, f"input keyevent {keycode}"))
+                tasks.append(self._adb.shell(
+                    s, f"input keyevent {keycode}",
+                    timeout=3.0, lock_timeout=1.0,
+                ))
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def text(self, text: str, *, serial: Optional[str] = None) -> None:

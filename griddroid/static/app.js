@@ -100,6 +100,50 @@ function wsSend(obj) {
     }
 }
 
+function remoteLog(level, message, serial) {
+    try {
+        fetch("/api/client-log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ level, message: String(message), serial }),
+        });
+    } catch (e) {}
+}
+
+(function setupClientLogger() {
+    const origError = console.error;
+    console.error = function(...args) {
+        origError.apply(console, args);
+        const text = args.map((a) => {
+            if (a instanceof Error) return a.stack || a.message;
+            if (typeof a === "object") return JSON.stringify(a);
+            return String(a);
+        }).join(" ");
+        remoteLog("error", text, null);
+    };
+
+    const origWarn = console.warn;
+    console.warn = function(...args) {
+        origWarn.apply(console, args);
+        const text = args.map((a) => {
+            if (a instanceof Error) return a.stack || a.message;
+            if (typeof a === "object") return JSON.stringify(a);
+            return String(a);
+        }).join(" ");
+        remoteLog("warn", text, null);
+    };
+
+    window.onerror = function(message, source, lineno, colno, error) {
+        const stack = error && (error.stack || error.message) ? ` : ${error.stack || error.message}` : "";
+        remoteLog("error", `${message} @ ${source}:${lineno}:${colno}${stack}`, null);
+    };
+
+    window.addEventListener("unhandledrejection", (ev) => {
+        const reason = ev.reason instanceof Error ? (ev.reason.stack || ev.reason.message) : String(ev.reason);
+        remoteLog("error", `Unhandled rejection: ${reason}`, null);
+    });
+})();
+
 // =====================================================================
 // Rendering Griglia
 // =====================================================================
@@ -128,8 +172,8 @@ function renderGrid() {
         });
     }
 
-    // A-Z automatico, indipendentemente dallo stato online/offline
-    devices.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || ""));
+    // Ordine manuale (numero crescente), poi A-Z
+    devices.sort((a, b) => (a.order || 0) - (b.order || 0) || (a.display_name || "").localeCompare(b.display_name || ""));
 
     // Nascondi i dispositivi segnati come "giocati" o "non giocati"
     devices = devices.filter((dev) => !dev.played && !dev.skipped);
@@ -154,6 +198,7 @@ function renderGrid() {
     const activeCard = document.activeElement?.closest(".device-card");
 
     try {
+        let pos = 0;
         devices.forEach((dev) => {
             seenSerials.add(dev.serial);
             let cell = existingMap[dev.serial];
@@ -166,7 +211,14 @@ function renderGrid() {
                 card = cell.parentElement;
             }
 
-            grid.appendChild(card);
+            // Sposta la card solo se non e' gia' nella posizione attesa:
+            // appendChild incondizionato forzava un reflow di tutta la
+            // griglia a ogni aggiornamento di stato, anche senza cambi
+            // di ordinamento.
+            if (grid.children[pos] !== card) {
+                grid.insertBefore(card, grid.children[pos] || null);
+            }
+            pos++;
             updateDeviceCell(cell, dev);
         });
     } catch (e) {
@@ -204,14 +256,20 @@ function renderGrid() {
     }
 }
 
+const USE_WEBCODECS = false;
+
 function createDeviceCell(dev) {
     const cell = document.createElement("div");
     cell.className = "device-cell";
     cell.dataset.serial = dev.serial;
 
+    const feedCanvas = '<canvas class="device-feed" style="display:none" width="0" height="0"></canvas>';
+    const feedVideo = '<video class="device-feed" playsinline muted autoplay style="display:none"></video>';
+    const feedTags = USE_WEBCODECS ? `${feedCanvas}${feedVideo}` : `${feedVideo}`;
+
     cell.innerHTML = `
         <input type="checkbox" class="device-select" title="Seleziona per broadcast" />
-        <canvas class="device-feed" style="display:none"></canvas>
+        ${feedTags}
         <div class="device-feed-placeholder">
             <div class="icon">📱</div>
             <span>Nessuno stream</span>
@@ -230,7 +288,18 @@ function createDeviceCell(dev) {
                 <button class="toolbar-btn" data-action="rotate" title="Rotazione"><svg viewBox="0 0 24 24"><path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg></button>
                 <button class="toolbar-btn" data-action="fullscreen" title="Schermo intero"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
                 <button class="toolbar-btn" data-action="stream_toggle" title="Avvia/Ferma stream"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+                <button class="toolbar-btn" data-action="open_native_viewer" title="Finestra nativa"><svg viewBox="0 0 24 24"><path d="M18 3a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0V6.414l-4.293 4.293a1 1 0 0 1-1.414-1.414L17.586 5H15a1 1 0 1 1 0-2h3zM5 7a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V14a1 1 0 1 1 2 0v4a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3h4a1 1 0 1 1 0 2H5z" fill="currentColor"/></svg></button>
+                <button class="toolbar-btn" data-action="quality" title="Qualita' stream"><svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2z"/></svg></button>
             </div>
+        </div>
+        <div class="device-quality-panel" style="display:none;">
+            <button class="q-preset" data-preset='{"maxSize":480,"maxFps":2,"bitRate":50000}' title="Panda: 480p 2fps 50k">P</button>
+            <button class="q-preset" data-preset='{"maxSize":720,"maxFps":10,"bitRate":500000}' title="Medio: 720p 10fps 500k">M</button>
+            <button class="q-preset" data-preset='{"maxSize":1080,"maxFps":20,"bitRate":1000000}' title="Alta: 1080p 20fps 1M">H</button>
+            <input type="number" class="q-size" placeholder="size" min="240" max="1920" />
+            <input type="number" class="q-fps" placeholder="fps" min="1" max="60" />
+            <input type="number" class="q-bitrate" placeholder="bitrate" min="50000" />
+            <button class="q-save">Salva</button>
         </div>
     `;
 
@@ -262,6 +331,31 @@ function createDeviceCell(dev) {
         });
     });
 
+    // Pannello qualità stream per singolo device
+    const qSave = cell.querySelector(".q-save");
+    const qPanel = cell.querySelector(".device-quality-panel");
+    if (qSave && qPanel) {
+        qPanel.querySelectorAll(".q-preset").forEach((btn) => {
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const p = JSON.parse(btn.dataset.preset || "{}");
+                cell.querySelector(".q-size").value = p.maxSize || "";
+                cell.querySelector(".q-fps").value = p.maxFps || "";
+                cell.querySelector(".q-bitrate").value = p.bitRate || "";
+                setDeviceStreamParams(dev.serial, { maxSize: p.maxSize, maxFps: p.maxFps, bitRate: p.bitRate });
+                qPanel.style.display = "none";
+            });
+        });
+        qSave.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const maxSize = parseInt(cell.querySelector(".q-size").value, 10) || 0;
+            const maxFps = parseInt(cell.querySelector(".q-fps").value, 10) || 0;
+            const bitRate = parseInt(cell.querySelector(".q-bitrate").value, 10) || 0;
+            setDeviceStreamParams(dev.serial, { maxSize, maxFps, bitRate });
+            qPanel.style.display = "none";
+        });
+    }
+
     // Input relay: tap e swipe sul feed
     const feed = cell.querySelector(".device-feed");
     setupInputHandlers(feed, dev.serial);
@@ -289,6 +383,8 @@ function wrapDeviceCard(cell, dev) {
     label.innerHTML = `
         <div class="device-label-row">
             <input type="text" class="device-name" spellcheck="false" title="Clicca per rinominare" value="${escapeHtml(dev.display_name)}" size="${nameSize}" />
+            <input type="number" class="device-order" title="Ordine" value="${dev.order || 0}" min="0" step="1" />
+            <input type="color" class="device-color" title="Colore etichetta" value="${escapeHtml(dev.label_color || "#888888")}" />
             <span class="status-dot ${dev.status}"></span>
         </div>
         <div class="device-saldo">${dev.saldo ? `€ ${escapeHtml(String(dev.saldo))}` : ""}</div>
@@ -308,6 +404,26 @@ function wrapDeviceCard(cell, dev) {
             nameEl.blur();
         }
     });
+
+    const colorEl = label.querySelector(".device-color");
+    if (colorEl) {
+        colorEl.addEventListener("change", (e) => {
+            const color = e.target.value;
+            wsSend({ action: "label_color", serial: dev.serial, color });
+            colorEl.style.boxShadow = color ? `0 0 0 2px ${color}` : "none";
+        });
+        if (dev.label_color) {
+            colorEl.style.boxShadow = `0 0 0 2px ${dev.label_color}`;
+        }
+    }
+
+    const orderEl = label.querySelector(".device-order");
+    if (orderEl) {
+        orderEl.addEventListener("change", (e) => {
+            const order = parseInt(e.target.value, 10) || 0;
+            wsSend({ action: "order", serial: dev.serial, order });
+        });
+    }
 
     card.appendChild(label);
     card.appendChild(cell);
@@ -557,8 +673,7 @@ function runContextCommand(cmd, serials) {
                 wsSend({ action: "rotate", serial });
                 break;
             case "restart_stream":
-                wsSend({ action: "stop_stream", serial });
-                setTimeout(() => wsSend({ action: "start_stream", serial }), 600);
+                wsSend({ action: "restart_stream", serial });
                 break;
         }
     });
@@ -747,12 +862,8 @@ function annexBToAVCC(data) {
 function startStreamWs(feedEl, serial) {
     stopStreamWs(feedEl);
 
-    if (typeof VideoDecoder === "undefined") {
-        console.error("WebCodecs non supportato: usa Chrome/Edge 94+");
-        return;
-    }
+    const useWebCodecs = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined";
 
-    const ctx = feedEl.getContext("2d", { alpha: false, desynchronized: true });
     const placeholder = feedEl.parentElement.querySelector('.device-feed-placeholder');
     const iconEl = placeholder ? placeholder.querySelector('.icon') : null;
     const textEl = placeholder ? placeholder.querySelector('span') : null;
@@ -764,36 +875,20 @@ function startStreamWs(feedEl, serial) {
     feedEl.style.display = 'none';
     setPlaceholder('Connessione in corso...', '⏳');
 
-    const session = { ws: null, decoder: null, gotKey: false, configured: false, ts: 0, description: null, frameCount: 0, hasFrame: false };
-
-    const decoder = new VideoDecoder({
-        output: (frame) => {
-            if (feedEl.width !== frame.displayWidth || feedEl.height !== frame.displayHeight) {
-                feedEl.width = frame.displayWidth;
-                feedEl.height = frame.displayHeight;
-                // Proporzione fissa dal CSS, indipendente dalla risoluzione
-            }
-            ctx.drawImage(frame, 0, 0);
-            if (!session.hasFrame) {
-                session.hasFrame = true;
-                feedEl.style.display = 'block';
-                setPlaceholder('', '', false);
-            }
-            frame.close();
-        },
-        error: (err) => {
-            console.error(`Decoder ${serial}:`, err);
-            session.gotKey = false;
-            session.configured = false;
-        },
-    });
-    session.decoder = decoder;
-
+    const session = { ws: null, feedEl, jmuxer: null, decoder: null, ctx: null, pts: 0, configured: false, gotKey: false };
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const liteQs = remoteLiteMode() ? "?lite=1" : "";
     const ws = new WebSocket(`${protocol}//${location.host}/ws/stream/${serial}${liteQs}`);
     ws.binaryType = "arraybuffer";
     session.ws = ws;
+
+    if (useWebCodecs) {
+        session.ctx = feedEl.getContext("2d", { alpha: false });
+    } else if (typeof JMuxer === "undefined") {
+        console.error("JMuxer non caricato");
+        setPlaceholder('Errore player MSE', '⚠️');
+        return;
+    }
 
     ws.onopen = () => {
         setPlaceholder('Connessione in corso...', '⏳');
@@ -806,90 +901,95 @@ function startStreamWs(feedEl, serial) {
         const isKey = data[0] === 1;
         const h264Data = data.subarray(1);
 
-        // Rotazione/fullscreen: scrcpy manda un nuovo SPS con la nuova
-        // risoluzione dentro il keyframe. Se il decoder resta configurato
-        // col vecchio SPS l'immagine esce sfocata: rileva il cambio e
-        // forza la riconfigurazione.
-        if (isKey && session.gotKey && session.sps) {
-            const cur = parseSpsPpsFromAnnexB(h264Data);
-            const s = cur.sps;
-            const old = session.sps;
-            if (s && (s.length !== old.length || !s.every((b, i) => b === old[i]))) {
-                console.log(`Decoder ${serial}: nuovo SPS (rotazione?), riconfiguro`);
-                session.gotKey = false;
-                session.configured = false;
-            }
-        }
-
-        if (!session.gotKey) {
-            if (!isKey) return;
-            session.gotKey = true;
-
-            // Estrae SPS/PPS dal keyframe e costruisce il description record AVCC
-            const { sps, pps } = parseSpsPpsFromAnnexB(h264Data);
-            if (!sps || !pps) {
-                console.error(`SPS/PPS non trovati nel keyframe per ${serial}`);
-                session.gotKey = false;
-                return;
-            }
-            session.sps = sps;
-            session.description = buildAvcDescription(sps, pps);
-            const codecStr = `avc1.${sps[1].toString(16).padStart(2,'0')}${sps[2].toString(16).padStart(2,'0')}${sps[3].toString(16).padStart(2,'0')}`;
-            console.log(`Decoder ${serial}: codec=${codecStr} SPS=${sps.length}B PPS=${pps.length}B`);
-
-            const configs = [
-                { codec: codecStr, optimizeForLatency: true, hardwareAcceleration: "prefer-hardware", description: session.description },
-                { codec: codecStr, optimizeForLatency: true, description: session.description },
-                { codec: codecStr, description: session.description },
-            ];
-            for (const cfg of configs) {
-                try {
-                    decoder.configure(cfg);
-                    session.configured = true;
-                    console.log(`Decoder ${serial} configurato: ${cfg.hardwareAcceleration || "software"}`);
-                    break;
-                } catch (e) {
-                    console.warn(`Config fallita (${cfg.hardwareAcceleration || "software"}):`, e.message);
-                }
-            }
+        if (useWebCodecs) {
             if (!session.configured) {
-                console.error(`Impossibile configurare decoder per ${serial}`);
-                session.gotKey = false;
-                return;
-            }
-        }
-        if (!session.configured || decoder.state !== "configured") return;
-
-        session.frameCount++;
-        if (DEBUG_STREAM() && (session.frameCount <= 5 || session.frameCount % 100 === 0)) {
-            console.log(`Frame ${session.frameCount}: ${isKey ? "KEY" : "delta"} ${h264Data.length}B queue=${decoder.decodeQueueSize}`);
-        }
-
-        try {
-            // Converte Annex-B → AVCC (length-prefixed), tenendo solo lo slice VCL
-            const avccData = annexBToAVCC(h264Data);
-            if (!avccData) {
-                // Frame senza slice VCL (es. solo SPS/PPS/SEI)
-                return;
-            }
-            // Se il decoder e' in ritardo, salta qualche frame per non accumulare lag
-            if (decoder.decodeQueueSize > 2) {
-                if (isKey) {
-                    session.gotKey = false;
-                    session.configured = false;
+                const spspps = parseSpsPpsFromAnnexB(h264Data);
+                if (!spspps.sps || !spspps.pps) {
+                    // senza SPS/PPS non possiamo ancora configurare il decoder
+                    return;
                 }
-                return;
+                const desc = buildAvcDescription(spspps.sps, spspps.pps);
+                if (!desc) return;
+                const profile = spspps.sps[1].toString(16).padStart(2, '0');
+                const constraints = spspps.sps[2].toString(16).padStart(2, '0');
+                const level = spspps.sps[3].toString(16).padStart(2, '0');
+                const codec = `avc1.${profile}${constraints}${level}`;
+                try {
+                    session.decoder = new VideoDecoder({
+                        output: (frame) => {
+                            if (!frame) return;
+                            if (feedEl.width !== frame.codedWidth || feedEl.height !== frame.codedHeight) {
+                                feedEl.width = frame.codedWidth;
+                                feedEl.height = frame.codedHeight;
+                            }
+                            if (session.ctx) {
+                                session.ctx.drawImage(frame, 0, 0, feedEl.width, feedEl.height);
+                            }
+                            frame.close();
+                            feedEl.style.display = 'block';
+                            setPlaceholder('', '', false);
+                        },
+                        error: (err) => {
+                            console.error(`VideoDecoder ${serial}:`, err);
+                            ws.close();
+                        },
+                    });
+                    session.decoder.configure({ codec, description: desc, hardwareAcceleration: "prefer-hardware" });
+                    session.configured = true;
+                } catch (e) {
+                    console.error(`Config VideoDecoder ${serial}:`, e);
+                    ws.close();
+                    return;
+                }
             }
-            decoder.decode(new EncodedVideoChunk({
-                type: isKey ? "key" : "delta",
-                timestamp: session.ts,
-                data: avccData,
-            }));
-            session.ts += 33333;
-        } catch (err) {
-            console.error(`Decode ${serial} frame ${session.frameCount}:`, err);
-            session.gotKey = false;
-            session.configured = false;
+            if (!session.configured) return;
+
+            const avcc = annexBToAVCC(h264Data);
+            if (!avcc) return;
+            try {
+                session.pts += 500_000;
+                const chunk = new EncodedVideoChunk({ type: isKey ? "key" : "delta", timestamp: session.pts, duration: 0, data: avcc });
+                session.decoder.decode(chunk);
+            } catch (e) {
+                console.error(`Decode ${serial}:`, e);
+            }
+        } else {
+            // Fallback MSE/JMuxer
+            if (!session.jmuxer) {
+                try {
+                    session.jmuxer = new JMuxer({
+                        node: feedEl,
+                        mode: 'video',
+                        fps: 5,
+                        flushingTime: 50,
+                        clearBuffer: true,
+                        maxDelay: 1000,
+                        readFpsFromTrack: false,
+                        debug: DEBUG_STREAM(),
+                        onReady: () => {
+                            feedEl.style.display = 'block';
+                            setPlaceholder('', '', false);
+                            feedEl.play().catch(() => {});
+                        },
+                        onError: (err) => {
+                            console.error(`JMuxer ${serial}:`, err);
+                        },
+                    });
+                } catch (err) {
+                    console.error(`Inizializzazione JMuxer ${serial}:`, err);
+                    setPlaceholder('Errore player MSE', '⚠️');
+                    return;
+                }
+            }
+            if (!session.gotKey) {
+                if (!isKey) return;
+                session.gotKey = true;
+            }
+            try {
+                session.jmuxer.feed({ video: h264Data, duration: session.jmuxer.frameDuration });
+            } catch (err) {
+                console.error(`Feed JMuxer ${serial}:`, err);
+            }
         }
     };
 
@@ -900,6 +1000,12 @@ function startStreamWs(feedEl, serial) {
             // Jitter: su VPN tanti stream che riprovano insieme saturano la rete
             feedEl.dataset.wsRetryAt = Date.now() + 3000 + Math.random() * 3000;
             delete streamSessions[serial];
+        }
+        if (session.jmuxer) {
+            try { session.jmuxer.destroy(); } catch (e) { }
+        }
+        if (session.decoder) {
+            try { session.decoder.close(); } catch (e) { }
         }
     };
 
@@ -927,7 +1033,8 @@ function stopStreamWs(feedEl) {
             }
         } catch (e) { }
         try {
-            if (session.decoder.state !== "closed") session.decoder.close();
+            if (session.jmuxer) session.jmuxer.destroy();
+            if (session.decoder) session.decoder.close();
         } catch (e) { }
         delete streamSessions[serial];
     }
@@ -950,11 +1057,12 @@ function stopStreamWs(feedEl) {
 
 /**
  * Converte le coordinate del mouse in coordinate del video.
- * Il canvas usa object-fit: contain, quindi il video è centrato con bande
+ * Il video usa object-fit: contain, quindi è centrato con bande
  * nere (letterbox): senza compensarle il tocco risulta sfalsato.
  */
 function feedCoords(feedEl, ev) {
-    const vw = feedEl.width, vh = feedEl.height;
+    const vw = feedEl.videoWidth || feedEl.width;
+    const vh = feedEl.videoHeight || feedEl.height;
     if (!vw || !vh) return null;
 
     const rect = feedEl.getBoundingClientRect();
@@ -1003,6 +1111,16 @@ function setupInputHandlers(feedEl, serial) {
         wsSend(pendingMove);
         pendingMove = null;
     }
+
+    // Il click default sul <video> alterna play/pause: lo disabilitiamo,
+    // altrimenti ogni tocco congela lo stream MSE.
+    feedEl.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof feedEl.play === "function") {
+            feedEl.play().catch(() => {});
+        }
+    });
 
     feedEl.addEventListener("pointerdown", (ev) => {
         if (ev.button !== 0 || ev.ctrlKey || ev.metaKey) return;
@@ -1210,6 +1328,9 @@ function handleToolbarAction(action, serial, cell) {
                 wsSend({ action: "start_stream", serial });
             }
             break;
+        case "open_native_viewer":
+            wsSend({ action: "open_native_viewer", serial });
+            break;
         case "home":
             wsSend({ action: "keyevent", serial, keycode: 3 });
             break;
@@ -1219,65 +1340,49 @@ function handleToolbarAction(action, serial, cell) {
         case "recent_apps":
             wsSend({ action: "keyevent", serial, keycode: 187 });
             break;
+        case "quality": {
+            const panel = cell.querySelector(".device-quality-panel");
+            panel.style.display = panel.style.display === "none" ? "flex" : "none";
+            break;
+        }
     }
 }
 
-// Risoluzione dedicata al device ingrandito: alla qualita' della griglia
-// (es. 480px) l'immagine a schermo pieno risulterebbe sfocata perche' il
-// browser fa upscaling del bitmap decodificato.
-const FULLSCREEN_MAX_SIZE = 1080;
-
-function setDeviceStreamQuality(serial, maxSize) {
+// Gestione parametri stream per singolo device (fullscreen/zoom).
+function setDeviceStreamParams(serial, { maxSize, maxFps, bitRate } = {}) {
     if (!serial) return;
-    fetch(`/api/devices/${serial}/stream-quality?max_size=${maxSize}`, {
+    const qs = new URLSearchParams();
+    if (maxSize) qs.set("max_size", maxSize);
+    if (maxFps) qs.set("max_fps", maxFps);
+    if (bitRate) qs.set("bit_rate", bitRate);
+    fetch(`/api/devices/${serial}/stream-quality?${qs.toString()}`, {
         method: "POST",
     }).catch(() => { });
 }
 
-// Qualita' adattiva allo zoom: la risoluzione dello stream segue la
-// dimensione a cui il telefono e' davvero mostrato. Zoom piccolo = stream
-// leggero, zoom grande = piu' definizione. Ogni cambio riavvia lo stream di
-// quel device, quindi si usano pochi livelli e un debounce lungo per non
-// generare raffiche di riavvii mentre si zooma.
-const QUALITY_STEPS = [480, 720, 1080];
-const deviceQuality = {};
-let qualityTimer = null;
-
-function desiredMaxSize(feedEl) {
-    const dpr = window.devicePixelRatio || 1;
-    // max_size di scrcpy = lato piu' lungo, e i telefoni sono in verticale
-    const needed = feedEl.clientHeight * dpr;
-    for (const step of QUALITY_STEPS) {
-        if (needed <= step) return step;
-    }
-    return QUALITY_STEPS[QUALITY_STEPS.length - 1];
-}
-
-function applyAdaptiveQuality() {
-    for (const feed of document.querySelectorAll("canvas[data-ws-active]")) {
-        const serial = feed.dataset.wsActive;
-        if (!serial) continue;
-        // Il device ingrandito ha la sua risoluzione dedicata
-        if (state.fullscreenSerial === serial) continue;
-        if (!feed.clientHeight) continue;
-        const want = desiredMaxSize(feed);
-        if (deviceQuality[serial] === want) continue;
-        deviceQuality[serial] = want;
-        setDeviceStreamQuality(serial, want);
-    }
-}
-
-function scheduleAdaptiveQuality() {
-    clearTimeout(qualityTimer);
-    qualityTimer = setTimeout(applyAdaptiveQuality, 1200);
-}
-
 function exitFullscreen() {
+    if (state.fullscreenSerial) {
+        fetch(`/api/devices/${state.fullscreenSerial}/unzoom`, { method: "POST" }).catch(() => { });
+    }
     document.querySelectorAll(".fullscreen-cell").forEach((c) => {
+        if (c._fsDrag) {
+            document.removeEventListener("pointermove", c._fsDrag.onMove);
+            document.removeEventListener("pointerup", c._fsDrag.onUp);
+            c._fsDrag.toolbar.classList.remove("dragging");
+            c._fsDrag = null;
+        }
+        const feed = c.querySelector(".device-feed");
+        if (feed) {
+            feed.style.transform = "";
+            feed.style.transformOrigin = "";
+            feed.style.transition = "";
+        }
+        c.style.width = "";
+        c.style.height = "";
+        c.style.top = "";
+        c.style.left = "";
+        c.style.transform = "";
         c.classList.remove("fullscreen-cell");
-        // Ripristina la posizione originale nella griglia; se il parent
-        // non e' piu' nel documento (griglia ri-renderizzata) riattacca
-        // la cella a deviceGrid per non lasciarla orfana su <body>.
         if (c._fsParent && document.contains(c._fsParent)) {
             c._fsParent.insertBefore(c, c._fsNext && c._fsNext.parentNode === c._fsParent ? c._fsNext : null);
         } else {
@@ -1287,13 +1392,10 @@ function exitFullscreen() {
         c._fsNext = null;
     });
     document.getElementById("fullscreenBackdrop")?.remove();
-    const prev = state.fullscreenSerial;
+    document.querySelectorAll(".fs-left-label").forEach((el) => el.remove());
+    document.querySelectorAll(".fs-right-panel").forEach((el) => el.remove());
     state.fullscreenSerial = null;
-    if (prev) {
-        // Ricalcola la risoluzione adatta alla griglia: un solo riavvio
-        delete deviceQuality[prev];
-        scheduleAdaptiveQuality();
-    }
+    // Non rinegoziare la risoluzione automaticamente: evita riavvio stream.
 }
 
 function toggleFullscreen(serial, cell) {
@@ -1301,21 +1403,150 @@ function toggleFullscreen(serial, cell) {
         exitFullscreen();
     } else {
         exitFullscreen();
-        // Backdrop scuro: il telefono resta "in rilievo" sopra la griglia
+        const dev = state.devices.find((d) => d.serial === serial);
+
         const backdrop = document.createElement("div");
         backdrop.id = "fullscreenBackdrop";
         backdrop.className = "fullscreen-backdrop";
         backdrop.addEventListener("click", exitFullscreen);
         document.body.appendChild(backdrop);
-        // La cella va spostata su <body>: dentro .main-layout (z-index:1)
-        // resta sotto il backdrop (z-index:199) e il suo backdrop-filter
-        // la sfocava insieme allo sfondo.
+
         cell._fsParent = cell.parentNode;
         cell._fsNext = cell.nextSibling;
         document.body.appendChild(cell);
         cell.classList.add("fullscreen-cell");
         state.fullscreenSerial = serial;
-        setDeviceStreamQuality(serial, FULLSCREEN_MAX_SIZE);
+
+        // Zoom: risoluzione/fps/bitrate alti per fullscreen
+        fetch(`/api/devices/${serial}/zoom`, { method: "POST" }).catch(() => { });
+
+        // Etichetta verticale sinistra con il nome del device
+        const leftLabel = document.createElement("div");
+        leftLabel.className = "fs-left-label";
+        leftLabel.textContent = dev?.display_name || serial;
+        leftLabel.title = leftLabel.textContent;
+        document.body.appendChild(leftLabel);
+        cell._fsLeftLabel = leftLabel;
+
+        // Pannello destro: zoom immediato + qualità/fps stream
+        const rightPanel = document.createElement("div");
+        rightPanel.className = "fs-right-panel";
+        rightPanel.innerHTML = `
+            <div class="fs-panel-title">Zoom</div>
+            <input type="range" class="fs-zoom-slider" min="1" max="3" step="0.1" value="1">
+            <div class="fs-zoom-value">100%</div>
+            <div class="fs-panel-title">Qualità</div>
+            <select class="fs-quality-select">
+                <option value="480">480p</option>
+                <option value="720">720p</option>
+                <option value="1080">1080p</option>
+            </select>
+            <div class="fs-panel-title">FPS</div>
+            <select class="fs-fps-select">
+                <option value="2">2 fps</option>
+                <option value="5">5 fps</option>
+                <option value="10">10 fps</option>
+                <option value="15">15 fps</option>
+                <option value="30">30 fps</option>
+            </select>
+            <button class="fs-apply-btn">Applica stream</button>
+            <button class="fs-close-btn">Chiudi</button>
+        `;
+        document.body.appendChild(rightPanel);
+        cell._fsRightPanel = rightPanel;
+
+        // Dimensioni adattive: riserva spazio per i pannelli laterali
+        const feed = cell.querySelector(".device-feed");
+        const feedW = feed && feed.width > 0 ? feed.width : 540;
+        const feedH = feed && feed.height > 0 ? feed.height : 1080;
+        const toolbarH = 32;
+        const pad = 20;
+        const leftPanelW = 180;
+        const rightPanelW = 180;
+        const availW = window.innerWidth - leftPanelW - rightPanelW - pad * 2;
+        const availH = window.innerHeight - pad * 2;
+        const scale = Math.min(
+            availW / feedW,
+            availH / (feedH + toolbarH)
+        );
+        const cellW = Math.max(320, Math.round(feedW * scale));
+        const cellH = Math.max(320, Math.round((feedH + toolbarH) * scale));
+        const top = Math.round((window.innerHeight - cellH) / 2);
+        const left = leftPanelW + Math.round((window.innerWidth - leftPanelW - rightPanelW - cellW) / 2);
+        cell.style.width = cellW + "px";
+        cell.style.height = cellH + "px";
+        cell.style.top = top + "px";
+        cell.style.left = left + "px";
+
+        // Zoom immediato con CSS transform (nessun riavvio stream)
+        if (feed) {
+            feed.style.transformOrigin = "bottom center";
+            feed.style.transition = "transform 0.08s ease";
+            feed.style.transform = "scale(1)";
+        }
+
+        const zoomSlider = rightPanel.querySelector(".fs-zoom-slider");
+        const zoomValue = rightPanel.querySelector(".fs-zoom-value");
+        zoomSlider.addEventListener("input", (e) => {
+            const z = parseFloat(e.target.value);
+            if (feed) feed.style.transform = `scale(${z})`;
+            zoomValue.textContent = Math.round(z * 100) + "%";
+        });
+
+        const qualitySel = rightPanel.querySelector(".fs-quality-select");
+        const fpsSel = rightPanel.querySelector(".fs-fps-select");
+        rightPanel.querySelector(".fs-apply-btn").addEventListener("click", () => {
+            setDeviceStreamParams(serial, {
+                maxSize: parseInt(qualitySel.value, 10),
+                maxFps: parseInt(fpsSel.value, 10),
+            });
+            toast("Qualità stream aggiornata", "success");
+        });
+        rightPanel.querySelector(".fs-close-btn").addEventListener("click", exitFullscreen);
+
+        // Trascinamento dalla toolbar
+        const toolbar = cell.querySelector(".device-toolbar");
+        if (toolbar) {
+            let startX = 0;
+            let startY = 0;
+            let startLeft = 0;
+            let startTop = 0;
+            let dragging = false;
+
+            function onPointerDown(e) {
+                if (e.target.closest(".toolbar-btn")) return;
+                startX = e.clientX;
+                startY = e.clientY;
+                startLeft = cell.offsetLeft;
+                startTop = cell.offsetTop;
+                dragging = true;
+                toolbar.classList.add("dragging");
+                document.addEventListener("pointermove", onPointerMove);
+                document.addEventListener("pointerup", onPointerUp, { once: true });
+                e.preventDefault();
+            }
+            function onPointerMove(e) {
+                if (!dragging) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                cell.style.left = (startLeft + dx) + "px";
+                cell.style.top = (startTop + dy) + "px";
+            }
+            function onPointerUp() {
+                if (!dragging) return;
+                dragging = false;
+                toolbar.classList.remove("dragging");
+                document.removeEventListener("pointermove", onPointerMove);
+                document.removeEventListener("pointerup", onPointerUp);
+            }
+
+            toolbar.addEventListener("pointerdown", onPointerDown);
+            cell._fsDrag = {
+                toolbar,
+                onMove: onPointerMove,
+                onUp: onPointerUp,
+            };
+        }
     }
 }
 
@@ -1889,62 +2120,102 @@ async function eseguiScript(scriptId, nomeScript, parametri) {
 
 function initDragSelect() {
     const grid = document.getElementById("deviceGrid");
-    if (!grid) return;
+    const container = document.getElementById("gridContainer");
+    if (!grid || !container) return;
 
-    let startX = 0, startY = 0, band = null, isDragging = false;
+    let startX = 0, startY = 0, band = null;
+    let pending = false, isDragging = false, additive = false;
+    const THRESHOLD = 6; // px di movimento prima di mostrare il rettangolo
 
     function intersect(r1, r2) {
         return r1.left < r2.right && r1.right > r2.left && r1.top < r2.bottom && r1.bottom > r2.top;
     }
 
-    grid.addEventListener("mousedown", (e) => {
-        if (e.button !== 0 || e.target !== grid) return;
+    function cancel() {
+        pending = false;
+        isDragging = false;
+        if (band) { band.remove(); band = null; }
+    }
+
+    container.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        // Il drag parte da qualsiasi punto che non sia una card o un
+        // elemento interattivo: prima partiva SOLO sui pixel di gap della
+        // griglia (e.target === grid), quindi con la griglia piena di
+        // telefoni era quasi impossibile farlo partire.
+        if (e.target.closest(".device-card, button, input, textarea, a, select, [contenteditable]")) return;
+        // Click sulla scrollbar verticale: lasciarlo allo scroll nativo
+        const crect = container.getBoundingClientRect();
+        if (e.clientX > crect.left + container.clientWidth) return;
+
         e.preventDefault();
         startX = e.clientX;
         startY = e.clientY;
-        isDragging = true;
-
-        band = document.createElement("div");
-        band.className = "rubberband";
-        band.style.left = startX + "px";
-        band.style.top = startY + "px";
-        band.style.width = "0px";
-        band.style.height = "0px";
-        document.body.appendChild(band);
+        additive = e.ctrlKey || e.metaKey;
+        pending = true;
     });
 
     document.addEventListener("mousemove", (e) => {
-        if (!isDragging || !band) return;
-        const left = Math.min(startX, e.clientX);
-        const top = Math.min(startY, e.clientY);
+        if (!pending && !isDragging) return;
         const width = Math.abs(e.clientX - startX);
         const height = Math.abs(e.clientY - startY);
-        band.style.left = left + "px";
-        band.style.top = top + "px";
+        if (pending) {
+            // Sotto soglia e' ancora un click: non creare il rettangolo
+            if (width < THRESHOLD && height < THRESHOLD) return;
+            pending = false;
+            isDragging = true;
+            band = document.createElement("div");
+            band.className = "rubberband";
+            document.body.appendChild(band);
+        }
+        band.style.left = Math.min(startX, e.clientX) + "px";
+        band.style.top = Math.min(startY, e.clientY) + "px";
         band.style.width = width + "px";
         band.style.height = height + "px";
     });
 
-    document.addEventListener("mouseup", (e) => {
+    document.addEventListener("mouseup", () => {
+        if (pending) { pending = false; return; }
         if (!isDragging || !band) return;
         isDragging = false;
         const bandRect = band.getBoundingClientRect();
         band.remove();
         band = null;
 
-        if (bandRect.width < 5 || bandRect.height < 5) return;
+        const hit = new Set();
+        const visibleSerials = new Set();
+        grid.querySelectorAll(".device-cell").forEach((cell) => {
+            const serial = cell.dataset.serial;
+            visibleSerials.add(serial);
+            if (intersect(bandRect, cell.getBoundingClientRect())) {
+                hit.add(serial);
+            }
+        });
 
-        const cells = grid.querySelectorAll(".device-cell");
-        cells.forEach((cell) => {
-            const cellRect = cell.getBoundingClientRect();
-            if (intersect(bandRect, cellRect)) {
-                const serial = cell.dataset.serial;
+        if (additive) {
+            // Ctrl+drag: aggiunge alla selezione esistente
+            hit.forEach((serial) => {
                 const dev = state.devices.find((d) => d.serial === serial);
                 if (dev && !dev.selected) {
                     wsSend({ action: "select", serial, selected: true });
                 }
-            }
-        });
+            });
+        } else {
+            // Drag normale: la selezione diventa quella del rettangolo,
+            // ma solo tra i device visibili (quelli filtrati fuori non
+            // vengono toccati).
+            state.devices.forEach((dev) => {
+                if (!visibleSerials.has(dev.serial)) return;
+                const want = hit.has(dev.serial);
+                if (!!dev.selected !== want) {
+                    wsSend({ action: "select", serial: dev.serial, selected: want });
+                }
+            });
+        }
+    });
+
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && (pending || isDragging)) cancel();
     });
 }
 
@@ -2079,6 +2350,66 @@ async function initSettings() {
                 toast("Errore cambio modalità", "error");
             } finally {
                 btnSlotMode.disabled = false;
+            }
+        });
+    }
+
+    // Modalità Panda: replica la config osservata su Panda (touping):
+    // 480p, pochi fps, bitrate minimo e soprattutto encoder SOFTWARE
+    // OMX.google.h264.encoder che non crasha mai. Stream quasi statici
+    // ma sempre vivi — ideale con tanti device su hub USB.
+    const PANDA_PRESET = { max_fps: 2, max_size: 480, bit_rate: 50000, software_encoder: true };
+    const btnPandaMode = document.getElementById("btnPandaMode");
+    let pandaMode = localStorage.getItem("griddroid_panda_mode") === "1";
+    let savedQualityPanda = null;
+
+    const renderPandaMode = () => {
+        if (!btnPandaMode) return;
+        btnPandaMode.textContent = pandaMode
+            ? "🐼 Modalità Panda: ON"
+            : "🐼 Modalità Panda: OFF";
+        btnPandaMode.classList.toggle("btn-accent", pandaMode);
+    };
+    renderPandaMode();
+
+    if (btnPandaMode) {
+        btnPandaMode.addEventListener("click", async () => {
+            pandaMode = !pandaMode;
+            localStorage.setItem("griddroid_panda_mode", pandaMode ? "1" : "0");
+            btnPandaMode.disabled = true;
+            try {
+                let stream;
+                if (pandaMode) {
+                    savedQualityPanda = {
+                        max_fps: parseInt(maxFps?.value) || 30,
+                        max_size: parseInt(maxSize?.value) || 1080,
+                        software_encoder: false,
+                    };
+                    stream = { ...PANDA_PRESET };
+                } else {
+                    stream = savedQualityPanda || { max_fps: 30, max_size: 1080, software_encoder: false };
+                }
+                await fetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ stream }),
+                });
+                if (maxFps) maxFps.value = stream.max_fps;
+                if (maxSize) maxSize.value = stream.max_size;
+                await fetch("/api/settings/apply-stream", { method: "POST" });
+                renderPandaMode();
+                toast(
+                    pandaMode
+                        ? "Modalità Panda attiva: encoder software, stream ultra-leggeri"
+                        : "Modalità Panda disattivata: qualità ripristinata",
+                    "success"
+                );
+            } catch (e) {
+                pandaMode = !pandaMode;
+                localStorage.setItem("griddroid_panda_mode", pandaMode ? "1" : "0");
+                toast("Errore cambio modalità", "error");
+            } finally {
+                btnPandaMode.disabled = false;
             }
         });
     }
@@ -2389,7 +2720,9 @@ function initHeaderButtons() {
     if (gridContainer && "ResizeObserver" in window) {
         const resizeObserver = new ResizeObserver(() => {
             updateGridColumns();
-            scheduleAdaptiveQuality();
+            // NOTA: non chiamare scheduleAdaptiveQuality() qui:
+            // il ridimensionamento/zoom deve scalare il CSS, non riavviare
+            // lo stream di ogni dispositivo (saturation ADB con 25+ device).
         });
         resizeObserver.observe(gridContainer);
     }
@@ -2651,7 +2984,8 @@ function applyZoom() {
     const label = document.getElementById("zoomLabel");
     if (label) label.textContent = Math.round(state.feedZoom * 100) + "%";
     updateGridColumns();
-    scheduleAdaptiveQuality();
+    // NON rinegoziare la risoluzione dello stream al zoom: basta lo scaling
+    // CSS. Riavviare scrcpy per ogni cambio zoom suona la saturazione ADB.
 }
 
 function initZoomControls() {
@@ -3623,7 +3957,9 @@ function initContextMenu() {
                     if (!tap) {
                         toast("Tocca prima un punto sul telefono: l'auto-clicker cliccherà lì", "error");
                     } else {
-                        wsSend({ action: "autoclick_start", serial, x: tap.x, y: tap.y, interval_ms: 1000 });
+                        const interval = parseInt(prompt("Intervallo tra click (ms)?", "1000"), 10) || 1000;
+                        const count = parseInt(prompt("Numero di click (0 = infinito)?", "0"), 10) || 0;
+                        wsSend({ action: "autoclick_start", serial, x: tap.x, y: tap.y, interval_ms: Math.max(150, interval), count });
                         toast(`Auto-click avviato su ${dev.display_name}`, "success");
                     }
                 }

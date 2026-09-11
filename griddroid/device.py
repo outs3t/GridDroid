@@ -16,6 +16,15 @@ class DeviceStatus(str, enum.Enum):
     DISCONNECTED = "disconnected"
 
 
+# Seriali che l'utente ha esplicitamente messo a schermo spento.
+# Serve allo stream engine: a ogni riavvio di scrcpy manda KEYCODE_WAKEUP
+# per garantire un display attivo, e cosi' risvegliava i device appena
+# bloccati (il blocco schermo sembrava fallire a caso). Vive qui perche'
+# device.py e' importabile sia da adb_manager che da stream_engine senza
+# creare cicli di import.
+SCREEN_OFF_REQUESTED: set = set()
+
+
 @dataclass
 class DeviceInfo:
     """Informazioni statiche ricavate da ADB."""
@@ -31,7 +40,9 @@ class DeviceState:
     """Stato runtime di un singolo dispositivo nella farm."""
     info: DeviceInfo
     label: str = ""
+    label_color: str = ""
     tags: List[str] = field(default_factory=list)
+    order: int = 0
     status: DeviceStatus = DeviceStatus.DISCONNECTED
     screen_on: bool = True
     battery_level: int = -1
@@ -62,7 +73,9 @@ class DeviceState:
         return {
             "serial": self.serial,
             "label": self.label,
+            "label_color": self.label_color,
             "tags": self.tags,
+            "order": self.order,
             "model": self.info.model,
             "product": self.info.product,
             "usb_port": self.info.usb_port,

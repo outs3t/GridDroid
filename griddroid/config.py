@@ -24,6 +24,9 @@ SKIPPED_FILE = CONFIG_DIR / "skipped.json"
 BALANCES_FILE = CONFIG_DIR / "balances.csv"
 LEDGER_FILE = CONFIG_DIR / "saldi_ledger.csv"
 KNOWN_FILE = CONFIG_DIR / "known.json"
+DEVICE_OVERRIDES_FILE = CONFIG_DIR / "device_overrides.json"
+LABEL_COLORS_FILE = CONFIG_DIR / "label_colors.json"
+DEVICE_ORDER_FILE = CONFIG_DIR / "device_order.json"
 
 
 def _find_bundled_adb() -> str:
@@ -93,10 +96,16 @@ def _find_running_adb(exclude: str = "") -> str:
 
 class StreamSettings(BaseModel):
     """Parametri di streaming video."""
-    max_fps: int = Field(default=30, ge=1, le=60)
-    max_size: int = Field(default=1080, ge=240, le=1920)
-    bit_rate: int = Field(default=8_000_000, ge=500_000, le=20_000_000)
+    # Profilo bilanciato: 600p@5fps con encoder software.
+    # Piu' fluido del profilo Panda (480p@2fps) ma ancora stabile
+    # grazie all'encoder software, che non crasha su farm dense.
+    max_fps: int = Field(default=5, ge=1, le=60)
+    max_size: int = Field(default=600, ge=240, le=1920)
+    bit_rate: int = Field(default=100_000, ge=50_000, le=20_000_000)
     video_codec: str = Field(default="h264")
+    # Encoder software OMX.google.h264.encoder: piu' lento ma non crasha
+    # mai — e' la scelta di Panda per la stabilita' su farm dense.
+    software_encoder: bool = Field(default=True)
     max_concurrent_stream_starts: int = Field(default=4, ge=1, le=32)
 
 
@@ -147,6 +156,32 @@ def load_settings() -> AppSettings:
     # pulsante "Apri porta firewall" nell'interfaccia.
     if settings.host in ("127.0.0.1", "localhost", "::1"):
         settings.host = "0.0.0.0"
+
+    # Migrazione una tantum: le config salvate coi vecchi default troppo
+    # aggressivi (30fps/1080/8Mbps) vengono forzate al profilo Panda,
+    # altrimenti l'utente si ritrova subito i log pieni di crash encoder.
+    s = settings.stream
+    if (
+        s.max_fps >= 30
+        and s.max_size >= 1080
+        and s.bit_rate >= 8_000_000
+    ):
+        s.max_fps = 2
+        s.max_size = 480
+        s.bit_rate = 50_000
+        s.software_encoder = True
+
+    # Migrazione 0.1.88: sposta le installazioni dal profilo Panda 480/2/50k
+    # al nuovo profilo bilanciato 600/5/100k per piu' fluidita' e qualita'.
+    if (
+        s.max_size <= 480
+        and s.max_fps <= 2
+        and s.bit_rate <= 50_000
+    ):
+        s.max_fps = 5
+        s.max_size = 600
+        s.bit_rate = 100_000
+        s.software_encoder = True
 
     save_settings(settings)
     return settings
@@ -288,4 +323,50 @@ def save_known(known: Dict[str, dict]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     KNOWN_FILE.write_text(
         json.dumps(known, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_device_overrides() -> Dict[str, dict]:
+    """Carica gli override video per singolo device."""
+    if DEVICE_OVERRIDES_FILE.exists():
+        return json.loads(DEVICE_OVERRIDES_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_device_overrides(overrides: Dict[str, dict]) -> None:
+    """Salva gli override video per singolo device."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    DEVICE_OVERRIDES_FILE.write_text(
+        json.dumps(overrides, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_label_colors() -> Dict[str, str]:
+    """Carica i colori delle etichette per singolo device."""
+    if LABEL_COLORS_FILE.exists():
+        return json.loads(LABEL_COLORS_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_label_colors(colors: Dict[str, str]) -> None:
+    """Salva i colori delle etichette per singolo device."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    LABEL_COLORS_FILE.write_text(
+        json.dumps(colors, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_device_order() -> Dict[str, int]:
+    """Carica l'ordine manuale dei device."""
+    if DEVICE_ORDER_FILE.exists():
+        data = json.loads(DEVICE_ORDER_FILE.read_text(encoding="utf-8"))
+        return {k: int(v) for k, v in data.items()}
+    return {}
+
+
+def save_device_order(order: Dict[str, int]) -> None:
+    """Salva l'ordine manuale dei device."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    DEVICE_ORDER_FILE.write_text(
+        json.dumps(order, indent=2, ensure_ascii=False), encoding="utf-8"
     )
