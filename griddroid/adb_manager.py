@@ -344,7 +344,7 @@ class AdbManager:
         "williamhill": "William Hill", "bwin": "Bwin",
         "pokerstars": "PokerStars", "888": "888", "unibet": "Unibet",
         "betway": "Betway", "leovegas": "LeoVegas", "admiral": "AdmiralBet",
-        "betsson": "Betsson", "netbet": "NetBet", "fantasyteam": "FantasyTeam",
+        "betsson": "Betsson", "daznbet": "DaznBet", "netbet": "NetBet", "fantasyteam": "FantasyTeam",
         "betclic": "Betclic", "novibet": "Novibet", "stake": "Stake",
     }
 
@@ -389,7 +389,7 @@ class AdbManager:
         for key, name in self._BOOKMAKERS.items():
             if key in low:
                 return name
-        return package
+        return ""
 
     # ------------------------------------------------------------------
     # Auto-lettura saldi in background
@@ -484,8 +484,11 @@ class AdbManager:
         # DOM via DevTools Protocol: precisione assoluta, niente parsing
         # dell'albero accessibility. Fallisce in fretta se Chrome non c'e'.
         cdp = await self._saldo_via_cdp(serial)
+        if cdp.get("bookmaker"):
+            info["bookmaker"] = cdp["bookmaker"]
         if cdp.get("saldo"):
-            info.update(cdp)
+            info["saldo"] = cdp["saldo"]
+            info["username"] = cdp.get("username", "")
             logs.info(
                 f"Saldo {info['saldo']} via CDP "
                 f"in {time.monotonic() - t0:.1f}s",
@@ -532,10 +535,12 @@ class AdbManager:
         # --- Bookmaker: il package dell'app in foreground e' gia' nei nodi
         # del dump (attributo package=) — niente dumpsys separato.
         pkgs = re.findall(r'package="([^"]+)"', xml)
-        if pkgs:
+        if pkgs and not info.get("bookmaker"):
             # Il package piu' frequente e' quello dell'app a schermo
             pkg = max(set(pkgs), key=pkgs.count)
-            info["bookmaker"] = self._bookmaker_from_package(pkg)
+            bm = self._bookmaker_from_package(pkg)
+            if bm:
+                info["bookmaker"] = bm
 
         # --- Saldo ---
         # 0) Posizione: il numero accanto al simbolo € sulla stessa riga.
@@ -850,7 +855,7 @@ class AdbManager:
     const t = vis(el);
     if (t && t.length < 40) { const v = pick(t); if (v) return out(v); }
   }
-  return null;
+  return {saldo: null, site: location.hostname};
 })()
 """
 
@@ -939,19 +944,25 @@ class AdbManager:
                             .get("result", {})
                             .get("value")
                         )
-                        if not isinstance(val, dict) or not val.get("saldo"):
+                        if not isinstance(val, dict) or (
+                            not val.get("saldo") and not val.get("site")
+                        ):
                             return empty
-                        num = re.search(
-                            r"[0-9]+(?:[.,][0-9]+)*[.,][0-9]{1,2}\b",
-                            val["saldo"],
-                        )
-                        saldo = (
-                            self._normalize_amount(num.group(0)) if num else None
-                        )
+                        saldo_val = val.get("saldo")
+                        saldo = None
+                        if saldo_val:
+                            num = re.search(
+                                r"[0-9]+(?:[.,][0-9]+)*[.,][0-9]{1,2}\b",
+                                str(saldo_val),
+                            )
+                            saldo = (
+                                self._normalize_amount(num.group(0)) if num else None
+                            )
                         site = (val.get("site") or "").replace("www.", "")
+                        bookmaker = self._bookmaker_from_package(site) if site else ""
                         return {
                             "saldo": saldo,
-                            "bookmaker": site.split(".")[0].upper() if site else "",
+                            "bookmaker": bookmaker,
                             "username": "",
                         }
 
