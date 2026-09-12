@@ -589,24 +589,39 @@ class AdbManager:
         return info
 
     async def _sync_balance(self, serial: str, info: dict) -> None:
-        """Spedisce il saldo letto a Ledger se configurato."""
+        """Spedisce il saldo letto a Ledger se configurato.
+
+        Priorita':
+        1. ledger_account_map[serial] -> aggiornamento diretto per accountId.
+        2. ledger_user_id + nome telefono + bookmaker -> ricerca su Ledger.
+        """
         url = self._settings.ledger_sync_url
         token = self._settings.ledger_sync_token
         if not url or not token:
             return
         if not info.get("saldo"):
             return
+
         account_id = self._settings.ledger_account_map.get(serial)
-        if not account_id:
+        user_id = self._settings.ledger_user_id
+        if not account_id and not user_id:
             return
 
-        payload = {
-            "accountId": account_id,
+        dev = self._devices.get(serial)
+        nome = dev.display_name if dev else serial
+
+        payload: dict = {
             "saldo": float(info["saldo"]),
             "bookmaker": info.get("bookmaker", ""),
             "username": info.get("username", ""),
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
+        if account_id:
+            payload["accountId"] = account_id
+        else:
+            payload["userId"] = user_id
+            payload["nome"] = nome
+
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             url,

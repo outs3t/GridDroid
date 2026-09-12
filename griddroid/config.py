@@ -160,6 +160,7 @@ class AppSettings(BaseSettings):
     # Sincronizzazione saldi verso Ledger (Next.js app esterna)
     ledger_sync_url: str = ""
     ledger_sync_token: str = ""
+    ledger_user_id: str = ""
     ledger_account_map: Dict[str, str] = Field(default_factory=dict)
     stream: StreamSettings = Field(default_factory=StreamSettings)
 
