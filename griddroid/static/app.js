@@ -3687,6 +3687,89 @@ function initBalances() {
     _balancesTimer = setInterval(fetchBalances, 10000);
 }
 
+async function fetchLedgerNicknames() {
+    try {
+        const res = await fetch("/api/ledger/nicknames");
+        const data = await res.json();
+        const sel = document.getElementById("ledgerNickname");
+        if (!sel) return;
+        sel.innerHTML = '<option value="">Seleziona utente...</option>';
+        (data.nicknames || []).forEach(n => {
+            const opt = document.createElement("option");
+            opt.value = n;
+            opt.textContent = n;
+            sel.appendChild(opt);
+        });
+    } catch (e) { /* silenzioso */ }
+}
+
+function logLedgerSync(text) {
+    const el = document.getElementById("ledgerSyncLog");
+    if (!el) return;
+    const line = document.createElement("div");
+    line.textContent = `${new Date().toLocaleTimeString()} ${text}`;
+    el.appendChild(line);
+    while (el.children.length > 20) el.removeChild(el.firstChild);
+    el.scrollTop = el.scrollHeight;
+}
+
+async function syncLedgerUser() {
+    const sel = document.getElementById("ledgerNickname");
+    const nickname = sel?.value;
+    if (!nickname) {
+        logLedgerSync("Seleziona un utente");
+        return;
+    }
+    logLedgerSync(`Sincronizzo ${nickname}...`);
+    try {
+        const res = await fetch("/api/ledger/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ nickname }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+            logLedgerSync(`OK ${nickname} ${data.bookmaker} ${data.saldo} → Ledger`);
+            fetchBalances();
+        } else {
+            logLedgerSync(`ERRORE ${nickname}: ${data.error}`);
+        }
+    } catch (e) {
+        logLedgerSync(`ERRORE rete: ${e.message}`);
+    }
+}
+
+async function syncLedgerAll() {
+    logLedgerSync("Sincronizzo tutti...");
+    try {
+        const res = await fetch("/api/ledger/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ all: true }),
+        });
+        const data = await res.json();
+        logLedgerSync(data.message || "completato");
+        (data.results || []).forEach(r => {
+            const msg = r.ok
+                ? `OK ${r.nickname} ${r.bookmaker} ${r.saldo}`
+                : `ERRORE ${r.nickname}: ${r.error}`;
+            logLedgerSync(msg);
+        });
+        fetchBalances();
+    } catch (e) {
+        logLedgerSync(`ERRORE rete: ${e.message}`);
+    }
+}
+
+function initLedgerSync() {
+    const sel = document.getElementById("ledgerNickname");
+    const btnUser = document.getElementById("btnSyncLedgerUser");
+    const btnAll = document.getElementById("btnSyncLedgerAll");
+    if (sel) fetchLedgerNicknames();
+    if (btnUser) btnUser.addEventListener("click", syncLedgerUser);
+    if (btnAll) btnAll.addEventListener("click", syncLedgerAll);
+}
+
 function initGroups() {
     const input = document.getElementById("newGroupName");
     const btn = document.getElementById("btnCreateGroup");
@@ -4177,6 +4260,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initMacro();
     initBookmakers();
     initBalances();
+    initLedgerSync();
     initSettings();
     initGroups();
     initSelection();

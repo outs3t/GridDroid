@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -482,6 +482,33 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 "Content-Disposition": f'attachment; filename="saldi_ledger{book}_{stamp}.csv"'
             },
         )
+
+    @app.get("/api/ledger/nicknames")
+    async def ledger_nicknames():
+        """Nickname caricati dal CSV Ledger per la UI di sincronizzazione."""
+        return {"nicknames": adb.get_ledger_nicknames()}
+
+    @app.post("/api/ledger/sync")
+    async def ledger_sync(request: Request):
+        """Sincronizza il saldo del telefono di un nickname, o di tutti."""
+        body = await request.json()
+        all_flag = body.get("all") is True
+        nickname = (body.get("nickname") or "").strip()
+
+        if all_flag:
+            results = await adb.sync_ledger_all()
+            ok = all(r.get("ok") for r in results)
+            return {
+                "ok": ok,
+                "results": results,
+                "message": f"Sincronizzati {sum(1 for r in results if r.get('ok'))}/{len(results)}",
+            }
+
+        if not nickname:
+            raise HTTPException(status_code=400, detail="nickname mancante")
+
+        result = await adb.sync_ledger_user(nickname)
+        return result
 
     @app.post("/api/devices/{serial}/screen-on")
     async def screen_on(serial: str):

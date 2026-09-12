@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import os
 import random
@@ -22,6 +23,7 @@ else:
 
 from .config import (
     AppSettings,
+    CONFIG_DIR,
     _adb_executable_works,
     _find_running_adb,
     load_labels,
@@ -160,10 +162,36 @@ class AdbManager:
         # Cache saldi: serial -> {data, timestamp}; TTL 300s
         self._balance_cache: Dict[str, dict] = {}
         self._balance_cache_ttl: float = 300.0
+        # Tabella conti Ledger caricata da CSV: usata per sync manuale
+        # utente/bookmaker -> accountId
+        self._ledger_accounts: List[dict] = []
+        self._ledger_account_map: Dict[tuple, str] = {}
+        self._load_ledger_csv()
 
-    # ------------------------------------------------------------------
-    # Proprieta' pubbliche
-    # ------------------------------------------------------------------
+    def _load_ledger_csv(self) -> None:
+        """Carica il CSV esportato da Ledger se esiste in .griddroid."""
+        try:
+            csv_name = self._settings.ledger_accounts_csv
+            if not csv_name:
+                return
+            csv_path = CONFIG_DIR / csv_name
+            if not csv_path.is_absolute():
+                csv_path = CONFIG_DIR / csv_path
+            if not csv_path.exists():
+                return
+            with open(csv_path, "r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                self._ledger_accounts = list(reader)
+            for row in self._ledger_accounts:
+                nick = row.get("nickname", "").strip().lower()
+                book = row.get("bookmaker", "").strip().lower()
+                if nick and book:
+                    self._ledger_account_map[(nick, book)] = row.get("accountId", "").strip()
+            logs.info(
+                f"Caricati {len(self._ledger_accounts)} conti Ledger da CSV"
+            )
+        except Exception as exc:
+            logs.warn(f"Errore caricamento CSV Ledger: {exc}")
 
     @property
     def devices(self) -> Dict[str, DeviceState]:
@@ -588,12 +616,15 @@ class AdbManager:
             await self._sync_balance(serial, info)
         return info
 
-    async def _sync_balance(self, serial: str, info: dict) -> None:
+    async def _sync_balance(
+        self, serial: str, info: dict, account_id: Optional[str] = None
+    ) -> None:
         """Spedisce il saldo letto a Ledger se configurato.
 
         Priorita':
-        1. ledger_account_map[serial] -> aggiornamento diretto per accountId.
-        2. ledger_user_id + nome telefono + bookmaker -> ricerca su Ledger.
+        1. account_id passato esplicitamente (sync manuale da CSV).
+        2. ledger_account_map[serial] -> aggiornamento diretto per accountId.
+        3. ledger_user_id + nome telefono + bookmaker -> ricerca su Ledger.
         """
         url = self._settings.ledger_sync_url
         token = self._settings.ledger_sync_token
@@ -602,7 +633,8 @@ class AdbManager:
         if not info.get("saldo"):
             return
 
-        account_id = self._settings.ledger_account_map.get(serial)
+        if account_id is None:
+            account_id = self._settings.ledger_account_map.get(serial)
         user_id = self._settings.ledger_user_id
         if not account_id and not user_id:
             return
@@ -639,6 +671,90 @@ class AdbManager:
             logs.info("Saldo sincronizzato con Ledger", serial=serial)
         except Exception as exc:
             logs.warn(f"Sincronizzazione Ledger fallita: {exc}", serial=serial)
+
+    def get_ledger_nicknames(self) -> List[str]:
+        """Restituisce i nickname unici caricati dal CSV Ledger."""
+        nicks = {r.get("nickname", "").strip() for r in self._ledger_accounts}
+        return sorted(n for n in nicks if n)
+
+    def _serial_by_display_name(self, name: str) -> Optional[str]:
+        """Trova il serial del device attualmente online con quel nome."""
+        target = name.strip().lower()
+        for serial, dev in self._devices.items():
+            if dev.display_name and dev.display_name.strip().lower() == target:
+                return serial
+        return None
+
+    async def sync_ledger_user(self, nickname: str) -> dict:
+        """Legge il saldo dallo schermo del telefono di 'nickname' e lo sincronizza
+        con l'account Ledger corrispondente al bookmaker attualmente aperto."""
+        serial = self._serial_by_display_name(nickname)
+        if not serial:
+            return {
+                "ok": False,
+                "error": f"Telefono '{nickname}' non online o nome non trovato",
+                "nickname": nickname,
+            }
+
+        dev = self._devices.get(serial)
+        if not dev or dev.status.name != "ONLINE":
+            return {
+                "ok": False,
+                "error": f"Telefono '{nickname}' non online",
+                "nickname": nickname,
+                "serial": serial,
+            }
+
+        info = await self.read_account_info(serial, force_refresh=True)
+        if not info.get("saldo"):
+            return {
+                "ok": False,
+                "error": "Saldo non trovato a schermo",
+                "nickname": nickname,
+                "serial": serial,
+            }
+
+        bookmaker = (info.get("bookmaker") or "").strip().lower()
+        account_id = self._ledger_account_map.get((nickname.strip().lower(), bookmaker))
+        if not account_id:
+            return {
+                "ok": False,
+                "error": f"Nessun conto CSV per {nickname} + {bookmaker}",
+                "nickname": nickname,
+                "serial": serial,
+                "bookmaker": bookmaker,
+            }
+
+        await self._sync_balance(serial, info, account_id=account_id)
+        return {
+            "ok": True,
+            "nickname": nickname,
+            "serial": serial,
+            "bookmaker": bookmaker,
+            "saldo": info["saldo"],
+            "accountId": account_id,
+        }
+
+    async def sync_ledger_all(self) -> List[dict]:
+        """Sincronizza tutti i telefoni online il cui nome è un nickname del CSV.
+
+        Ogni telefono viene letto una sola volta: viene sincronizzato il bookmaker
+        che l'utente ha aperto sullo schermo in quel momento.
+        """
+        nicks = self.get_ledger_nicknames()
+        results: List[dict] = []
+        for nickname in nicks:
+            serial = self._serial_by_display_name(nickname)
+            if not serial:
+                results.append({
+                    "ok": False,
+                    "error": "Telefono non online",
+                    "nickname": nickname,
+                })
+                continue
+            res = await self.sync_ledger_user(nickname)
+            results.append(res)
+        return results
 
     def _saldo_from_position(self, xml: str) -> Optional[str]:
         """Saldo per posizione: il numero accanto al simbolo €.

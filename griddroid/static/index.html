@@ -278,6 +278,19 @@
                         <div id="balancesTable" class="balances-table"></div>
                         <div id="balancesSummary" class="balances-summary" style="margin-top:10px;font-size:12px;color:var(--text-2);"></div>
                     </div>
+                    <div class="sidebar-section" style="margin-top:14px;">
+                        <h4>Sincronizza con Ledger</h4>
+                        <div style="display:flex;gap:6px;margin-bottom:10px;flex-direction:column;">
+                            <select id="ledgerNickname" style="padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);">
+                                <option value="">Seleziona utente...</option>
+                            </select>
+                            <div style="display:flex;gap:6px;">
+                                <button class="btn btn-accent" id="btnSyncLedgerUser" style="flex:1;">Sincronizza utente</button>
+                                <button class="btn" id="btnSyncLedgerAll">Sincronizza tutti</button>
+                            </div>
+                        </div>
+                        <div id="ledgerSyncLog" style="font-size:12px;color:var(--text-2);max-height:120px;overflow:auto;"></div>
+                    </div>
                 </div>
             </div>
         </div>

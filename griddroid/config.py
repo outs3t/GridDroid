@@ -162,6 +162,8 @@ class AppSettings(BaseSettings):
     ledger_sync_token: str = ""
     ledger_user_id: str = ""
     ledger_account_map: Dict[str, str] = Field(default_factory=dict)
+    # CSV esportato da Ledger: nickname,bookmaker,accountId,...
+    ledger_accounts_csv: str = "ledger_accounts.csv"
     stream: StreamSettings = Field(default_factory=StreamSettings)
 
     class Config:
