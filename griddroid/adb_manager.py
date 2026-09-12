@@ -10,6 +10,7 @@ import re
 import shutil
 import socket
 import time
+import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -462,6 +463,7 @@ class AdbManager:
                 f"in {time.monotonic() - t0:.1f}s",
                 serial=serial,
             )
+            await self._sync_balance(serial, info)
             return info
 
         # --- Canale 2: accessibility tree (uiautomator dump) ---
@@ -583,7 +585,45 @@ class AdbManager:
                 "data": info,
                 "timestamp": time.monotonic(),
             }
+            await self._sync_balance(serial, info)
         return info
+
+    async def _sync_balance(self, serial: str, info: dict) -> None:
+        """Spedisce il saldo letto a Ledger se configurato."""
+        url = self._settings.ledger_sync_url
+        token = self._settings.ledger_sync_token
+        if not url or not token:
+            return
+        if not info.get("saldo"):
+            return
+        account_id = self._settings.ledger_account_map.get(serial)
+        if not account_id:
+            return
+
+        payload = {
+            "accountId": account_id,
+            "saldo": float(info["saldo"]),
+            "bookmaker": info.get("bookmaker", ""),
+            "username": info.get("username", ""),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": token,
+            },
+            method="POST",
+        )
+        try:
+            await asyncio.to_thread(
+                urllib.request.urlopen, req, timeout=10.0
+            )
+            logs.info("Saldo sincronizzato con Ledger", serial=serial)
+        except Exception as exc:
+            logs.warn(f"Sincronizzazione Ledger fallita: {exc}", serial=serial)
 
     def _saldo_from_position(self, xml: str) -> Optional[str]:
         """Saldo per posizione: il numero accanto al simbolo €.

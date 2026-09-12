@@ -157,6 +157,10 @@ class AppSettings(BaseSettings):
     start_with_windows: bool = False
     start_minimized: bool = False
     minimize_to_tray: bool = False
+    # Sincronizzazione saldi verso Ledger (Next.js app esterna)
+    ledger_sync_url: str = ""
+    ledger_sync_token: str = ""
+    ledger_account_map: Dict[str, str] = Field(default_factory=dict)
     stream: StreamSettings = Field(default_factory=StreamSettings)
 
     class Config:
