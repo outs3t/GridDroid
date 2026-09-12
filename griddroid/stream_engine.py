@@ -48,6 +48,9 @@ _NATIVE_SIZE_CACHE: Dict[str, tuple] = {}
 # Seriali su cui scrcpy-server.jar e' gia' stato copiato in questa sessione.
 _JAR_PUSHED: Set[str] = set()
 
+# Seriali per cui l'encoder hardware ha fallito: usiamo software.
+_HW_ENCODER_FAILED: Set[str] = set()
+
 
 def _degrade_factor(level: int) -> Tuple[float, float]:
     """Ritorna (fattore_fps, fattore_bitrate) per il livello di degradazione."""
@@ -272,6 +275,15 @@ class DeviceStream:
             # resta aperto ma non arrivano piu' frame. Chiudiamo il writer per
             # sbloccare read() e far ripartire lo stream subito.
             if "Capture/encoding error" in text and self._writer is not None:
+                # Se stavamo usando l'encoder hw, alla prossima occasione
+                # proviamo con software per questo seriale.
+                if self.serial not in _HW_ENCODER_FAILED and not getattr(self._settings.stream, "software_encoder", False):
+                    _HW_ENCODER_FAILED.add(self.serial)
+                    logs.warn(
+                        f"Encoder hw fallito per {self.serial}, "
+                        "prossimo tentativo con software",
+                        serial=self.serial,
+                    )
                 try:
                     self._writer.close()
                 except Exception:
@@ -512,17 +524,19 @@ class DeviceStream:
         # su fullscreen / alta qualita': 480@2fps come riferimento.
         factor = (max_size / 480.0) ** 2 * (max(max_fps, 1) / 2.0)
         bit_rate = int(base_bit_rate * factor)
-        # Panda usa bitrate molto bassi con encoder software; teniamo un
-        # tetto per non sovraccaricare l'encoder e l'USB su farm dense.
-        max_bit_rate = 1_000_000 if getattr(s, "software_encoder", False) else 8_000_000
+        # Encoder: default hardware per latenza minima. Se l'hw di un
+        # dispositivo e' gia' crashato, torniamo a software per quel
+        # seriale. Stesso tetto bitrate del sw per non sovraccaricare.
+        use_software = (
+            getattr(s, "software_encoder", False)
+            or self.serial in _HW_ENCODER_FAILED
+        )
+        max_bit_rate = 1_000_000 if use_software else 8_000_000
         bit_rate = max(min(bit_rate, max_bit_rate), min(base_bit_rate, max_bit_rate))
         params = f"max_fps={max_fps} video_bit_rate={bit_rate} "
-        # Encoder SOFTWARE (OMX.google) invece di quello hardware: stessa
-        # scelta di Panda — piu' lento ma non crasha mai.
-        if getattr(s, "software_encoder", False):
+        # Encoder SOFTWARE (OMX.google) solo se esplicito o fallback.
+        if use_software:
             params += "video_encoder=OMX.google.h264.encoder "
-            # Panda non forza i-frame interval; evitiamo l'opzione che su
-            # alcuni encoder software blocca la produzione di frame.
         return params
 
     async def _watch_server_proc(self) -> None:

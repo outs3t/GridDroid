@@ -137,7 +137,7 @@ class StreamSettings(BaseModel):
     video_codec: str = Field(default="h264")
     # Encoder software OMX.google.h264.encoder: piu' lento ma non crasha
     # mai — e' la scelta di Panda per la stabilita' su farm dense.
-    software_encoder: bool = Field(default=True)
+    software_encoder: bool = Field(default=False)
     max_concurrent_stream_starts: int = Field(default=4, ge=1, le=32)
 
 
@@ -198,7 +198,7 @@ def load_settings() -> AppSettings:
         settings.host = "0.0.0.0"
 
     # Migrazione una tantum: le config salvate coi vecchi default troppo
-    # aggressivi (30fps/1080/8Mbps) vengono forzate al profilo Panda,
+    # aggressivi (30fps/1080/8Mbps) vengono forzate al profilo compatibile,
     # altrimenti l'utente si ritrova subito i log pieni di crash encoder.
     s = settings.stream
     if (
@@ -209,7 +209,7 @@ def load_settings() -> AppSettings:
         s.max_fps = 2
         s.max_size = 480
         s.bit_rate = 50_000
-        s.software_encoder = True
+        s.software_encoder = False
 
     # Migrazione 0.1.88: sposta le installazioni dal profilo Panda 480/2/50k
     # al nuovo profilo bilanciato 600/5/100k per piu' fluidita' e qualita'.
@@ -221,7 +221,7 @@ def load_settings() -> AppSettings:
         s.max_fps = 5
         s.max_size = 600
         s.bit_rate = 100_000
-        s.software_encoder = True
+        s.software_encoder = False
 
     save_settings(settings)
     return settings
