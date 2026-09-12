@@ -139,11 +139,11 @@ class InputRelay:
         """Fallback 'adb shell input tap' quando il canale nativo e' giu'."""
         nx, ny = self._scale_coords(serial, x, y, w, h)
         try:
-            # Timeout corti e lock_timeout: un click non puo' attendere 30s
+            # Timeout corti e lock timeout breve: un click non puo' attendere
             # che finisca un bulk shell di 25 device.
             await self._adb.shell(
                 serial, f"input tap {nx} {ny}",
-                timeout=3.0, lock_timeout=1.0,
+                timeout=3.0, lock_timeout=1.0, priority="input",
             )
             logs.info(f"Tap via adb fallback ({nx},{ny})", serial=serial)
         except Exception as exc:
@@ -159,7 +159,7 @@ class InputRelay:
         try:
             await self._adb.shell(
                 serial, f"input swipe {nx1} {ny1} {nx2} {ny2} {duration_ms}",
-                timeout=3.0, lock_timeout=1.0,
+                timeout=3.0, lock_timeout=1.0, priority="input",
             )
         except Exception as exc:
             logs.warn(f"Swipe fallback fallito: {exc}", serial=serial)

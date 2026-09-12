@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from .adb_manager import adb_cmd_lock, adb_server_args
+from .adb_manager import get_adb_cmd_lock, adb_server_args
 from .config import AppSettings, load_device_overrides, save_device_overrides
 from .control_channel import ControlChannel
 from .device import SCREEN_OFF_REQUESTED
@@ -146,6 +146,7 @@ class DeviceStream:
         self._task: Optional[asyncio.Task] = None
         self._log_task: Optional[asyncio.Task] = None
         self._watchdog_task: Optional[asyncio.Task] = None
+        self._control_monitor_task: Optional[asyncio.Task] = None
         self._native_width: int = 0
         self._native_height: int = 0
         self._tcp_port: int = 0
@@ -187,6 +188,7 @@ class DeviceStream:
         self._running = True
         self._last_heartbeat = time.monotonic()
         self._task = asyncio.create_task(self._run())
+        self._control_monitor_task = asyncio.create_task(self._monitor_control())
 
     async def stop(self) -> None:
         self._running = False
@@ -229,6 +231,13 @@ class DeviceStream:
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
             self._task = None
+        if self._control_monitor_task:
+            self._control_monitor_task.cancel()
+            try:
+                await asyncio.wait_for(self._control_monitor_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            self._control_monitor_task = None
 
     def subscribe(self) -> asyncio.Queue:
         # Coda da 1 frame: "last frame wins". Il client riceve SEMPRE il
@@ -321,7 +330,7 @@ class DeviceStream:
 
     async def _is_device_online(self) -> bool:
         adb = self._settings.adb_path or "adb"
-        async with adb_cmd_lock():
+        async with get_adb_cmd_lock():
             try:
                 proc = await asyncio.create_subprocess_exec(
                     adb, *adb_server_args(self.serial),
@@ -693,7 +702,7 @@ class DeviceStream:
     # ------------------------------------------------------------------
 
     async def _adb_exec(self, adb: str, *args: str, timeout: float = 30.0) -> str:
-        async with adb_cmd_lock():
+        async with get_adb_cmd_lock():
             proc = await asyncio.create_subprocess_exec(
                 adb, *adb_server_args(self.serial), "-s", self.serial, *args,
                 stdout=asyncio.subprocess.PIPE,
@@ -774,6 +783,27 @@ class DeviceStream:
         logs.info("Canale di controllo caduto: riconnessione...", serial=self.serial)
         await self._connect_control()
         return self._control
+
+    async def _monitor_control(self) -> None:
+        """Controlla ogni 5s che il canale di controllo sia attivo e lo
+        riconnette in background se e' caduto. Riduce la latenza dei click
+        perche' il canale e' gia' pronto quando serve."""
+        while self._running:
+            try:
+                await asyncio.sleep(5.0)
+                if not self._control or not self._control.alive:
+                    if self._running and self._tcp_port and self._writer:
+                        logs.info(
+                            "Canale di controllo spento: riconnessione...",
+                            serial=self.serial,
+                            throttle_s=30,
+                        )
+                        try:
+                            await self.ensure_control()
+                        except Exception as exc:
+                            logs.warn(f"Riconnessione controllo fallita: {exc}", serial=self.serial)
+            except Exception as exc:
+                logs.warn(f"Monitor controllo: {exc}", serial=self.serial)
 
     async def _remove_forward(self) -> None:
         if not self._tcp_port:

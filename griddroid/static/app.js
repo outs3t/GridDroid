@@ -859,10 +859,36 @@ function annexBToAVCC(data) {
     return result;
 }
 
+const _frameBuffers = new Map();
+
+function scheduleCanvasDraw(feedEl, serial, source, width, height) {
+    _frameBuffers.set(serial, { source, width, height });
+    if (feedEl._drawScheduled) return;
+    feedEl._drawScheduled = true;
+    requestAnimationFrame(() => {
+        feedEl._drawScheduled = false;
+        const f = _frameBuffers.get(serial);
+        if (!f) return;
+        _frameBuffers.delete(serial);
+        const ctx = feedEl.getContext('2d', { alpha: false });
+        if (!ctx) return;
+        if (feedEl.width !== f.width || feedEl.height !== f.height) {
+            feedEl.width = f.width;
+            feedEl.height = f.height;
+        }
+        ctx.drawImage(f.source, 0, 0, f.width, f.height);
+        try { f.source.close(); } catch (e) {}
+        feedEl.style.display = 'block';
+        const placeholder = feedEl.parentElement.querySelector('.device-feed-placeholder');
+        if (placeholder) placeholder.style.display = 'none';
+    });
+}
+
 function startStreamWs(feedEl, serial) {
     stopStreamWs(feedEl);
 
-    const useWebCodecs = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined";
+    const useWorker = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined" && typeof Worker !== "undefined";
+    const useWebCodecs = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined" && typeof Worker === "undefined";
 
     const placeholder = feedEl.parentElement.querySelector('.device-feed-placeholder');
     const iconEl = placeholder ? placeholder.querySelector('.icon') : null;
@@ -882,6 +908,31 @@ function startStreamWs(feedEl, serial) {
     ws.binaryType = "arraybuffer";
     session.ws = ws;
 
+    if (useWorker) {
+        const worker = new Worker('/static/decoder-worker.js?v=104');
+        let gotKey = false;
+        worker.onmessage = (event) => {
+            const msg = event.data;
+            if (msg.type === 'ready') {
+                console.log(`[Worker] decoder ready ${serial}`);
+            } else if (msg.type === 'frame') {
+                if (msg.bitmap) {
+                    scheduleCanvasDraw(feedEl, serial, msg.bitmap, msg.codedWidth, msg.codedHeight);
+                } else if (msg.frame) {
+                    scheduleCanvasDraw(feedEl, serial, msg.frame, msg.codedWidth, msg.codedHeight);
+                }
+            } else if (msg.type === 'error') {
+                console.error(`[Worker] ${serial}:`, msg.message);
+                ws.close();
+            }
+        };
+        worker.onerror = (err) => {
+            console.error(`[Worker] ${serial}:`, err);
+            ws.close();
+        };
+        session.worker = worker;
+    }
+
     if (useWebCodecs) {
         session.ctx = feedEl.getContext("2d", { alpha: false });
     } else if (typeof JMuxer === "undefined") {
@@ -900,6 +951,16 @@ function startStreamWs(feedEl, serial) {
 
         const isKey = data[0] === 1;
         const h264Data = data.subarray(1);
+
+        if (useWorker) {
+            if (session.worker) {
+                session.worker.postMessage({
+                    type: 'decode',
+                    payload: { isKey, data: h264Data },
+                });
+            }
+            return;
+        }
 
         if (useWebCodecs) {
             if (!session.configured) {
@@ -1058,8 +1119,10 @@ function stopStreamWs(feedEl) {
         try {
             if (session.jmuxer) session.jmuxer.destroy();
             if (session.decoder) session.decoder.close();
+            if (session.worker) { session.worker.terminate(); }
         } catch (e) { }
         delete streamSessions[serial];
+        _frameBuffers.delete(serial);
     }
     feedEl.dataset.wsActive = "";
     feedEl.dataset.wsRetryAt = Date.now() + 3000 + Math.random() * 3000;

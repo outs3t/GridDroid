@@ -361,30 +361,28 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             (s, d) for s, d in adb.devices.items()
             if d.status == DeviceStatus.ONLINE and (not wanted or s in wanted)
         ]
-        # In parallelo: in sequenza 26 device richiederebbero ~80s.
-        # Max 1 dump uiautomator alla volta + stagger: anche solo 2 dump
-        # paralleli sull'hub USB saturano ADB e fanno lampeggiare TUTTI gli
-        # stream scrcpy. 1 dump alla volta + 1s di pausa mantiene stabile.
-        sem = asyncio.Semaphore(1)
+        # Parallelizzazione: 2 dump uiautomator alla volta e' il massimo
+        # sicuro sugli hub USB testati; oltre satura ADB e fa lampeggiare
+        # gli stream. Configurabile via env GRIDDROID_BALANCE_WORKERS.
+        max_workers = max(1, int(os.environ.get("GRIDDROID_BALANCE_WORKERS", 2)))
+        sem = asyncio.Semaphore(max_workers)
         # Progresso esposto via /api/balances/progress per la barra in UI
         _balance_progress.update(
             {"running": True, "done": 0, "total": len(online), "current": ""}
         )
 
-        async def _read(serial, delay: float):
-            # Stagger: evita la raffica di 'adb shell uiautomator dump'
-            # nello stesso istante, che e' quella che ammazza gli stream.
-            if delay:
-                await asyncio.sleep(delay)
+        async def _read(serial):
+            # NO stagger: i worker partono subito, il semaforo limita 2-3
+            # dump attivi contemporaneamente.
             async with sem:
                 _balance_progress["current"] = serial
                 try:
-                    return await adb.read_account_info(serial)
+                    return await adb.read_account_info(serial, timeout=20.0, priority="state", force_refresh=True)
                 finally:
                     _balance_progress["done"] += 1
 
         infos = await asyncio.gather(
-            *(_read(s, i * 1.0) for i, (s, _) in enumerate(online)),
+            *(_read(s) for (s, _) in online),
             return_exceptions=True,
         )
         _balance_progress["running"] = False

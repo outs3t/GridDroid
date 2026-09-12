@@ -49,9 +49,10 @@ from .device import (
 from .log_manager import logs
 
 
-# Lock globale per serializzare i comandi ADB (piu' stabile su hub USB).
-# Creato lazy per evitare errori in fase di import senza event loop.
-_ADB_CMD_LOCK: Optional[asyncio.Lock] = None
+# Lock per categoria di comando ADB. Input (click) ha un lock separato dai
+# comandi shell lenti (lettura saldi, install) per non bloccare la UI.
+# 'state' per saldi, 'shell' per generico, 'input' per input.
+_ADB_CMD_LOCKS: Dict[str, asyncio.Lock] = {}
 
 # Oltre questo numero di poll consecutivi senza vedere un device smettiamo
 # di tentare 'adb reconnect': se non e' tornato entro ~5 minuti e' staccato
@@ -59,11 +60,11 @@ _ADB_CMD_LOCK: Optional[asyncio.Lock] = None
 _RECONNECT_MAX_MISSES = 9
 
 
-def adb_cmd_lock() -> asyncio.Lock:
-    global _ADB_CMD_LOCK
-    if _ADB_CMD_LOCK is None:
-        _ADB_CMD_LOCK = asyncio.Lock()
-    return _ADB_CMD_LOCK
+def get_adb_cmd_lock(priority: str = "shell") -> asyncio.Lock:
+    """Ritorna il lock ADB per la categoria data."""
+    if priority not in _ADB_CMD_LOCKS:
+        _ADB_CMD_LOCKS[priority] = asyncio.Lock()
+    return _ADB_CMD_LOCKS[priority]
 
 
 # Regex per parsare l'output di `adb devices -l`
@@ -155,6 +156,9 @@ class AdbManager:
         # Timestamp ultima auto-lettura per device (throttle: non ripetere
         # prima di 60s per non saturare adb)
         self._last_balance_read: Dict[str, float] = {}
+        # Cache saldi: serial -> {data, timestamp}; TTL 300s
+        self._balance_cache: Dict[str, dict] = {}
+        self._balance_cache_ttl: float = 300.0
 
     # ------------------------------------------------------------------
     # Proprieta' pubbliche
@@ -417,7 +421,13 @@ class AdbManager:
         except Exception as exc:
             logs.warn(f"Auto-lettura saldo fallita: {exc}", serial=serial, throttle_s=60)
 
-    async def read_account_info(self, serial: str) -> dict:
+    async def read_account_info(
+        self,
+        serial: str,
+        timeout: float = 15.0,
+        priority: str = "state",
+        force_refresh: bool = False,
+    ) -> dict:
         """Legge saldo, bookmaker e username visibili a schermo.
 
         Saldo: prima i nodi con parole chiave (saldo/balance/totale), poi gli
@@ -427,6 +437,18 @@ class AdbManager:
         """
         info = {"saldo": None, "bookmaker": "", "username": ""}
         t0 = time.monotonic()
+
+        # Cache: se i saldi sono recenti, non rompere il device.
+        if not force_refresh and serial in self._balance_cache:
+            cached = self._balance_cache[serial]
+            age = time.monotonic() - cached.get("timestamp", 0)
+            if age < self._balance_cache_ttl:
+                logs.info(
+                    f"Saldo da cache ({int(age)}s)",
+                    serial=serial,
+                    throttle_s=60,
+                )
+                return cached["data"]
 
         # --- Canale 1: CDP/DOM (Chrome in foreground) ---
         # Se il device ha Chrome aperto, il saldo si legge direttamente dal
@@ -449,7 +471,8 @@ class AdbManager:
         xml = ""
         try:
             out = await self.shell(
-                serial, "uiautomator dump /dev/stdout", timeout=15.0
+                serial, "uiautomator dump /dev/stdout",
+                timeout=timeout, priority=priority,
             )
             start = out.find("<hierarchy")
             end = out.rfind("</hierarchy>")
@@ -461,10 +484,12 @@ class AdbManager:
             # Fallback: metodo file (device dove /dev/stdout non va)
             try:
                 await self.shell(
-                    serial, "uiautomator dump /sdcard/griddroid_ui.xml", timeout=15.0
+                    serial, "uiautomator dump /sdcard/griddroid_ui.xml",
+                    timeout=timeout, priority=priority,
                 )
                 xml = await self.shell(
-                    serial, "cat /sdcard/griddroid_ui.xml", timeout=15.0
+                    serial, "cat /sdcard/griddroid_ui.xml",
+                    timeout=timeout, priority=priority,
                 )
             except Exception as exc:
                 logs.warn(f"Lettura saldo fallita: {exc}", serial=serial)
@@ -551,6 +576,13 @@ class AdbManager:
                 f"(CDP fallito, dump senza importi)",
                 serial=serial,
             )
+        # Salva in cache solo se abbiamo trovato un saldo, per non
+        # ritenere memorizzati valori mancanti.
+        if info.get("saldo"):
+            self._balance_cache[serial] = {
+                "data": info,
+                "timestamp": time.monotonic(),
+            }
         return info
 
     def _saldo_from_position(self, xml: str) -> Optional[str]:
@@ -948,6 +980,7 @@ class AdbManager:
         self, *args: str, serial: Optional[str] = None,
         timeout: float = 30.0, port: Optional[int] = None,
         lock_timeout: Optional[float] = None,
+        priority: str = "shell",
     ) -> Tuple[int, str, str]:
         """Esegue un comando ADB e ritorna (returncode, stdout, stderr).
 
@@ -956,7 +989,7 @@ class AdbManager:
         valore breve, altrimenti un click resta bloccato dietro un bulk
         shell di 25 device per decine di secondi.
         """
-        lock = adb_cmd_lock()
+        lock = get_adb_cmd_lock(priority)
         if lock_timeout is None:
             await lock.acquire()
         else:
@@ -1030,11 +1063,12 @@ class AdbManager:
     async def shell(
         self, serial: str, command: str,
         timeout: float = 30.0, lock_timeout: Optional[float] = None,
+        priority: str = "shell",
     ) -> str:
         """Esegue un comando shell su un dispositivo specifico."""
         rc, out, err = await self.adb_command(
             "shell", command, serial=serial, timeout=timeout,
-            lock_timeout=lock_timeout,
+            lock_timeout=lock_timeout, priority=priority,
         )
         return out.strip()
 
