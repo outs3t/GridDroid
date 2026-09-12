@@ -94,6 +94,34 @@ def _find_running_adb(exclude: str = "") -> str:
     return ""
 
 
+def _adb_executable_works(path: str) -> bool:
+    """Verifica che un adb.exe sia effettivamente lanciabile.
+
+    Su Windows un binario tenuto in una cartella protetta, o su cui un'altra
+    app mantiene un lock esclusivo, solleva `[WinError 5] Accesso negato`
+    gia' alla spawn del processo — prima ancora di parlare col server ADB.
+    Adottarlo ciecamente (come faceva load_settings) produce un flood di
+    WinError 5 a ogni comando. Qui lo proviamo una volta: se risponde
+    `version` (o qualunque cosa, basta che parta) e' utilizzabile.
+    """
+    if not path or not Path(path).exists():
+        return False
+    try:
+        subprocess.run(
+            [path, "version"],
+            capture_output=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return True
+    except (PermissionError, OSError):
+        # WinError 5 (Accesso negato) e altri errori di spawn: binario
+        # non lanciabile da questo processo. Fallback al bundled.
+        return False
+    except Exception:
+        return False
+
+
 class StreamSettings(BaseModel):
     """Parametri di streaming video."""
     # Profilo bilanciato: 600p@5fps con encoder software.
@@ -146,8 +174,12 @@ def load_settings() -> AppSettings:
 
     # Se un altro adb.exe e' gia' in esecuzione (es. Panda), usiamo quello:
     # stesso server sulla 5037, niente riavvii che fanno flappare i device.
+    # MA solo se e' effettivamente lanciabile da noi: alcune app tengono un
+    # lock esclusivo sul loro adb.exe e Windows risponde [WinError 5] Accesso
+    # negato a ogni spawn. In quel caso teniamo il bundled (parla comunque
+    # allo stesso server 5037 se le versioni coincidono).
     running = _find_running_adb(exclude=settings.adb_path)
-    if running:
+    if running and _adb_executable_works(running):
         settings.adb_path = running
 
     # Forza ascolto su tutte le interfacce: le installazioni esistenti avevano

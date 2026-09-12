@@ -21,6 +21,7 @@ else:
 
 from .config import (
     AppSettings,
+    _adb_executable_works,
     _find_running_adb,
     load_labels,
     save_labels,
@@ -126,6 +127,12 @@ class AdbManager:
         self._known: Dict[str, dict] = load_known()
         self._running = False
         self._poll_task: Optional[asyncio.Task] = None
+        # True se l'ultimo poll di _refresh_devices ha visto almeno una
+        # porta adb rispondere (rc==0). Usato da _poll_loop per il backoff
+        # quando adb e' del tutto irraggiungibile (es. WinError 5 persistente
+        # sul binario altrui): senza questo flag il poll continuerebbe a
+        # martellare adb ogni 5s generando un flood di errori identici.
+        self._last_poll_ok: bool = True
         self._change_callbacks: List = []
         # Auto-clicker per device: serial -> task asyncio
         self._autoclick_tasks: Dict[str, asyncio.Task] = {}
@@ -941,7 +948,7 @@ class AdbManager:
                 logs.warn(f"Timeout comando ADB: {' '.join(cmd)}")
                 return -1, "", "timeout"
             except Exception as exc:
-                logs.error(f"Errore ADB: {exc}")
+                logs.error(f"Errore ADB: {exc}", throttle_s=30)
                 return -1, "", str(exc)
         finally:
             lock.release()
@@ -968,12 +975,36 @@ class AdbManager:
             await asyncio.sleep(3600)
 
     async def _poll_loop(self) -> None:
+        # Contatore di poll consecutivi falliti (nessuna porta adb ha
+        # risposto): alimenta il backoff esponenziale per non martellare
+        # adb quando e' del tutto irraggiungibile (es. WinError 5
+        # persistente sul binario altrui). Si resetta al primo poll ok.
+        consecutive_failures = 0
         while self._running:
             try:
                 await self._refresh_devices()
             except Exception as exc:
                 logs.error(f"Errore nel polling ADB: {exc}", throttle_s=30)
-            await asyncio.sleep(self._settings.poll_interval_s)
+                self._last_poll_ok = False
+            if self._last_poll_ok:
+                consecutive_failures = 0
+                delay = self._settings.poll_interval_s
+            else:
+                consecutive_failures += 1
+                # Backoff esponenziale: 5s, 10s, 20s, 40s, cap 60s.
+                # Senza questo, un adb bloccato genera decine di errori
+                # al minuto a tempo indeterminato.
+                delay = min(
+                    self._settings.poll_interval_s * (2 ** consecutive_failures),
+                    60.0,
+                )
+                if consecutive_failures == 1:
+                    logs.warn(
+                        "ADB non risponde: backoff del polling "
+                        f"(prossimo tentativo tra {delay:.0f}s)",
+                        throttle_s=60,
+                    )
+            await asyncio.sleep(delay)
 
     def _upsert_device(
         self,
@@ -1077,6 +1108,9 @@ class AdbManager:
         # es. durante la lettura saldi): un poll fallito NON e' prova che
         # i device siano spariti — saltiamo il conteggio missing per loro.
         ports_failed: set = set()
+        # True se almeno una porta ha risposto rc==0: alimenta il backoff
+        # del _poll_loop quando adb e' del tutto irraggiungibile.
+        any_port_ok = False
         # Multi-server: oltre alla 5037 interroghiamo le porte extra
         # (es. 5038 = QuickForward/Panda che ri-esporta i device come adb).
         for port in self._adb_ports():
@@ -1102,6 +1136,7 @@ class AdbManager:
                 )
                 if rc == 0 and out:
                     poll_ok = True
+                    any_port_ok = True
                     regex = _DEVICE_RE if use_long else _DEVICE_RE_PLAIN
                     for match in regex.finditer(out):
                         serial = match.group("serial")
@@ -1133,6 +1168,11 @@ class AdbManager:
                     await asyncio.sleep(0.2)
             if not poll_ok:
                 ports_failed.add(port)
+
+        # Aggiorna il flag per il backoff del _poll_loop: se nessuna porta
+        # ha risposto (adb irraggiungibile / WinError 5 su tutti i binari),
+        # il poll successivo verra' ritardato progressivamente.
+        self._last_poll_ok = any_port_ok
 
         # Device visti prima ma assenti ora: senza questo restavano
         # "online" all'infinito (card fantasma — il log mostrava Focus su
@@ -1200,8 +1240,11 @@ class AdbManager:
             # Se un altro adb.exe e' attivo (es. Panda partito dopo di noi),
             # passiamo al suo binario: stesso server 5037, niente piu' kill
             # incrociati che fanno sparire i device a intermittenza.
+            # Solo se e' effettivamente lanciabile da noi: se l'altra app ne
+            # mantiene un lock esclusivo, adottarlo produrrebbe un flood di
+            # [WinError 5] Accesso negato a ogni comando.
             other = _find_running_adb(exclude=self._adb)
-            if other:
+            if other and _adb_executable_works(other):
                 logs.info(
                     f"Rilevato adb di terzi attivo: passo a {other} "
                     "(condivide lo stesso server, fine del flapping)"
