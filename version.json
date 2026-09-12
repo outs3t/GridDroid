@@ -1,23 +1,16 @@
 {
-  "version": "0.1.100",
-  "build_time": "2026-09-12T19:04:11.642369+02:00",
-  "windows": {
-    "download_url": "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe",
-    "silent_args": [
-      "/VERYSILENT",
-      "/NORESTART",
-      "/SUPPRESSMSGBOXES"
-    ],
-    "installer_url": "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe",
-    "installer_silent_args": [
-      "/VERYSILENT",
-      "/NORESTART",
-      "/SUPPRESSMSGBOXES"
-    ],
-    "portable_url": "https://outs3t.github.io/GridDroid/GridDroid.exe"
-  },
-  "linux": {
-    "download_url": "https://raw.githubusercontent.com/outs3t/GridDroid/main/install_linux.sh",
-    "silent_args": []
-  }
+    "linux":  {
+                  "download_url":  "https://raw.githubusercontent.com/outs3t/GridDroid/main/install_linux.sh",
+                  "silent_args":  [
+
+                                  ]
+              },
+    "version":  "0.1.100.133",
+    "build_time":  "2026-09-12T17:06:23Z",
+    "windows":  {
+                    "download_url":  "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe",
+                    "silent_args":  [
+
+                                    ]
+                }
 }
