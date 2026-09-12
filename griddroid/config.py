@@ -172,8 +172,12 @@ def load_settings() -> AppSettings:
     else:
         settings = AppSettings()
 
-    # Ricalcola sempre adb_path se quello salvato non è un eseguibile valido
-    if not shutil.which(settings.adb_path):
+    # Ricalcola sempre adb_path se quello salvato non è un eseguibile valido.
+    # shutil.which controlla solo l'esistenza del file, NON l'eseguibilita':
+    # i binari in C:\Program Files\WindowsApps\ (app del Microsoft Store,
+    # es. CGControl) esistono ma hanno ACL restrittive -> [WinError 5] Accesso
+    # negato a ogni spawn. Aggiungiamo il probe effettivo.
+    if not shutil.which(settings.adb_path) or not _adb_executable_works(settings.adb_path):
         settings.adb_path = _find_bundled_adb()
 
     # Se un altro adb.exe e' gia' in esecuzione (es. Panda), usiamo quello:
