@@ -3650,22 +3650,35 @@ function renderBalances() {
         if (summary) summary.textContent = "";
         return;
     }
-    table.innerHTML = entries.map(([serial, b]) => {
+
+    const rows = entries.map(([serial, b]) => {
         const nome = escapeHtml(b.nome || serial);
-        const book = escapeHtml(b.bookmaker || "");
-        const user = escapeHtml(b.username || "");
+        const book = escapeHtml(b.bookmaker || "—");
+        const user = escapeHtml(b.username || "—");
         const saldo = b.saldo ? escapeHtml(b.saldo) : "—";
-        const saldoClass = b.saldo ? "" : " none";
         const ts = b.timestamp ? escapeHtml(b.timestamp) : "";
-        const meta = [book, user, ts].filter(Boolean).join(" · ");
-        return `<div class="balances-row">
-            <div class="balances-row-info">
-                <div class="balances-row-name">${nome}</div>
-                <div class="balances-row-meta">${meta}</div>
-            </div>
-            <div class="balances-row-saldo${saldoClass}">${saldo}</div>
-        </div>`;
+        return `<tr>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);">${nome}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-1);">${book}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-2);">${user}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600;color:#22c55e;">${saldo}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-2);font-size:11px;white-space:nowrap;">${ts}</td>
+        </tr>`;
     }).join("");
+
+    table.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+            <tr style="text-align:left;color:var(--text-2);font-size:11px;">
+                <th style="padding:8px 10px;border-bottom:1px solid var(--border);">Telefono</th>
+                <th style="padding:8px 10px;border-bottom:1px solid var(--border);">Bookmaker</th>
+                <th style="padding:8px 10px;border-bottom:1px solid var(--border);">Utente</th>
+                <th style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;">Saldo</th>
+                <th style="padding:8px 10px;border-bottom:1px solid var(--border);">Orario</th>
+            </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+    </table>`;
+
     // Totale
     let tot = 0, count = 0;
     for (const [, b] of entries) {
