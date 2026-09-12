@@ -223,6 +223,13 @@ def load_settings() -> AppSettings:
         s.bit_rate = 100_000
         s.software_encoder = False
 
+    # Migrazione 0.1.103: passa tutti all'encoder hardware. Il sw e' rimasto
+    # come default legacy nelle config; ora lo ribaltiamo perche' l'hw e'
+    # 10-50x piu' veloce. Se un device fallisce, lo stream cade e il fallback
+    # del codice riprova con software per quel singolo seriale.
+    if s.software_encoder:
+        s.software_encoder = False
+
     save_settings(settings)
     return settings
 
