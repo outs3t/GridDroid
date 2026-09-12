@@ -99,7 +99,11 @@ def _wait_for_server(host: str, port: int, timeout: float = 60.0) -> bool:
         except HTTPError:
             # Il server risponde, anche se con 404
             return True
-        except URLError:
+        except (URLError, TimeoutError, OSError, ConnectionError):
+            # URLError: server non ancora in ascolto.
+            # TimeoutError/OSError: su Python 3.12 urlopen(timeout=...) puo'
+            # sollevare TimeoutError puro (non wrappato in URLError) — senza
+            # questo catch il launcher crasha invece di riprovare.
             pass
         time.sleep(0.25)
     return False
