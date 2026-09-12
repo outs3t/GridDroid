@@ -228,7 +228,11 @@ class DeviceStream:
             self._task = None
 
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=120)
+        # Coda piccola: il client deve ricevere sempre il frame piu' recente,
+        # non uno di 20 secondi fa. A 3 frame il ritardo massimo e' ~0.6s
+        # a 5fps; se il client e' lento i delta vengono scartati e si
+        # riallinea sul prossimo keyframe (gestito da _distribute_frame).
+        q: asyncio.Queue = asyncio.Queue(maxsize=3)
         self._subscribers.add(q)
         return q
 

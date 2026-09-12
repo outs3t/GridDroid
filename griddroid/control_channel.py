@@ -89,6 +89,22 @@ class ControlChannel:
             self._closed = True
             return False
 
+    async def _send_batch(self, *payloads: bytes) -> bool:
+        """Invia piu' messaggi in un singolo drain: per tap down+up e
+        swipe multi-step riduce la latenza (un solo await drain invece di N).
+        """
+        if self._closed:
+            return False
+        try:
+            async with self._lock:
+                for p in payloads:
+                    self._writer.write(p)
+                await self._writer.drain()
+            return True
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            self._closed = True
+            return False
+
     async def close(self) -> None:
         """Chiude il canale di controllo e attende la liberazione del socket."""
         if self._closed:
@@ -145,6 +161,29 @@ class ControlChannel:
             buttons,
         )
         return await self._send(payload)
+
+    async def tap(
+        self, x: int, y: int, width: int, height: int,
+        pointer_id: int = POINTER_ID_MOUSE,
+    ) -> bool:
+        """Tap completo down+up in un singolo drain: latenza minima."""
+        if width <= 0 or height <= 0:
+            return False
+        x = max(0, min(int(x), width - 1))
+        y = max(0, min(int(y), height - 1))
+        down = struct.pack(
+            ">BBQiiHHHII",
+            TYPE_INJECT_TOUCH_EVENT, ACTION_DOWN, pointer_id,
+            x, y, width, height,
+            _pressure_u16(1.0), BUTTON_PRIMARY, BUTTON_PRIMARY,
+        )
+        up = struct.pack(
+            ">BBQiiHHHII",
+            TYPE_INJECT_TOUCH_EVENT, ACTION_UP, pointer_id,
+            x, y, width, height,
+            _pressure_u16(0.0), BUTTON_PRIMARY, 0,
+        )
+        return await self._send_batch(down, up)
 
     async def scroll(
         self, x: int, y: int, width: int, height: int,

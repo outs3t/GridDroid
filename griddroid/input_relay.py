@@ -245,8 +245,10 @@ class InputRelay:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _native_tap(self, ctrl, x: int, y: int, w: int, h: int) -> None:
-        await ctrl.touch(cc.ACTION_DOWN, x, y, w, h)
-        await ctrl.touch(cc.ACTION_UP, x, y, w, h)
+        # Usa il metodo batch di ControlChannel: down+up in un singolo
+        # drain del socket invece di due await separati. Dimezza la
+        # latenza del click.
+        await ctrl.tap(x, y, w, h)
 
     async def swipe(
         self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300,

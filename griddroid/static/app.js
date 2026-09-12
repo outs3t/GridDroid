@@ -947,6 +947,13 @@ function startStreamWs(feedEl, serial) {
             const avcc = annexBToAVCC(h264Data);
             if (!avcc) return;
             try {
+                // Skip delta se il decoder e' indietro: evita accumulo
+                // di frame nel buffer del decoder (causa principale dello
+                // "video che va a scatti" su farm dense). I keyframe
+                // passano sempre: servono per riallineare il decoder.
+                if (!isKey && session.decoder.decodeQueueSize > 5) {
+                    return;
+                }
                 session.pts += 500_000;
                 const chunk = new EncodedVideoChunk({ type: isKey ? "key" : "delta", timestamp: session.pts, duration: 0, data: avcc });
                 session.decoder.decode(chunk);
