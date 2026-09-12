@@ -947,12 +947,28 @@ function startStreamWs(feedEl, serial) {
             const avcc = annexBToAVCC(h264Data);
             if (!avcc) return;
             try {
-                // Skip delta se il decoder e' indietro: evita accumulo
-                // di frame nel buffer del decoder (causa principale dello
-                // "video che va a scatti" su farm dense). I keyframe
-                // passano sempre: servono per riallineare il decoder.
-                if (!isKey && session.decoder.decodeQueueSize > 5) {
-                    return;
+                // Latenza zero: se il decoder e' indietro, scartiamo i
+                // delta. Se anche i keyframe si accumulano (> 2), forziamo
+                // un reset del decoder per evitare che il buffer interno
+                // cresca (causa del lag di 1s in fullscreen).
+                if (session.decoder.decodeQueueSize > 2) {
+                    if (!isKey) {
+                        return;
+                    }
+                    // Reset soft del decoder: flush, poi se non basta chiudi
+                    // e riconfigura al prossimo keyframe.
+                    try {
+                        session.decoder.flush();
+                        if (session.decoder.decodeQueueSize > 3) {
+                            session.configured = false;
+                            session.gotKey = false;
+                            session.decoder.close();
+                            session.decoder = null;
+                            return; // aspetta un nuovo keyframe per riconfigurare
+                        }
+                    } catch (e) {
+                        console.warn(`Decoder reset ${serial}:`, e);
+                    }
                 }
                 session.pts += 500_000;
                 const chunk = new EncodedVideoChunk({ type: isKey ? "key" : "delta", timestamp: session.pts, duration: 0, data: avcc });
@@ -1424,8 +1440,18 @@ function toggleFullscreen(serial, cell) {
         cell.classList.add("fullscreen-cell");
         state.fullscreenSerial = serial;
 
-        // Zoom: risoluzione/fps/bitrate alti per fullscreen
+        // Zoom: risoluzione/fps/bitrate per fullscreen (720p/15fps/500k)
         fetch(`/api/devices/${serial}/zoom`, { method: "POST" }).catch(() => { });
+
+        // In fullscreen libera il decoder degli altri device: fermiamo i
+        // loro WebSocket. Il server continua a streammare, ma al ritorno
+        // verranno riconnessi. Cosi' la GPU lavora solo per il fullscreen.
+        document.querySelectorAll(".device-feed").forEach((feed) => {
+            const other = feed.dataset.wsActive;
+            if (other && other !== serial) {
+                stopStreamWs(feed);
+            }
+        });
 
         // Etichetta verticale sinistra con il nome del device
         const leftLabel = document.createElement("div");

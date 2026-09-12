@@ -228,11 +228,12 @@ class DeviceStream:
             self._task = None
 
     def subscribe(self) -> asyncio.Queue:
-        # Coda piccola: il client deve ricevere sempre il frame piu' recente,
-        # non uno di 20 secondi fa. A 3 frame il ritardo massimo e' ~0.6s
-        # a 5fps; se il client e' lento i delta vengono scartati e si
-        # riallinea sul prossimo keyframe (gestito da _distribute_frame).
-        q: asyncio.Queue = asyncio.Queue(maxsize=3)
+        # Coda da 1 frame: "last frame wins". Il client riceve SEMPRE il
+        # frame piu' recente prodotto dallo scrcpy-server. Se e' lento e
+        # non riesce a consumare, i vecchi frame vengono sovrascritti dai
+        # nuovi in _distribute_frame. Latenza minima possibile per
+        # fullscreen e interazione reattiva.
+        q: asyncio.Queue = asyncio.Queue(maxsize=1)
         self._subscribers.add(q)
         return q
 
@@ -899,18 +900,14 @@ class DeviceStream:
                     if not is_key:
                         continue
                     self._desynced.discard(q)
-                elif q.full():
-                    # Scartare un solo delta corrompe il decoder del client
-                    # fino al prossimo keyframe: meglio svuotare la coda
-                    # e riallineare direttamente sul keyframe.
-                    while True:
-                        try:
-                            q.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                    if not is_key:
-                        self._desynced.add(q)
-                        continue
+                # Last-frame-wins: se la coda e' piena, svuotiamo e
+                # inseriamo il frame piu' recente. Con maxsize=1 il client
+                # riceve SEMPRE l'ultimo frame prodotto da scrcpy.
+                while True:
+                    try:
+                        q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
                 q.put_nowait(frame)
             except Exception:
                 dead.append(q)
@@ -1032,7 +1029,12 @@ class StreamManager:
         return await self.set_device_stream_params(serial, max_size=max_size)
 
     async def set_device_zoom(self, serial: str) -> Optional[DeviceStream]:
-        """Entra in zoom fullscreen: salva i parametri attuali e passa a 1080p/20fps/1M."""
+        """Entra in zoom fullscreen: 720p/15fps/500k per latenza minima.
+
+        1080p@20fps satura troppo il decoder del client quando altri
+        device sono aperti. 720p@15fps@500k e' il sweet spot: testo
+        leggibile, latenza <200ms anche su GPU entry-level.
+        """
         stream = self._streams.get(serial)
         if stream is None:
             return None
@@ -1041,7 +1043,7 @@ class StreamManager:
             stream.max_fps_override,
             stream.bit_rate_override,
         )
-        return await self.set_device_stream_params(serial, max_size=1080, max_fps=20, bit_rate=1000000)
+        return await self.set_device_stream_params(serial, max_size=720, max_fps=15, bit_rate=500_000)
 
     async def unset_device_zoom(self, serial: str) -> Optional[DeviceStream]:
         """Esce dallo zoom e ripristina i parametri precedenti."""
