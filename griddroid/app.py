@@ -351,7 +351,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     @app.post("/api/balances/read")
     async def read_balances(request: Request):
         """Legge il saldo a schermo dei device selezionati e lo salva in CSV."""
-        from .config import append_balances, write_ledger_csv, BALANCES_FILE
+        from .config import append_balances, write_ledger_csv, save_balances_state, BALANCES_FILE
 
         body = await request.json() if request.headers.get("content-type") == "application/json" else {}
         wanted = set(body.get("serials") or [])
@@ -425,12 +425,32 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                 # I saldi restano validi a schermo, solo il file non si scrive.
                 save_error = f"CSV non salvato (file in uso?): {exc}"
                 logs.warn(save_error)
+        # Aggiorna lo stato saldi corrente (per la pagina saldi interna):
+        # merge dei risultati letti nello stato vivo in memoria + su disco.
+        if rows:
+            for r in rows:
+                adb.balances[r["serial"]] = {
+                    "saldo": r["saldo"],
+                    "bookmaker": r["bookmaker"],
+                    "username": r["username"],
+                    "nome": r["nome"],
+                    "timestamp": ts,
+                }
+            try:
+                save_balances_state(adb.balances)
+            except Exception as exc:
+                logs.warn(f"Salvataggio stato saldi fallito: {exc}", throttle_s=60)
         return {
             "results": results,
             "saved": saved,
             "save_error": save_error,
             "file": str(BALANCES_FILE),
         }
+
+    @app.get("/api/balances")
+    async def get_balances():
+        """Stato saldi corrente per la pagina saldi interna."""
+        return {"balances": adb.balances}
 
     @app.get("/api/balances/progress")
     async def balances_progress():

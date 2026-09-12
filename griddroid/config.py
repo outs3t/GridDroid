@@ -23,6 +23,10 @@ PLAYED_FILE = CONFIG_DIR / "played.json"
 SKIPPED_FILE = CONFIG_DIR / "skipped.json"
 BALANCES_FILE = CONFIG_DIR / "balances.csv"
 LEDGER_FILE = CONFIG_DIR / "saldi_ledger.csv"
+# Stato saldi corrente: ultimo saldo noto per ogni device, leggibile dalla
+# pagina saldi interna. A differenza di balances.csv (storico append-only)
+# questo file viene sovrascritto a ogni lettura: e' lo snapshot vivo.
+BALANCES_STATE_FILE = CONFIG_DIR / "balances_state.json"
 KNOWN_FILE = CONFIG_DIR / "known.json"
 DEVICE_OVERRIDES_FILE = CONFIG_DIR / "device_overrides.json"
 LABEL_COLORS_FILE = CONFIG_DIR / "label_colors.json"
@@ -341,6 +345,24 @@ def write_ledger_csv(rows: List[dict]) -> Path:
                 saldo = saldo[:-3]
             w.writerow([nick, book, saldo])
     return LEDGER_FILE
+
+
+def load_balances_state() -> Dict[str, dict]:
+    """Carica lo stato saldi corrente: serial -> {saldo, bookmaker, username, nome, timestamp}."""
+    if BALANCES_STATE_FILE.exists():
+        try:
+            return json.loads(BALANCES_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def save_balances_state(state: Dict[str, dict]) -> None:
+    """Salva lo stato saldi corrente (snapshot sovrascritto a ogni lettura)."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    BALANCES_STATE_FILE.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def load_known() -> Dict[str, dict]:

@@ -37,6 +37,8 @@ from .config import (
     save_label_colors,
     load_device_order,
     save_device_order,
+    load_balances_state,
+    save_balances_state,
 )
 from .device import (
     DeviceInfo,
@@ -145,6 +147,14 @@ class AdbManager:
         self._keys_loaded: set = set()
         # Contatore poll consecutivi in cui un device non appare in adb devices
         self._missing: Dict[str, int] = {}
+        # Stato saldi corrente: serial -> {saldo, bookmaker, username, nome, timestamp}
+        # Caricato da disco all'avvio, aggiornato in background a ogni lettura.
+        self._balances: Dict[str, dict] = load_balances_state()
+        # Task di auto-lettura saldi in background per device (serial -> task)
+        self._balance_tasks: Dict[str, asyncio.Task] = {}
+        # Timestamp ultima auto-lettura per device (throttle: non ripetere
+        # prima di 60s per non saturare adb)
+        self._last_balance_read: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Proprieta' pubbliche
@@ -156,6 +166,11 @@ class AdbManager:
 
     def get_device(self, serial: str) -> Optional[DeviceState]:
         return self._devices.get(serial)
+
+    @property
+    def balances(self) -> Dict[str, dict]:
+        """Stato saldi corrente: serial -> {saldo, bookmaker, username, nome, timestamp}."""
+        return self._balances
 
     def set_played(self, serial: str, played: bool = True) -> None:
         """Segna un dispositivo come giocato e lo salva su disco."""
@@ -342,6 +357,65 @@ class AdbManager:
             if key in low:
                 return name
         return package
+
+    # ------------------------------------------------------------------
+    # Auto-lettura saldi in background
+    # ------------------------------------------------------------------
+
+    def _schedule_balance_read(self, serial: str) -> None:
+        """Schedula una lettura saldo in background per un device appena ONLINE.
+
+        Non blocca il poll loop ne' l'uso del telefono: usa solo CDP
+        (Chrome DevTools Protocol), che legge il DOM via WebSocket senza
+        congelare la UI del device. Se Chrome non e' in foreground il
+        saldo non viene letto in automatico — l'utente puo' sempre
+        forzarlo col bottone 'Leggi saldi' (che usa anche uiautomator).
+
+        Throttle 60s per device: non ripete la lettura se e' appena stata
+        fatta, per non saturare adb con forward ripetuti.
+        """
+        if not self._running:
+            return
+        dev = self._devices.get(serial)
+        if not dev or dev.status != DeviceStatus.ONLINE:
+            return
+        now = time.time()
+        if now - self._last_balance_read.get(serial, 0.0) < 60.0:
+            return
+        # Una task per device alla volta
+        existing = self._balance_tasks.get(serial)
+        if existing and not existing.done():
+            return
+        self._last_balance_read[serial] = now
+        self._balance_tasks[serial] = asyncio.ensure_future(
+            self._auto_read_balance(serial)
+        )
+
+    async def _auto_read_balance(self, serial: str) -> None:
+        """Lettura saldo background: CDP-only, non blocca il device."""
+        try:
+            # Solo CDP: niente uiautomator (congela la UI). Se Chrome non
+            # c'e', il saldo non si aggiorna in automatico — ma il telefono
+            # resta usabile dall'utente, che e' il requisito.
+            cdp = await self._saldo_via_cdp(serial)
+            if cdp.get("saldo"):
+                dev = self._devices.get(serial)
+                nome = dev.display_name if dev else serial
+                self._balances[serial] = {
+                    "saldo": cdp["saldo"],
+                    "bookmaker": cdp.get("bookmaker", ""),
+                    "username": cdp.get("username", ""),
+                    "nome": nome,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                save_balances_state(self._balances)
+                logs.info(
+                    f"Saldo auto: {cdp['saldo']} ({cdp.get('bookmaker', '?')})",
+                    serial=serial,
+                    throttle_s=30,
+                )
+        except Exception as exc:
+            logs.warn(f"Auto-lettura saldo fallita: {exc}", serial=serial, throttle_s=60)
 
     async def read_account_info(self, serial: str) -> dict:
         """Legge saldo, bookmaker e username visibili a schermo.
@@ -1050,6 +1124,10 @@ class AdbManager:
                 if status == DeviceStatus.ONLINE:
                     dev.stream_failures = 0
                     dev.next_stream_attempt = 0.0
+                    # Auto-lettura saldo in background: CDP-only, non
+                    # blocca il device. Se Chrome e' in foreground il
+                    # saldo si aggiorna entro ~5s dal login.
+                    self._schedule_balance_read(serial)
         else:
             info = DeviceInfo(
                 serial=serial,
@@ -1089,6 +1167,8 @@ class AdbManager:
             except Exception as exc:
                 logs.warn(f"Salvataggio known fallito: {exc}", throttle_s=60)
             logs.success(f"Nuovo dispositivo rilevato: {dev.display_name}", serial=serial)
+            if status == DeviceStatus.ONLINE:
+                self._schedule_balance_read(serial)
 
         # Non forziamo mai `adb reconnect` automaticamente.
         if status == DeviceStatus.OFFLINE:

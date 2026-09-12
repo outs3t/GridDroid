@@ -1411,6 +1411,32 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
     color: var(--text-3);
 }
 
+/* Tabella saldi */
+.balances-table {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+.balances-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border, #2a2a2a);
+    background: var(--bg-1, #1a1a1a);
+    align-items: center;
+}
+.balances-row:hover { border-color: var(--border-hover, #3a3a3a); background: var(--bg-3, #222); }
+.balances-row-info { min-width: 0; }
+.balances-row-name { font-size: 12px; font-weight: 600; color: var(--text-0, #eee); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.balances-row-meta { font-size: 10px; color: var(--text-3, #777); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.balances-row-saldo { font-size: 14px; font-weight: 700; color: #4ade80; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.balances-row-saldo.none { color: var(--text-3, #777); font-weight: 400; }
+.balances-empty { padding: 12px; text-align: center; font-size: 11px; color: var(--text-3); }
+
 .macro-status {
     font-size: 10px;
     color: #7f848b;

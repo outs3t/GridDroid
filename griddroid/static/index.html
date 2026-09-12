@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-<link rel="stylesheet" href="/static/style.css?v=56">
+<link rel="stylesheet" href="/static/style.css?v=57">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -262,6 +262,26 @@
             </div>
         </div>
 
+        <!-- Saldi -->
+        <div class="dock-item" data-target="flyoutBalances" tabindex="0" role="button" title="Saldi">
+            <span class="dock-icon">💰</span>
+            <span class="dock-label">Saldi</span>
+            <div class="flyout" id="flyoutBalances">
+                <div class="flyout-header"><span>Saldi</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
+                <div class="flyout-body">
+                    <div class="sidebar-section active">
+                        <h4>Saldi per conto</h4>
+                        <div style="display:flex;gap:6px;margin-bottom:10px;">
+                            <input type="text" id="balanceSearch" placeholder="Cerca..." style="flex:1" />
+                            <button class="btn" id="btnRefreshBalances" title="Aggiorna">↻</button>
+                        </div>
+                        <div id="balancesTable" class="balances-table"></div>
+                        <div id="balancesSummary" class="balances-summary" style="margin-top:10px;font-size:12px;color:var(--text-2);"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Gruppi -->
         <div class="dock-item" data-target="flyoutGroups" tabindex="0" role="button" title="Gruppi">
             <span class="dock-icon">🗂</span>
@@ -431,7 +451,7 @@
     </div>
 
     <script src="/static/jmuxer.min.js?v=87"></script>
-    <script src="/static/app.js?v=98"></script>
+    <script src="/static/app.js?v=99"></script>
     <script>
     (async () => {
         try {

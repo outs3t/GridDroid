@@ -3520,6 +3520,77 @@ function saveDeviceGroups() {
     toast(`Gruppi salvati per ${escapeHtml(dev?.display_name || serial)}`, "success");
 }
 
+// ------------------------------------------------------------------
+// Pagina saldi: tabella per conto, auto-aggiornamento dal backend
+// ------------------------------------------------------------------
+let _balancesCache = {};
+let _balancesTimer = null;
+
+async function fetchBalances() {
+    try {
+        const r = await fetch("/api/balances");
+        const d = await r.json();
+        _balancesCache = d.balances || {};
+        renderBalances();
+    } catch (e) { /* silenzioso: riprova al prossimo ciclo */ }
+}
+
+function renderBalances() {
+    const table = document.getElementById("balancesTable");
+    const summary = document.getElementById("balancesSummary");
+    if (!table) return;
+    const search = (document.getElementById("balanceSearch")?.value || "").toLowerCase();
+    const entries = Object.entries(_balancesCache)
+        .filter(([s, b]) => {
+            if (!search) return true;
+            const nome = (b.nome || s || "").toLowerCase();
+            const book = (b.bookmaker || "").toLowerCase();
+            const user = (b.username || "").toLowerCase();
+            return nome.includes(search) || book.includes(search) || user.includes(search) || s.toLowerCase().includes(search);
+        })
+        .sort((a, b) => (b[1].timestamp || "").localeCompare(a[1].timestamp || ""));
+    if (!entries.length) {
+        table.innerHTML = '<div class="balances-empty">Nessun saldo letto. Apri Chrome sui device o usa "Leggi saldi".</div>';
+        if (summary) summary.textContent = "";
+        return;
+    }
+    table.innerHTML = entries.map(([serial, b]) => {
+        const nome = escapeHtml(b.nome || serial);
+        const book = escapeHtml(b.bookmaker || "");
+        const user = escapeHtml(b.username || "");
+        const saldo = b.saldo ? escapeHtml(b.saldo) : "—";
+        const saldoClass = b.saldo ? "" : " none";
+        const ts = b.timestamp ? escapeHtml(b.timestamp) : "";
+        const meta = [book, user, ts].filter(Boolean).join(" · ");
+        return `<div class="balances-row">
+            <div class="balances-row-info">
+                <div class="balances-row-name">${nome}</div>
+                <div class="balances-row-meta">${meta}</div>
+            </div>
+            <div class="balances-row-saldo${saldoClass}">${saldo}</div>
+        </div>`;
+    }).join("");
+    // Totale
+    let tot = 0, count = 0;
+    for (const [, b] of entries) {
+        if (b.saldo) { tot += parseFloat(b.saldo) || 0; count++; }
+    }
+    if (summary) summary.textContent = `${count} conti · Totale: ${tot.toFixed(2)}`;
+}
+
+function initBalances() {
+    const table = document.getElementById("balancesTable");
+    if (!table) return;
+    const search = document.getElementById("balanceSearch");
+    const btnRefresh = document.getElementById("btnRefreshBalances");
+    if (search) search.addEventListener("input", renderBalances);
+    if (btnRefresh) btnRefresh.addEventListener("click", fetchBalances);
+    // Auto-refresh: ogni 10s la tabella si aggiorna coi saldi letti in
+    // background dal backend (auto-lettura CDP al login del device).
+    fetchBalances();
+    _balancesTimer = setInterval(fetchBalances, 10000);
+}
+
 function initGroups() {
     const input = document.getElementById("newGroupName");
     const btn = document.getElementById("btnCreateGroup");
@@ -4009,6 +4080,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initZoomControls();
     initMacro();
     initBookmakers();
+    initBalances();
     initSettings();
     initGroups();
     initSelection();
