@@ -552,23 +552,22 @@ class DeviceStream:
                 await asyncio.sleep(delay)
 
     def _adaptive_params(self, s) -> str:
-        """Parametri video con override per device e bitrate scalato."""
+        """Parametri video con override per device e bitrate assoluto."""
         max_fps = self.max_fps_override or s.max_fps
         max_size = self.max_size_override or s.max_size
-        base_bit_rate = self.bit_rate_override or s.bit_rate
-        # Scala bitrate con risoluzione e fps per evitare artefatti
-        # su fullscreen / alta qualita': 480@2fps come riferimento.
-        factor = (max_size / 480.0) ** 2 * (max(max_fps, 1) / 2.0)
-        bit_rate = int(base_bit_rate * factor)
+        # bit_rate e' il bitrate reale dell'encoder, scelto dall'utente.
         # Encoder: default hardware per latenza minima. Se l'hw di un
         # dispositivo e' gia' crashato, torniamo a software per quel
-        # seriale. Stesso tetto bitrate del sw per non sovraccaricare.
+        # seriale. Tetto piu' basso in sw per non sovraccaricare.
         use_software = (
             getattr(s, "software_encoder", False)
             or self.serial in _HW_ENCODER_FAILED
         )
-        max_bit_rate = 1_000_000 if use_software else 8_000_000
-        bit_rate = max(min(bit_rate, max_bit_rate), min(base_bit_rate, max_bit_rate))
+        max_bit_rate = 1_000_000 if use_software else 20_000_000
+        bit_rate = max(
+            min(self.bit_rate_override or s.bit_rate, max_bit_rate),
+            50_000,
+        )
         params = f"max_fps={max_fps} video_bit_rate={bit_rate} "
         # Encoder SOFTWARE (OMX.google) solo se esplicito o fallback.
         if use_software:

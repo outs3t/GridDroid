@@ -21,7 +21,7 @@ const state = {
     activeGroupFilter: null,
     showPlayed: localStorage.getItem("griddroid_show_played") === "1",
     showSkipped: localStorage.getItem("griddroid_show_skipped") === "1",
-    sortBy: localStorage.getItem("griddroid_sort_by") || "default",
+    sortBy: localStorage.getItem("griddroid_sort_by") || "az",
 };
 
 // =====================================================================
@@ -315,9 +315,9 @@ function createDeviceCell(dev) {
             </div>
         </div>
         <div class="device-quality-panel" style="display:none;">
-            <button class="q-preset" data-preset='{"maxSize":480,"maxFps":2,"bitRate":50000}' title="Panda: 480p 2fps 50k">P</button>
-            <button class="q-preset" data-preset='{"maxSize":720,"maxFps":10,"bitRate":500000}' title="Medio: 720p 10fps 500k">M</button>
-            <button class="q-preset" data-preset='{"maxSize":1080,"maxFps":20,"bitRate":1000000}' title="Alta: 1080p 20fps 1M">H</button>
+            <button class="q-preset" data-preset='{"maxSize":480,"maxFps":2,"bitRate":400000}' title="Panda: 480p 2fps 400k">P</button>
+            <button class="q-preset" data-preset='{"maxSize":720,"maxFps":10,"bitRate":1500000}' title="Medio: 720p 10fps 1.5M">M</button>
+            <button class="q-preset" data-preset='{"maxSize":1080,"maxFps":20,"bitRate":6000000}' title="Alta: 1080p 20fps 6M">H</button>
             <input type="number" class="q-size" placeholder="size" min="240" max="1920" />
             <input type="number" class="q-fps" placeholder="fps" min="1" max="60" />
             <input type="number" class="q-bitrate" placeholder="bitrate" min="50000" />
@@ -2356,6 +2356,7 @@ function initDragSelect() {
 async function initSettings() {
     const maxFps = document.getElementById("maxFps");
     const maxSize = document.getElementById("maxSize");
+    const bitRate = document.getElementById("bitRate");
 
     const chkStartWithWindows = document.getElementById("chkStartWithWindows");
     const chkStartMinimized = document.getElementById("chkStartMinimized");
@@ -2365,8 +2366,9 @@ async function initSettings() {
     try {
         const r = await fetch("/api/settings");
         const data = await r.json();
-        if (maxFps) maxFps.value = data.stream?.max_fps ?? 30;
-        if (maxSize) maxSize.value = data.stream?.max_size ?? 1080;
+        if (maxFps) maxFps.value = data.stream?.max_fps ?? 15;
+        if (maxSize) maxSize.value = data.stream?.max_size ?? 2400;
+        if (bitRate) bitRate.value = Math.round((data.stream?.bit_rate ?? 4000000) / 1000);
         if (chkStartWithWindows) chkStartWithWindows.checked = data.start_with_windows ?? false;
         if (chkStartMinimized) chkStartMinimized.checked = data.start_minimized ?? false;
         if (chkMinimizeToTray) chkMinimizeToTray.checked = data.minimize_to_tray ?? false;
@@ -2398,8 +2400,9 @@ async function initSettings() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     stream: {
-                        max_fps: parseInt(maxFps?.value) || 30,
-                        max_size: parseInt(maxSize?.value) || 1080,
+                        max_fps: parseInt(maxFps?.value) || 15,
+                        max_size: parseInt(maxSize?.value) || 2400,
+                        bit_rate: (parseInt(bitRate?.value) || 4000) * 1000,
                     },
                 }),
             });
@@ -2411,6 +2414,7 @@ async function initSettings() {
 
     if (maxFps) maxFps.addEventListener("change", saveStream);
     if (maxSize) maxSize.addEventListener("change", saveStream);
+    if (bitRate) bitRate.addEventListener("change", saveStream);
 
     const btnApply = document.getElementById("btnApplyStream");
     if (btnApply) {
@@ -2428,7 +2432,7 @@ async function initSettings() {
     // slot. Encoder piu' piccolo = meno CPU sul telefono, meno banda USB,
     // meno decode nel browser. I valori normali vengono salvati e
     // ripristinati allo spegnimento della modalita'.
-    const SLOT_PRESET = { max_fps: 8, max_size: 360, bit_rate: 1500000 };
+    const SLOT_PRESET = { max_fps: 8, max_size: 360, bit_rate: 400000 };
     const btnSlotMode = document.getElementById("btnSlotMode");
     let slotMode = localStorage.getItem("griddroid_slot_mode") === "1";
     let savedQuality = null;
@@ -2453,11 +2457,12 @@ async function initSettings() {
                     // Salva la qualita' corrente per ripristinarla dopo
                     savedQuality = {
                         max_fps: parseInt(maxFps?.value) || 15,
-                        max_size: parseInt(maxSize?.value) || 480,
+                        max_size: parseInt(maxSize?.value) || 2400,
+                        bit_rate: (parseInt(bitRate?.value) || 4000) * 1000,
                     };
                     stream = { ...SLOT_PRESET };
                 } else {
-                    stream = savedQuality || { max_fps: 15, max_size: 480 };
+                    stream = savedQuality || { max_fps: 15, max_size: 2400, bit_rate: 4000000 };
                 }
                 await fetch("/api/settings", {
                     method: "POST",
@@ -2466,6 +2471,7 @@ async function initSettings() {
                 });
                 if (maxFps) maxFps.value = stream.max_fps;
                 if (maxSize) maxSize.value = stream.max_size;
+                if (bitRate && stream.bit_rate) bitRate.value = Math.round(stream.bit_rate / 1000);
                 await fetch("/api/settings/apply-stream", { method: "POST" });
                 renderSlotMode();
                 toast(
@@ -2511,13 +2517,14 @@ async function initSettings() {
                 let stream;
                 if (pandaMode) {
                     savedQualityPanda = {
-                        max_fps: parseInt(maxFps?.value) || 30,
-                        max_size: parseInt(maxSize?.value) || 1080,
+                        max_fps: parseInt(maxFps?.value) || 15,
+                        max_size: parseInt(maxSize?.value) || 2400,
+                        bit_rate: (parseInt(bitRate?.value) || 4000) * 1000,
                         software_encoder: false,
                     };
                     stream = { ...PANDA_PRESET };
                 } else {
-                    stream = savedQualityPanda || { max_fps: 30, max_size: 1080, software_encoder: false };
+                    stream = savedQualityPanda || { max_fps: 15, max_size: 2400, bit_rate: 4000000, software_encoder: false };
                 }
                 await fetch("/api/settings", {
                     method: "POST",
@@ -2526,6 +2533,7 @@ async function initSettings() {
                 });
                 if (maxFps) maxFps.value = stream.max_fps;
                 if (maxSize) maxSize.value = stream.max_size;
+                if (bitRate && stream.bit_rate) bitRate.value = Math.round(stream.bit_rate / 1000);
                 await fetch("/api/settings/apply-stream", { method: "POST" });
                 renderPandaMode();
                 toast(
@@ -2876,9 +2884,9 @@ function initHeaderButtons() {
     }
 
     // Ordinamento automatico A-Z attivo di default
-    const btnSort = document.getElementById("btnSort");
-    if (btnSort) {
-        btnSort.classList.add("active");
+    const btnSortInit = document.getElementById("btnSort");
+    if (btnSortInit) {
+        btnSortInit.classList.toggle("active", state.sortBy === "az");
     }
 
     // Update manuale
@@ -3964,6 +3972,13 @@ function initViewControls() {
 
     if (btnSort) {
         btnSort.classList.toggle("active", state.sortBy === "az");
+        btnSort.addEventListener("click", () => {
+            state.sortBy = state.sortBy === "az" ? "default" : "az";
+            localStorage.setItem("griddroid_sort_by", state.sortBy);
+            if (sortBy) sortBy.value = state.sortBy;
+            btnSort.classList.toggle("active", state.sortBy === "az");
+            renderGrid();
+        });
     }
 }
 

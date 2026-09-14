@@ -725,7 +725,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                     if sk not in STREAM_KEYS:
                         continue
                     if sk == "max_size":
-                        sv = max(240, min(1920, int(sv)))
+                        sv = max(240, min(2800, int(sv)))
                     elif sk == "max_fps":
                         sv = max(1, min(60, int(sv)))
                     elif sk == "bit_rate":

@@ -128,12 +128,12 @@ def _adb_executable_works(path: str) -> bool:
 
 class StreamSettings(BaseModel):
     """Parametri di streaming video."""
-    # Profilo bilanciato: 600p@5fps con encoder software.
-    # Piu' fluido del profilo Panda (480p@2fps) ma ancora stabile
-    # grazie all'encoder software, che non crasha su farm dense.
-    max_fps: int = Field(default=5, ge=1, le=60)
-    max_size: int = Field(default=600, ge=240, le=1920)
-    bit_rate: int = Field(default=100_000, ge=50_000, le=20_000_000)
+    # Profilo qualita': risoluzione nativa dei telefoni (la maggior parte
+    # e' 1080x2400, quindi lato lungo 2400) a 15fps con encoder hardware.
+    # bit_rate e' il bitrate reale passato all'encoder (4 Mbps default).
+    max_fps: int = Field(default=15, ge=1, le=60)
+    max_size: int = Field(default=2400, ge=240, le=2800)
+    bit_rate: int = Field(default=4_000_000, ge=50_000, le=20_000_000)
     video_codec: str = Field(default="h264")
     # Encoder software OMX.google.h264.encoder: piu' lento ma non crasha
     # mai — e' la scelta di Panda per la stabilita' su farm dense.
@@ -205,30 +205,35 @@ def load_settings() -> AppSettings:
         settings.host = "0.0.0.0"
 
     # Migrazione una tantum: le config salvate coi vecchi default troppo
-    # aggressivi (30fps/1080/8Mbps) vengono forzate al profilo compatibile,
-    # altrimenti l'utente si ritrova subito i log pieni di crash encoder.
+    # aggressivi (30fps/1080/8Mbps) vengono forzate al profilo corrente.
     s = settings.stream
     if (
         s.max_fps >= 30
         and s.max_size >= 1080
         and s.bit_rate >= 8_000_000
     ):
-        s.max_fps = 2
-        s.max_size = 480
-        s.bit_rate = 50_000
+        s.max_fps = 15
+        s.max_size = 2400
+        s.bit_rate = 4_000_000
         s.software_encoder = False
 
-    # Migrazione 0.1.88: sposta le installazioni dal profilo Panda 480/2/50k
-    # al nuovo profilo bilanciato 600/5/100k per piu' fluidita' e qualita'.
+    # Migrazione 0.1.113: profili ridotti (<=600p, <=5fps) salgono a
+    # 2400p@15: a bassi fps l'input lag era eccessivo e i telefoni sono
+    # 1080x2400, non 1920x1080 — il lato lungo va a 2400.
     if (
-        s.max_size <= 480
-        and s.max_fps <= 2
-        and s.bit_rate <= 50_000
+        s.max_size <= 600
+        and s.max_fps <= 5
+        and s.bit_rate <= 100_000
     ):
-        s.max_fps = 5
-        s.max_size = 600
-        s.bit_rate = 100_000
+        s.max_fps = 15
+        s.max_size = 2400
+        s.bit_rate = 4_000_000
         s.software_encoder = False
+
+    # Il bitrate ora e' assoluto (non piu' un coefficiente scalato su
+    # risoluzione/fps): i vecchi valori base <=200k sarebbero inutilizzabili.
+    if s.bit_rate <= 200_000:
+        s.bit_rate = 4_000_000
 
     # Migrazione 0.1.103: passa tutti all'encoder hardware. Il sw e' rimasto
     # come default legacy nelle config; ora lo ribaltiamo perche' l'hw e'
