@@ -1,5 +1,24 @@
 let decoder = null;
-let pendingFrames = 0;
+// true dopo aver scartato un delta o un errore di decodifica: i delta
+// successivi non sono decodificabili, si riparte solo da un keyframe.
+let needKey = false;
+let lastKeyRequest = 0;
+
+function resetDecoder() {
+    if (decoder) {
+        try { decoder.close(); } catch (e) {}
+    }
+    decoder = null;
+    needKey = false;
+}
+
+function requestKeyframe() {
+    needKey = true;
+    const now = performance.now();
+    if (now - lastKeyRequest < 1000) return;
+    lastKeyRequest = now;
+    self.postMessage({ type: 'needkey' });
+}
 
 function findStartCode(b, start) {
     const n = b.length;
@@ -103,11 +122,7 @@ function annexBToAVCC(data) {
 self.onmessage = (event) => {
     const { type, payload } = event.data;
     if (type === 'init') {
-        if (decoder) {
-            try { decoder.close(); } catch (e) {}
-        }
-        decoder = null;
-        pendingFrames = 0;
+        resetDecoder();
         return;
     }
     if (type === 'decode') {
@@ -118,7 +133,7 @@ self.onmessage = (event) => {
 async function handleDecode(payload) {
     const { data, isKey } = payload;
     if (!decoder) {
-        if (!isKey) return;
+        if (!isKey) { requestKeyframe(); return; }
         const spspps = parseSpsPpsFromAnnexB(data);
         if (!spspps.sps || !spspps.pps) return;
         const desc = buildAvcDescription(spspps.sps, spspps.pps);
@@ -168,11 +183,14 @@ async function handleDecode(payload) {
                     console.error('[Decoder] output error:', err);
                     try { frame.close(); } catch (e) {}
                 }
-                pendingFrames--;
             },
             error: (err) => {
+                // Il decoder e' in stato 'closed': non si recupera. Lo
+                // ricreiamo al prossimo keyframe invece di chiudere il WS
+                // (che faceva ripartire lo stream da zero in loop).
                 console.error('[Decoder] VideoDecoder error:', err);
-                self.postMessage({ type: 'error', message: String(err) });
+                resetDecoder();
+                requestKeyframe();
             }
         });
         try {
@@ -185,27 +203,36 @@ async function handleDecode(payload) {
         } catch (err) {
             console.error('[Decoder] configure error:', err);
             self.postMessage({ type: 'error', message: String(err) });
+            return;
         }
+        // Il keyframe che ha configurato il decoder va anche decodificato:
+        // e' il riferimento di tutti i delta che seguono.
+    }
+    if (!decoder || decoder.state !== 'configured') {
+        resetDecoder();
+        requestKeyframe();
         return;
     }
-    if (!decoder) return;
+
+    // Dopo un drop o un errore i delta sono inutilizzabili: aspettiamo
+    // il keyframe richiesto al server.
+    if (needKey && !isKey) return;
 
     const avcc = annexBToAVCC(data);
     if (!avcc) return;
 
-    // Latenza zero: se il decoder e' indietro, scartiamo i delta.
-    if (pendingFrames > 2 && !isKey) return;
-    if (pendingFrames > 3 && isKey) {
-        try { await decoder.flush(); } catch (e) {}
-        if (pendingFrames > 4) {
-            try { decoder.close(); } catch (e) {}
-            decoder = null;
-            pendingFrames = 0;
-            return;
-        }
+    // Latenza zero: se il decoder e' indietro, scartiamo i delta e chiediamo
+    // un keyframe per riallinearci. decodeQueueSize e' il contatore nativo
+    // (il vecchio contatore manuale non veniva decrementato sugli errori e
+    // dopo un po' scartava TUTTO: video congelato su un frame).
+    const queued = decoder.decodeQueueSize;
+    if (!isKey && queued > 2) { requestKeyframe(); return; }
+    if (isKey && queued > 4) {
+        // Molto indietro: ricrea il decoder ripartendo da questo keyframe.
+        resetDecoder();
+        return handleDecode(payload);
     }
 
-    pendingFrames++;
     const chunk = new EncodedVideoChunk({
         type: isKey ? 'key' : 'delta',
         timestamp: performance.now() * 1000,
@@ -213,9 +240,11 @@ async function handleDecode(payload) {
         data: avcc,
     });
     try {
-        await decoder.decode(chunk);
+        decoder.decode(chunk);
+        if (isKey) needKey = false;
     } catch (err) {
         console.error('[Decoder] decode error:', err);
-        pendingFrames--;
+        resetDecoder();
+        requestKeyframe();
     }
 }

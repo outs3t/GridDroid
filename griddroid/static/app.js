@@ -931,7 +931,7 @@ function startStreamWs(feedEl, serial) {
     session.ws = ws;
 
     if (useWorker) {
-        const worker = new Worker('/static/decoder-worker.js?v=104');
+        const worker = new Worker('/static/decoder-worker.js?v=111');
         let gotKey = false;
         worker.onmessage = (event) => {
             const msg = event.data;
@@ -942,6 +942,12 @@ function startStreamWs(feedEl, serial) {
                     scheduleCanvasDraw(feedEl, serial, msg.bitmap, msg.codedWidth, msg.codedHeight);
                 } else if (msg.frame) {
                     scheduleCanvasDraw(feedEl, serial, msg.frame, msg.codedWidth, msg.codedHeight);
+                }
+            } else if (msg.type === 'needkey') {
+                // Il decoder ha perso frame: chiediamo al server un keyframe
+                // fresco invece di restare congelati sull'ultimo frame buono.
+                if (ws.readyState === WebSocket.OPEN) {
+                    try { ws.send('k'); } catch (e) { }
                 }
             } else if (msg.type === 'error') {
                 console.error(`[Worker] ${serial}:`, msg.message);
@@ -1112,6 +1118,12 @@ function startStreamWs(feedEl, serial) {
         }
         if (session.decoder) {
             try { session.decoder.close(); } catch (e) { }
+        }
+        // Senza terminate il worker (e il suo VideoDecoder hw) restava vivo
+        // a ogni riconnessione: con 20+ telefoni si accumulavano decoder zombie.
+        if (session.worker) {
+            try { session.worker.terminate(); } catch (e) { }
+            session.worker = null;
         }
     };
 

@@ -1042,12 +1042,22 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         if not stream:
             await ws.close(code=1008, reason="stream non attivo")
             return
+        # subscribe() mette in coda il keyframe in cache se e' ancora
+        # attuale, altrimenti chiede all'encoder un keyframe fresco.
         q = stream.subscribe()
+
+        async def recv_keyframe_requests():
+            # Il browser manda un messaggio qualsiasi quando il decoder ha
+            # perso frame: chiediamo all'encoder un nuovo keyframe.
+            try:
+                while True:
+                    await ws.receive()
+                    stream.request_keyframe()
+            except Exception:
+                pass
+
+        recv_task = asyncio.create_task(recv_keyframe_requests())
         try:
-            # Invia subito l'ultimo keyframe così il decoder parte immediatamente
-            keyframe = stream.last_keyframe
-            if keyframe:
-                await ws.send_bytes(keyframe)
             while True:
                 frame = await q.get()
                 # None = stream terminato: chiudiamo il WS cosi' il browser
@@ -1060,6 +1070,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         except (WebSocketDisconnect, Exception):
             pass
         finally:
+            recv_task.cancel()
             stream.unsubscribe(q)
             try:
                 await ws.close()

@@ -28,6 +28,8 @@ TYPE_BACK_OR_SCREEN_ON = 4
 TYPE_EXPAND_NOTIFICATION_PANEL = 5
 TYPE_EXPAND_SETTINGS_PANEL = 6
 TYPE_COLLAPSE_PANELS = 7
+# scrcpy >= 3.0: riavvia l'encoder video, che riparte con SPS/PPS + IDR.
+TYPE_RESET_VIDEO = 17
 
 # Azioni MotionEvent Android
 ACTION_DOWN = 0
@@ -257,3 +259,11 @@ class ControlChannel:
 
     async def collapse_panels(self) -> bool:
         return await self._send(struct.pack(">B", TYPE_COLLAPSE_PANELS))
+
+    async def reset_video(self) -> bool:
+        """Forza un nuovo keyframe: l'encoder riparte con SPS/PPS + IDR.
+
+        Usato per riallineare un client che ha perso frame delta (coda piena
+        o decoder in ritardo): senza keyframe il video resterebbe congelato.
+        """
+        return await self._send(struct.pack(">B", TYPE_RESET_VIDEO))

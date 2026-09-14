@@ -135,6 +135,10 @@ class DeviceStream:
         self._pps: bytes = b""
         self._h264_config: bytes = b""
         self._last_keyframe: Optional[bytes] = None
+        # Frame delta distribuiti dopo l'ultimo keyframe: se > 0 il keyframe
+        # in cache e' vecchio e non basta a far partire un nuovo client.
+        self._frames_since_key: int = 0
+        self._last_key_request: float = 0.0
         self._subscribers: Set[asyncio.Queue] = set()
         # Code che hanno perso frame: ricevono solo keyframe finche' non si riallineano
         self._desynced: Set[asyncio.Queue] = set()
@@ -247,11 +251,34 @@ class DeviceStream:
         # fullscreen e interazione reattiva.
         q: asyncio.Queue = asyncio.Queue(maxsize=1)
         self._subscribers.add(q)
+        # Partenza immediata solo se il keyframe in cache e' ancora l'ultimo
+        # frame prodotto. Altrimenti keyframe vecchio + delta recenti = video
+        # corrotto o decoder in errore: si aspetta un keyframe fresco.
+        if self._last_keyframe and self._frames_since_key == 0:
+            q.put_nowait(self._last_keyframe)
+        else:
+            self._desynced.add(q)
+            self.request_keyframe()
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self._subscribers.discard(q)
         self._desynced.discard(q)
+
+    def request_keyframe(self) -> None:
+        """Chiede all'encoder un nuovo keyframe (throttle 1s per stream).
+
+        Senza i-frame-interval MediaCodec emette IDR solo all'avvio: un client
+        che perde anche un solo delta resterebbe congelato per sempre.
+        """
+        ctrl = self.control
+        if ctrl is None:
+            return
+        now = time.monotonic()
+        if now - self._last_key_request < 1.0:
+            return
+        self._last_key_request = now
+        asyncio.create_task(ctrl.reset_video())
 
     # ------------------------------------------------------------------
     # Core: scrcpy-server standalone via TCP
@@ -872,6 +899,7 @@ class DeviceStream:
         self._pps = b""
         self._h264_config = b""
         self._last_keyframe = None
+        self._frames_since_key = 0
         await self._remove_forward()
 
     async def _log_proc_output(self, proc: asyncio.subprocess.Process,
@@ -935,29 +963,42 @@ class DeviceStream:
         self._last_heartbeat = time.monotonic()
         # Keyframe H264 (flag 0x01): riallinea un client che ha perso frame.
         is_key = frame[:1] == b"\x01"
+        self._frames_since_key = 0 if is_key else self._frames_since_key + 1
         dead: List[asyncio.Queue] = []
+        need_key = False
         for q in self._subscribers:
             try:
                 if q in self._desynced:
                     # Ha perso frame: i delta produrrebbero video corrotto,
                     # si riallinea solo sul prossimo keyframe.
                     if not is_key:
+                        need_key = True
                         continue
                     self._desynced.discard(q)
                 # Last-frame-wins: se la coda e' piena, svuotiamo e
                 # inseriamo il frame piu' recente. Con maxsize=1 il client
                 # riceve SEMPRE l'ultimo frame prodotto da scrcpy.
+                dropped = False
                 while True:
                     try:
                         q.get_nowait()
+                        dropped = True
                     except asyncio.QueueEmpty:
                         break
+                if dropped and not is_key:
+                    # Il delta scartato era il riferimento di questo: il
+                    # client non puo' piu' decodificare, serve un keyframe.
+                    self._desynced.add(q)
+                    need_key = True
+                    continue
                 q.put_nowait(frame)
             except Exception:
                 dead.append(q)
         for q in dead:
             self._subscribers.discard(q)
             self._desynced.discard(q)
+        if need_key:
+            self.request_keyframe()
 
 
 class StreamManager:
