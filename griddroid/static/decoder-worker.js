@@ -3,8 +3,6 @@ let decoder = null;
 // successivi non sono decodificabili, si riparte solo da un keyframe.
 let needKey = false;
 let lastKeyRequest = 0;
-let canvas = null;
-let canvasCtx = null;
 
 function resetDecoder() {
     if (decoder) {
@@ -125,8 +123,6 @@ self.onmessage = (event) => {
     const { type, payload } = event.data;
     if (type === 'init') {
         resetDecoder();
-        canvas = event.data.canvas || null;
-        canvasCtx = canvas ? canvas.getContext('2d', { alpha: false, desynchronized: true }) : null;
         return;
     }
     if (type === 'decode') {
@@ -148,20 +144,18 @@ async function handleDecode(payload) {
         const codec = `avc1.${profile}${constraints}${level}`;
         decoder = new VideoDecoder({
             output: (frame) => {
-                const width = frame.displayWidth || frame.codedWidth;
-                const height = frame.displayHeight || frame.codedHeight;
+                // Zero-copy: il VideoFrame viene trasferito al main thread
+                // e disegnato direttamente sul canvas. createImageBitmap
+                // costava una copia GPU in piu' per ogni frame di ogni telefono.
                 try {
-                    if (!canvasCtx) throw new Error('OffscreenCanvas non disponibile');
-                    if (canvas.width !== width || canvas.height !== height) {
-                        canvas.width = width;
-                        canvas.height = height;
-                    }
-                    canvasCtx.drawImage(frame, 0, 0, width, height);
-                    self.postMessage({ type: 'rendered', codedWidth: width, codedHeight: height });
+                    self.postMessage({
+                        type: 'frame',
+                        frame: frame,
+                        codedWidth: frame.displayWidth || frame.codedWidth,
+                        codedHeight: frame.displayHeight || frame.codedHeight,
+                    }, [frame]);
                 } catch (err) {
-                    console.error('[Decoder] render error:', err);
-                    self.postMessage({ type: 'error', message: String(err) });
-                } finally {
+                    console.error('[Decoder] output error:', err);
                     try { frame.close(); } catch (e) {}
                 }
             },

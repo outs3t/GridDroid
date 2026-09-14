@@ -1210,6 +1210,11 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             if dev:
                 dev.selected = cmd.get("selected", True)
 
+        elif action == "select_all":
+            selected = cmd.get("selected", True)
+            for dev in adb.devices.values():
+                dev.selected = selected
+
         elif action == "set_played":
             adb.set_played(serial, cmd.get("played", True))
 
