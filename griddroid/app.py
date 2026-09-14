@@ -1038,10 +1038,37 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         # rete lenta: banda ridotta del ~95%, il decoder resta agganciato
         # perche' ogni keyframe e' auto-contenuto.
         lite = ws.query_params.get("lite") == "1"
+        # Modalita' JPEG: il server decodifica con ffmpeg e manda JPEG
+        # pronti (flag 0x02 + dati JPEG). Per browser senza WebCodecs.
+        mode = ws.query_params.get("mode")
         stream = streams.get_stream(serial)
         if not stream:
             await ws.close(code=1008, reason="stream non attivo")
             return
+
+        if mode == "jpeg":
+            if not streams.ffmpeg_available():
+                await ws.close(code=1011, reason="ffmpeg non trovato")
+                return
+            jq = stream.subscribe_jpeg()
+            try:
+                while True:
+                    jpeg = await jq.get()
+                    # None = stream terminato: chiudiamo il WS cosi' il
+                    # browser riceve onclose e schedula la riconnessione.
+                    if jpeg is None:
+                        break
+                    await ws.send_bytes(b"\x02" + jpeg)
+            except (WebSocketDisconnect, Exception):
+                pass
+            finally:
+                stream.unsubscribe_jpeg(jq)
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            return
+
         # subscribe() mette in coda il keyframe in cache se e' ancora
         # attuale, altrimenti chiede all'encoder un keyframe fresco.
         q = stream.subscribe()

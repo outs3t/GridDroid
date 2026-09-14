@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 
@@ -128,6 +128,8 @@ def _adb_executable_works(path: str) -> bool:
 
 class StreamSettings(BaseModel):
     """Parametri di streaming video."""
+    # Chiavi di versioni piu' nuove/vecchie non devono impedire l'avvio.
+    model_config = ConfigDict(extra="ignore")
     # Profilo Okto (osservato nei suoi log con 26 telefoni fluidi):
     # lato lungo 1440px (648x1440), 20fps, 1 Mbps, encoder hardware,
     # nessun B-frame. bit_rate e' il bitrate reale passato all'encoder.
@@ -139,6 +141,11 @@ class StreamSettings(BaseModel):
     # mai — e' la scelta di Panda per la stabilita' su farm dense.
     software_encoder: bool = Field(default=False)
     max_concurrent_stream_starts: int = Field(default=4, ge=1, le=32)
+    # Modalita' JPEG server-side (fallback compatibile): il server
+    # decodifica l'H264 con ffmpeg e manda JPEG pronti al browser.
+    jpeg_fps: int = Field(default=10, ge=1, le=30)
+    jpeg_max_size: int = Field(default=720, ge=240, le=2800)  # lato lungo
+    jpeg_quality: int = Field(default=6, ge=2, le=31)  # -q:v ffmpeg: 2=migliore, 31=peggiore
 
 
 class AppSettings(BaseSettings):
@@ -168,6 +175,8 @@ class AppSettings(BaseSettings):
 
     class Config:
         env_prefix = "GRIDDROID_"
+        # Chiavi di versioni piu' nuove/vecchie non devono impedire l'avvio.
+        extra = "ignore"
 
 
 def load_settings() -> AppSettings:

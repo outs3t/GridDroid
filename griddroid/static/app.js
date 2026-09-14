@@ -22,6 +22,16 @@ const state = {
     showPlayed: localStorage.getItem("griddroid_show_played") === "1",
     showSkipped: localStorage.getItem("griddroid_show_skipped") === "1",
     sortBy: localStorage.getItem("griddroid_sort_by") || "az",
+    // AutoWatch: apre il WS video solo per le celle visibili in griglia
+    // (+ quella in fullscreen). Il server continua a far girare scrcpy.
+    autoWatch: localStorage.getItem("griddroid.autoWatch") !== "0",
+    visibleSerials: new Set(),
+    // Modalita' video: 'h264' decodifica nel browser (WebCodecs),
+    // 'mse' usa il <video>+JMuxer legacy, 'jpeg' decodifica sul server
+    // (ffmpeg -> JPEG) per i browser senza WebCodecs.
+    videoMode: ["h264", "mse", "jpeg"].includes(localStorage.getItem("griddroid.videoMode"))
+        ? localStorage.getItem("griddroid.videoMode")
+        : "h264",
 };
 
 // =====================================================================
@@ -229,6 +239,7 @@ function renderGrid() {
             if (!cell) {
                 cell = createDeviceCell(dev);
                 card = wrapDeviceCard(cell, dev);
+                awObserveCell(cell);
             } else {
                 card = cell.parentElement;
             }
@@ -258,6 +269,7 @@ function renderGrid() {
             }
             const feed = cell.querySelector(".device-feed");
             if (feed) stopStreamWs(feed);
+            awUnobserveCell(cell);
             card?.remove();
         }
     });
@@ -278,7 +290,9 @@ function renderGrid() {
     }
 }
 
-const USE_WEBCODECS = false;
+// In modalita' 'mse' la cella ha solo il <video> (JMuxer), come in
+// produzione fino alla 0.1.116. Altrimenti canvas + WebCodecs.
+const USE_WEBCODECS = state.videoMode !== 'mse';
 
 function createDeviceCell(dev) {
     const cell = document.createElement("div");
@@ -758,11 +772,15 @@ function updateDeviceCell(cell, dev) {
     }
 
     if (dev.streaming) {
-        // Avvia WebSocket binario per stream a latenza minima (con cooldown)
-        const retryAt = parseInt(feed.dataset.wsRetryAt, 10) || 0;
-        const ready = !feed.dataset.wsActive || (feed.dataset.wsActive !== dev.serial && Date.now() > retryAt);
-        if (ready) {
-            startStreamWs(feed, dev.serial);
+        // Con AutoWatch attivo il WS parte solo se la cella e' visibile
+        // (o in fullscreen); le celle fuori vista restano in pausa.
+        if (shouldWatch(dev.serial)) {
+            // Avvia WebSocket binario per stream a latenza minima (con cooldown)
+            const retryAt = parseInt(feed.dataset.wsRetryAt, 10) || 0;
+            const ready = !feed.dataset.wsActive || (feed.dataset.wsActive !== dev.serial && Date.now() > retryAt);
+            if (ready) {
+                startStreamWs(feed, dev.serial);
+            }
         }
 
         const streamBtn = cell.querySelector('[data-action="stream_toggle"]');
@@ -780,6 +798,88 @@ function updateDeviceCell(cell, dev) {
 // =====================================================================
 
 const streamSessions = {};
+
+// ---------------------------------------------------------------------
+// AutoWatch: il WS video resta aperto solo per le celle visibili nella
+// griglia (con margine) e per quella in fullscreen. Le celle che escono
+// dallo schermo vengono messe in pausa dopo un breve debounce; il server
+// continua comunque a far girare scrcpy per tutti i device.
+// ---------------------------------------------------------------------
+
+let _awObserver = null;
+const _awTimers = {}; // serial -> timeout di messa in pausa
+
+function shouldWatch(serial) {
+    if (!_awObserver) return true; // niente IntersectionObserver: guarda tutto
+    return !state.autoWatch
+        || state.fullscreenSerial === serial
+        || state.visibleSerials.has(serial);
+}
+
+// Debounce 1500ms: se la cella torna visibile il timer viene annullato.
+function awSchedulePause(cell, serial) {
+    if (_awTimers[serial]) clearTimeout(_awTimers[serial]);
+    _awTimers[serial] = setTimeout(() => {
+        delete _awTimers[serial];
+        if (state.visibleSerials.has(serial) || state.fullscreenSerial === serial) return;
+        const feed = cell.querySelector('.device-feed');
+        if (feed && feed.dataset.wsActive === serial) {
+            stopStreamWs(feed);
+            const ph = cell.querySelector('.device-feed-placeholder');
+            if (ph) {
+                const icon = ph.querySelector('.icon');
+                const txt = ph.querySelector('span');
+                if (icon) icon.textContent = '⏸';
+                if (txt) txt.textContent = 'In pausa (fuori vista)';
+                ph.style.display = 'flex';
+            }
+        }
+    }, 1500);
+}
+
+function awObserveCell(cell) {
+    if (_awObserver) _awObserver.observe(cell);
+}
+
+function awUnobserveCell(cell) {
+    const serial = cell.dataset.serial;
+    if (_awObserver) _awObserver.unobserve(cell);
+    if (serial) {
+        state.visibleSerials.delete(serial);
+        if (_awTimers[serial]) { clearTimeout(_awTimers[serial]); delete _awTimers[serial]; }
+    }
+}
+
+function initAutoWatch() {
+    if (!("IntersectionObserver" in window)) return;
+    const root = document.getElementById('gridContainer');
+    _awObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            const cell = entry.target;
+            const serial = cell.dataset.serial;
+            if (!serial) continue;
+            if (entry.isIntersecting) {
+                state.visibleSerials.add(serial);
+                if (_awTimers[serial]) { clearTimeout(_awTimers[serial]); delete _awTimers[serial]; }
+                if (!state.autoWatch) continue;
+                // Cella appena diventata visibile: avvia subito lo stream
+                // rispettando il cooldown wsRetryAt come updateDeviceCell.
+                const dev = state.devices.find((d) => d.serial === serial);
+                const feed = cell.querySelector('.device-feed');
+                if (dev && dev.streaming && feed && feed.dataset.wsActive !== serial) {
+                    const retryAt = parseInt(feed.dataset.wsRetryAt, 10) || 0;
+                    if (Date.now() > retryAt) startStreamWs(feed, serial);
+                }
+            } else {
+                state.visibleSerials.delete(serial);
+                if (!state.autoWatch) continue;
+                awSchedulePause(cell, serial);
+            }
+        }
+    }, { root, rootMargin: '200px 0px', threshold: 0 });
+    // Osserva anche le celle gia' presenti nel DOM
+    document.querySelectorAll('.device-cell').forEach(awObserveCell);
+}
 
 // Modalita' Remota: questo browser riceve solo keyframe (?lite=1).
 // Per-browser, non tocca gli altri client. Default ON fuori da localhost.
@@ -930,14 +1030,27 @@ function startStreamWs(feedEl, serial) {
     setPlaceholder('Connessione in corso...', '⏳');
 
     const session = { ws: null, feedEl, jmuxer: null, decoder: null, ctx: null, pts: 0, configured: false, gotKey: false };
+    // Modalita' JPEG: il server decodifica con ffmpeg e manda JPEG pronti
+    // (flag 0x02). Il browser disegna senza decodificare H264: serve solo
+    // un canvas, niente worker/decoder/JMuxer.
+    const jpegMode = state.videoMode === 'jpeg';
+    if (jpegMode && feedEl.tagName !== 'CANVAS') {
+        setPlaceholder('Modalità JPEG richiede canvas', '⚠️');
+        feedEl.dataset.wsRetryAt = Date.now() + 5000;
+        return;
+    }
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const liteQs = remoteLiteMode() ? "?lite=1" : "";
-    const ws = new WebSocket(`${protocol}//${location.host}/ws/stream/${serial}${liteQs}`);
+    const wsParams = new URLSearchParams();
+    if (remoteLiteMode()) wsParams.set('lite', '1');
+    if (jpegMode) wsParams.set('mode', 'jpeg');
+    const wsQs = wsParams.toString() ? `?${wsParams.toString()}` : "";
+    const ws = new WebSocket(`${protocol}//${location.host}/ws/stream/${serial}${wsQs}`);
     ws.binaryType = "arraybuffer";
     session.ws = ws;
+    session.jpegMode = jpegMode;
 
-    if (useWorker) {
-        const worker = new Worker('/static/decoder-worker.js?v=116');
+    if (!jpegMode && useWorker) {
+        const worker = new Worker('/static/decoder-worker.js?v=117');
         let gotKey = false;
         worker.onmessage = (event) => {
             const msg = event.data;
@@ -967,9 +1080,9 @@ function startStreamWs(feedEl, serial) {
         session.worker = worker;
     }
 
-    if (useWebCodecs) {
+    if (!jpegMode && useWebCodecs) {
         session.ctx = feedEl.getContext("2d", { alpha: false });
-    } else if (typeof JMuxer === "undefined") {
+    } else if (!jpegMode && !useWorker && typeof JMuxer === "undefined") {
         console.error("JMuxer non caricato");
         setPlaceholder('Errore player MSE', '⚠️');
         return;
@@ -982,6 +1095,14 @@ function startStreamWs(feedEl, serial) {
     ws.onmessage = (event) => {
         const data = new Uint8Array(event.data);
         if (data.length < 2) return;
+
+        // Flag 0x02: frame JPEG dal transcoder server-side
+        if (data[0] === 2) {
+            createImageBitmap(new Blob([data.subarray(1)], { type: 'image/jpeg' }))
+                .then((bm) => scheduleCanvasDraw(feedEl, serial, bm, bm.width, bm.height))
+                .catch((err) => console.error(`[JPEG] ${serial}:`, err));
+            return;
+        }
 
         const isKey = data[0] === 1;
         const h264Data = data.subarray(1);
@@ -1075,10 +1196,15 @@ function startStreamWs(feedEl, serial) {
             // Fallback MSE/JMuxer
             if (!session.jmuxer) {
                 try {
+                    // fps reale dello stream: con 5 cablato lo stream a
+                    // 15-20fps andava a rallentatore fino al buffer nero.
+                    let streamFps = parseInt(document.getElementById('maxFps')?.value, 10) || 20;
+                    if (streamFps < 1 || streamFps > 60) streamFps = 20;
+                    if (DEBUG_STREAM()) console.log(`[JMuxer] init ${serial} @ ${streamFps}fps`);
                     session.jmuxer = new JMuxer({
                         node: feedEl,
                         mode: 'video',
-                        fps: 5,
+                        fps: streamFps,
                         flushingTime: 50,
                         clearBuffer: true,
                         maxDelay: 1000,
@@ -1111,7 +1237,15 @@ function startStreamWs(feedEl, serial) {
         }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
+        // ffmpeg mancante sul server: torniamo a H264 e riconnettiamo.
+        if (session.jpegMode && ev && ev.reason && ev.reason.indexOf('ffmpeg') !== -1) {
+            toast('ffmpeg non disponibile: torno a H264', 'warn');
+            state.videoMode = 'h264';
+            localStorage.setItem('griddroid.videoMode', 'h264');
+            location.reload();
+            return;
+        }
         setPlaceholder('Connessione persa', '📵');
         if (streamSessions[serial] === session) {
             feedEl.dataset.wsActive = "";
@@ -1142,6 +1276,18 @@ function startStreamWs(feedEl, serial) {
     feedEl.dataset.wsActive = serial;
     feedEl.dataset.wsRetryAt = "";
     streamSessions[serial] = session;
+}
+
+// Riavvia tutte le sessioni stream attive: usato quando cambia un flag
+// per-browser (modalita' remota, modalita' video) che va applicato subito.
+function restartAllFeeds() {
+    for (const feed of document.querySelectorAll(".device-feed[data-ws-active]")) {
+        const serial = feed.dataset.wsActive;
+        if (!serial) continue;
+        stopStreamWs(feed);
+        feed.dataset.wsRetryAt = "";
+        startStreamWs(feed, serial);
+    }
 }
 
 function stopStreamWs(feedEl) {
@@ -1520,6 +1666,8 @@ function exitFullscreen() {
         }
         c._fsParent = null;
         c._fsNext = null;
+        // Torna in griglia: l'AutoWatch deve rivalutare la visibilita'.
+        awObserveCell(c);
     });
     document.getElementById("fullscreenBackdrop")?.remove();
     document.querySelectorAll(".fs-left-label").forEach((el) => el.remove());
@@ -2584,19 +2732,51 @@ async function initSettings() {
             localStorage.setItem("griddroid_remote_lite", on ? "1" : "0");
             renderRemoteLite();
             // Riavvia tutte le sessioni stream attive per applicare il flag
-            for (const feed of document.querySelectorAll("canvas[data-ws-active]")) {
-                const serial = feed.dataset.wsActive;
-                if (!serial) continue;
-                stopStreamWs(feed);
-                feed.dataset.wsRetryAt = "";
-                startStreamWs(feed, serial);
-            }
+            restartAllFeeds();
             toast(
                 on
                     ? "Modalità Remota attiva: solo keyframe, banda ridotta"
                     : "Modalità Remota disattivata: stream completo",
                 "success"
             );
+        });
+    }
+
+    // Modalita' video: H264 decodificato nel browser (WebCodecs) oppure
+    // JPEG decodificato sul server con ffmpeg (per WebView2 e browser
+    // senza decoder hw). Per-browser, salvato in localStorage.
+    const videoModeSelect = document.getElementById("videoModeSelect");
+    if (videoModeSelect) {
+        videoModeSelect.value = state.videoMode;
+        videoModeSelect.addEventListener("change", () => {
+            const mode = ["h264", "mse", "jpeg"].includes(videoModeSelect.value)
+                ? videoModeSelect.value : 'h264';
+            localStorage.setItem("griddroid.videoMode", mode);
+            state.videoMode = mode;
+            // Le celle vanno ricreate con l'elemento giusto (canvas vs video).
+            location.reload();
+        });
+    }
+
+    // AutoWatch: stream solo per i telefoni visibili in griglia.
+    const autoWatchToggle = document.getElementById("autoWatchToggle");
+    if (autoWatchToggle) {
+        autoWatchToggle.checked = state.autoWatch;
+        autoWatchToggle.addEventListener("change", () => {
+            state.autoWatch = autoWatchToggle.checked;
+            localStorage.setItem("griddroid.autoWatch", state.autoWatch ? "1" : "0");
+            if (!state.autoWatch) {
+                // Disattivato: shouldWatch() e' sempre true, tutte le celle partono.
+                renderGrid();
+            } else {
+                // Riattivato: le celle fuori vista vengono messe in pausa.
+                document.querySelectorAll(".device-cell").forEach((cell) => {
+                    const serial = cell.dataset.serial;
+                    if (serial && !state.visibleSerials.has(serial) && state.fullscreenSerial !== serial) {
+                        awSchedulePause(cell, serial);
+                    }
+                });
+            }
         });
     }
 
@@ -4372,6 +4552,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initServerInfo();
     initCommandPalette();
     initContextMenu();
+    initAutoWatch();
     // Carica la versione dell'app
     fetch("/api/version").then(r => r.json()).then(d => {
         const el = document.getElementById("versionBadge");

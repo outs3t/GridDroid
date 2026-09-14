@@ -89,6 +89,48 @@ def _find_scrcpy_server() -> Optional[str]:
     return None
 
 
+def find_ffmpeg(adb_path: str = "") -> Optional[str]:
+    """Cerca ffmpeg: accanto ad adb.exe, nella cartella tools, poi nel PATH."""
+    if adb_path:
+        beside = Path(adb_path).with_name("ffmpeg.exe")
+        if beside.exists():
+            return str(beside)
+    bundled = _tools_dir() / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if bundled.exists():
+        return str(bundled)
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    return None
+
+
+def _split_jpegs(buf: bytearray) -> List[bytes]:
+    """Estrae i JPEG completi dal buffer (SOI FFD8 .. EOI FFD9).
+
+    ffmpeg in modalita' image2pipe/mjpeg emette un JPEG completo per frame;
+    le letture da pipe arrivano a blocchi arbitrari, quindi i confini vanno
+    cercati nel byte-stream accumulato. Modifica buf in place.
+    """
+    frames: List[bytes] = []
+    while True:
+        soi = buf.find(b"\xff\xd8")
+        if soi < 0:
+            # Nessun SOI: conserva solo un eventuale 0xff in coda,
+            # potrebbe essere l'inizio di un SOI spezzato tra due read.
+            if buf[-1:] == b"\xff":
+                del buf[:-1]
+            else:
+                del buf[:]
+            break
+        eoi = buf.find(b"\xff\xd9", soi + 2)
+        if eoi < 0:
+            del buf[:soi]
+            break
+        frames.append(bytes(buf[soi:eoi + 2]))
+        del buf[:eoi + 2]
+    return frames
+
+
 def _is_port_free(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.3)
@@ -142,6 +184,15 @@ class DeviceStream:
         self._subscribers: Set[asyncio.Queue] = set()
         # Code che hanno perso frame: ricevono solo keyframe finche' non si riallineano
         self._desynced: Set[asyncio.Queue] = set()
+        # Transcoder JPEG server-side (modalita' compatibile): ffmpeg
+        # decodifica l'H264 e manda JPEG pronti ai subscriber.
+        self._jpeg_subs: Set[asyncio.Queue] = set()
+        self._jpeg_proc: Optional[asyncio.subprocess.Process] = None
+        self._jpeg_task: Optional[asyncio.Task] = None
+        self._jpeg_stop_task: Optional[asyncio.Task] = None
+        # True dal primo keyframe inviato a ffmpeg: prima di un IDR il
+        # decoder h264 non puo' produrre nulla.
+        self._jpeg_feed_ok: bool = False
         # Device il cui encoder crasha con i-frame-interval (0 frame):
         # set a livello di modulo perche' l'auto-stream ricrea DeviceStream
         # a ogni tentativo e una variabile locale si resetterebbe.
@@ -199,6 +250,17 @@ class DeviceStream:
         # Sblocca subito i subscriber: il WS video deve chiudersi anche se
         # la task e' gia' morta o impiega tempo a terminare.
         self._signal_stream_end()
+        if self._jpeg_stop_task:
+            self._jpeg_stop_task.cancel()
+            self._jpeg_stop_task = None
+        if self._jpeg_task:
+            self._jpeg_task.cancel()
+            try:
+                await asyncio.wait_for(self._jpeg_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            self._jpeg_task = None
+        await self._stop_jpeg_transcoder()
         if self._control:
             try:
                 await self._control.close()
@@ -281,6 +343,160 @@ class DeviceStream:
         asyncio.create_task(ctrl.reset_video())
 
     # ------------------------------------------------------------------
+    # Transcoder JPEG server-side (modalita' compatibile)
+    # ------------------------------------------------------------------
+
+    def subscribe_jpeg(self) -> asyncio.Queue:
+        """Coda da 1 JPEG: last-wins come i frame H264. Al primo subscriber
+        parte ffmpeg; all'ultimo unsubscribe si ferma dopo 5s di grazia."""
+        if self._jpeg_stop_task:
+            self._jpeg_stop_task.cancel()
+            self._jpeg_stop_task = None
+        q: asyncio.Queue = asyncio.Queue(maxsize=1)
+        self._jpeg_subs.add(q)
+        if self._jpeg_proc is None or self._jpeg_proc.returncode is not None:
+            if self._jpeg_task is None or self._jpeg_task.done():
+                self._jpeg_task = asyncio.create_task(self._run_jpeg_transcoder())
+        return q
+
+    def unsubscribe_jpeg(self, q: asyncio.Queue) -> None:
+        self._jpeg_subs.discard(q)
+        if not self._jpeg_subs and self._jpeg_proc is not None:
+            async def _delayed_stop():
+                try:
+                    await asyncio.sleep(5.0)
+                    if not self._jpeg_subs:
+                        await self._stop_jpeg_transcoder()
+                except asyncio.CancelledError:
+                    pass
+            self._jpeg_stop_task = asyncio.create_task(_delayed_stop())
+
+    async def _run_jpeg_transcoder(self) -> None:
+        """Avvia ffmpeg (H264 da stdin -> JPEG su stdout) e legge l'output."""
+        ffmpeg = find_ffmpeg(self._settings.adb_path)
+        if not ffmpeg:
+            logs.warn("ffmpeg non trovato: modalita' JPEG non disponibile",
+                      serial=self.serial)
+            return
+        s = self._settings.stream
+        size = s.jpeg_max_size
+        # Scala il lato lungo a jpeg_max_size, mantenendo il rapporto e
+        # dimensioni pari (richieste da mjpeg). Le virgole dentro if()
+        # vanno escapate per il parser dei filtri ffmpeg.
+        vf = (
+            f"fps={s.jpeg_fps},"
+            f"scale=if(gt(iw\\,ih)\\,min(iw\\,{size})\\,-2)"
+            f":if(gt(iw\\,ih)\\,-2\\,min(ih\\,{size}))"
+        )
+        cmd = [
+            ffmpeg, "-hide_banner", "-loglevel", "error",
+            "-fflags", "nobuffer", "-flags", "low_delay",
+            "-probesize", "32", "-analyzeduration", "0",
+            "-f", "h264", "-i", "pipe:0",
+            "-vf", vf,
+            "-q:v", str(s.jpeg_quality),
+            "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+        ]
+        try:
+            self._jpeg_proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                **_SUBPROCESS_KW,
+            )
+        except Exception as exc:
+            logs.warn(f"ffmpeg non avviabile: {exc}", serial=self.serial)
+            self._jpeg_proc = None
+            return
+        self._jpeg_feed_ok = False
+        logs.info(f"Transcoder JPEG avviato ({s.jpeg_fps}fps/{size}px)",
+                  serial=self.serial)
+        # Se il keyframe in cache e' ancora l'ultimo frame prodotto, lo
+        # diamo subito a ffmpeg: il primo JPEG arriva senza attendere il
+        # prossimo IDR dell'encoder.
+        if self._last_keyframe and self._frames_since_key == 0:
+            await self._feed_jpeg(True, self._last_keyframe[1:])
+        try:
+            buf = bytearray()
+            while True:
+                chunk = await self._jpeg_proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                for jpeg in _split_jpegs(buf):
+                    for q in list(self._jpeg_subs):
+                        try:
+                            if q.full():
+                                q.get_nowait()
+                            q.put_nowait(jpeg)
+                        except Exception:
+                            pass
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logs.warn(f"Transcoder JPEG: {exc}", serial=self.serial)
+        finally:
+            await self._stop_jpeg_transcoder()
+
+    async def _feed_jpeg(self, is_key: bool, au: bytes) -> None:
+        """Scrive un'access unit Annex-B nello stdin di ffmpeg."""
+        proc = self._jpeg_proc
+        if proc is None or proc.returncode is not None or proc.stdin is None:
+            return
+        try:
+            if not self._jpeg_feed_ok:
+                if not is_key:
+                    # Senza un IDR iniziale il decoder h264 non decodifica.
+                    return
+                # SPS/PPS davanti al primo keyframe se non gia' inclusi.
+                if self._h264_config and self._h264_config not in au:
+                    proc.stdin.write(self._h264_config)
+                self._jpeg_feed_ok = True
+            proc.stdin.write(au)
+            # Timeout sul drain: un ffmpeg inceppato non deve bloccare il
+            # loop _stream_h264 (frenerebbe TUTTI i subscriber del device).
+            await asyncio.wait_for(proc.stdin.drain(), timeout=1.0)
+        except asyncio.TimeoutError:
+            logs.warn("Transcoder JPEG lento: fermato", serial=self.serial)
+            await self._stop_jpeg_transcoder()
+        except (BrokenPipeError, ConnectionError, OSError):
+            await self._stop_jpeg_transcoder()
+        except Exception:
+            pass
+
+    async def _stop_jpeg_transcoder(self) -> None:
+        proc = self._jpeg_proc
+        self._jpeg_proc = None
+        self._jpeg_feed_ok = False
+        if proc is not None:
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                if proc.returncode is None:
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+            except (ProcessLookupError, Exception):
+                pass
+        # Sveglia i subscriber JPEG: stream/transcoder terminato.
+        for q in list(self._jpeg_subs):
+            try:
+                if q.full():
+                    q.get_nowait()
+                q.put_nowait(None)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
     # Core: scrcpy-server standalone via TCP
     # ------------------------------------------------------------------
 
@@ -352,6 +568,14 @@ class DeviceStream:
                     q.put_nowait(None)
                 except Exception:
                     pass
+            except Exception:
+                pass
+        # Anche i subscriber JPEG devono sbloccarsi a fine stream.
+        for q in list(self._jpeg_subs):
+            try:
+                if q.full():
+                    q.get_nowait()
+                q.put_nowait(None)
             except Exception:
                 pass
 
@@ -717,6 +941,8 @@ class DeviceStream:
                     if is_key:
                         self._last_keyframe = payload
                     self._distribute_frame(payload)
+                    if self._jpeg_proc is not None:
+                        await self._feed_jpeg(is_key, bytes(au))
                     au_count += 1
                     if au_count == 1:
                         logs.success(f"Stream H264 attivo (primo frame {len(au)} bytes)", serial=self.serial)
@@ -902,6 +1128,9 @@ class DeviceStream:
         self._h264_config = b""
         self._last_keyframe = None
         self._frames_since_key = 0
+        # Il transcoder JPEG (se attivo) deve ripartire dal prossimo IDR
+        # del nuovo stream: i delta di una sessione diversa non decodificano.
+        self._jpeg_feed_ok = False
         await self._remove_forward()
 
     async def _log_proc_output(self, proc: asyncio.subprocess.Process,
@@ -1016,6 +1245,10 @@ class StreamManager:
     @property
     def streams(self) -> Dict[str, DeviceStream]:
         return self._streams
+
+    def ffmpeg_available(self) -> bool:
+        """True se un ffmpeg utilizzabile per la modalita' JPEG esiste."""
+        return find_ffmpeg(self._settings.adb_path) is not None
 
     async def start_stream(
         self,

@@ -144,16 +144,43 @@ async function handleDecode(payload) {
         const codec = `avc1.${profile}${constraints}${level}`;
         decoder = new VideoDecoder({
             output: (frame) => {
-                // Zero-copy: il VideoFrame viene trasferito al main thread
-                // e disegnato direttamente sul canvas. createImageBitmap
-                // costava una copia GPU in piu' per ogni frame di ogni telefono.
+                // createImageBitmap e' il percorso stabile: WebView2 non
+                // renderizza i VideoFrame trasferiti al main thread (schermi
+                // neri), mentre gli ImageBitmap funzionano ovunque.
+                // Fallback al trasferimento del VideoFrame se manca o fallisce.
                 try {
-                    self.postMessage({
-                        type: 'frame',
-                        frame: frame,
-                        codedWidth: frame.displayWidth || frame.codedWidth,
-                        codedHeight: frame.displayHeight || frame.codedHeight,
-                    }, [frame]);
+                    if (typeof createImageBitmap !== 'undefined') {
+                        createImageBitmap(frame).then((bm) => {
+                            self.postMessage({
+                                type: 'frame',
+                                bitmap: bm,
+                                codedWidth: frame.displayWidth || frame.codedWidth,
+                                codedHeight: frame.displayHeight || frame.codedHeight,
+                            }, [bm]);
+                        }).catch((err) => {
+                            console.error('[Decoder] createImageBitmap:', err);
+                            // Fallback: trasferiamo il VideoFrame stesso
+                            try {
+                                self.postMessage({
+                                    type: 'frame',
+                                    frame: frame,
+                                    codedWidth: frame.displayWidth || frame.codedWidth,
+                                    codedHeight: frame.displayHeight || frame.codedHeight,
+                                }, [frame]);
+                            } catch (e) {
+                                try { frame.close(); } catch (e2) {}
+                            }
+                        }).finally(() => {
+                            try { frame.close(); } catch (e) {}
+                        });
+                    } else {
+                        self.postMessage({
+                            type: 'frame',
+                            frame: frame,
+                            codedWidth: frame.displayWidth || frame.codedWidth,
+                            codedHeight: frame.displayHeight || frame.codedHeight,
+                        }, [frame]);
+                    }
                 } catch (err) {
                     console.error('[Decoder] output error:', err);
                     try { frame.close(); } catch (e) {}
