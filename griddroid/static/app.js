@@ -884,6 +884,12 @@ function annexBToAVCC(data) {
 const _frameBuffers = new Map();
 
 function scheduleCanvasDraw(feedEl, serial, source, width, height) {
+    // Frame precedente non ancora disegnato: va chiuso subito, altrimenti
+    // il VideoFrame resta aperto e blocca il pool del decoder hw.
+    const prev = _frameBuffers.get(serial);
+    if (prev && prev.source !== source) {
+        try { prev.source.close(); } catch (e) {}
+    }
     _frameBuffers.set(serial, { source, width, height });
     if (feedEl._drawScheduled) return;
     feedEl._drawScheduled = true;
@@ -931,7 +937,7 @@ function startStreamWs(feedEl, serial) {
     session.ws = ws;
 
     if (useWorker) {
-        const worker = new Worker('/static/decoder-worker.js?v=111');
+        const worker = new Worker('/static/decoder-worker.js?v=114');
         let gotKey = false;
         worker.onmessage = (event) => {
             const msg = event.data;
@@ -1156,7 +1162,11 @@ function stopStreamWs(feedEl) {
             if (session.worker) { session.worker.terminate(); }
         } catch (e) { }
         delete streamSessions[serial];
-        _frameBuffers.delete(serial);
+        const pending = _frameBuffers.get(serial);
+        if (pending) {
+            try { pending.source.close(); } catch (e) {}
+            _frameBuffers.delete(serial);
+        }
     }
     feedEl.dataset.wsActive = "";
     feedEl.dataset.wsRetryAt = Date.now() + 3000 + Math.random() * 3000;

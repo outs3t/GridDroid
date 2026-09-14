@@ -128,12 +128,12 @@ def _adb_executable_works(path: str) -> bool:
 
 class StreamSettings(BaseModel):
     """Parametri di streaming video."""
-    # Profilo qualita': risoluzione nativa dei telefoni (la maggior parte
-    # e' 1080x2400, quindi lato lungo 2400) a 15fps con encoder hardware.
-    # bit_rate e' il bitrate reale passato all'encoder (4 Mbps default).
-    max_fps: int = Field(default=15, ge=1, le=60)
-    max_size: int = Field(default=2400, ge=240, le=2800)
-    bit_rate: int = Field(default=4_000_000, ge=50_000, le=20_000_000)
+    # Profilo Okto (osservato nei suoi log con 26 telefoni fluidi):
+    # lato lungo 1440px (648x1440), 20fps, 1 Mbps, encoder hardware,
+    # nessun B-frame. bit_rate e' il bitrate reale passato all'encoder.
+    max_fps: int = Field(default=20, ge=1, le=60)
+    max_size: int = Field(default=1440, ge=240, le=2800)
+    bit_rate: int = Field(default=1_000_000, ge=50_000, le=20_000_000)
     video_codec: str = Field(default="h264")
     # Encoder software OMX.google.h264.encoder: piu' lento ma non crasha
     # mai — e' la scelta di Panda per la stabilita' su farm dense.
@@ -212,28 +212,34 @@ def load_settings() -> AppSettings:
         and s.max_size >= 1080
         and s.bit_rate >= 8_000_000
     ):
-        s.max_fps = 15
-        s.max_size = 2400
-        s.bit_rate = 4_000_000
+        s.max_fps = 20
+        s.max_size = 1440
+        s.bit_rate = 1_000_000
         s.software_encoder = False
 
-    # Migrazione 0.1.113: profili ridotti (<=600p, <=5fps) salgono a
-    # 2400p@15: a bassi fps l'input lag era eccessivo e i telefoni sono
-    # 1080x2400, non 1920x1080 — il lato lungo va a 2400.
+    # Migrazione 0.1.113: profili ridotti (<=600p, <=5fps) salgono al
+    # profilo Okto: a bassi fps l'input lag era eccessivo.
     if (
         s.max_size <= 600
         and s.max_fps <= 5
         and s.bit_rate <= 100_000
     ):
-        s.max_fps = 15
-        s.max_size = 2400
-        s.bit_rate = 4_000_000
+        s.max_fps = 20
+        s.max_size = 1440
+        s.bit_rate = 1_000_000
         s.software_encoder = False
+
+    # Migrazione 0.1.114: il profilo 2400p@15/4Mbps della 0.1.113 era
+    # troppo pesante con 20+ telefoni (decode nel browser): profilo Okto.
+    if s.max_size >= 2400 and s.bit_rate >= 4_000_000:
+        s.max_fps = 20
+        s.max_size = 1440
+        s.bit_rate = 1_000_000
 
     # Il bitrate ora e' assoluto (non piu' un coefficiente scalato su
     # risoluzione/fps): i vecchi valori base <=200k sarebbero inutilizzabili.
     if s.bit_rate <= 200_000:
-        s.bit_rate = 4_000_000
+        s.bit_rate = 1_000_000
 
     # Migrazione 0.1.103: passa tutti all'encoder hardware. Il sw e' rimasto
     # come default legacy nelle config; ora lo ribaltiamo perche' l'hw e'

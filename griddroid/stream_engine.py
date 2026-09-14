@@ -569,6 +569,9 @@ class DeviceStream:
             50_000,
         )
         params = f"max_fps={max_fps} video_bit_rate={bit_rate} "
+        # Nessun B-frame: il decoder non deve riordinare, ogni frame e'
+        # mostrabile appena arriva (stessa opzione usata da Okto).
+        params += "video_codec_options=max-bframes:int=0 "
         # Encoder SOFTWARE (OMX.google) solo se esplicito o fallback.
         if use_software:
             params += "video_encoder=OMX.google.h264.encoder "
