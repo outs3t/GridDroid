@@ -914,9 +914,18 @@ function scheduleCanvasDraw(feedEl, serial, source, width, height) {
 
 function startStreamWs(feedEl, serial) {
     stopStreamWs(feedEl);
+    if (feedEl.dataset.offscreenTransferred === "1") {
+        const replacement = feedEl.cloneNode(false);
+        replacement.width = 0;
+        replacement.height = 0;
+        replacement.dataset.offscreenTransferred = "";
+        feedEl.replaceWith(replacement);
+        feedEl = replacement;
+        setupInputHandlers(feedEl, serial);
+    }
 
-    const useWorker = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined" && typeof Worker !== "undefined";
-    const useWebCodecs = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined" && typeof Worker === "undefined";
+    const useWorker = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined" && typeof Worker !== "undefined" && typeof feedEl.transferControlToOffscreen === "function";
+    const useWebCodecs = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined" && !useWorker;
 
     const placeholder = feedEl.parentElement.querySelector('.device-feed-placeholder');
     const iconEl = placeholder ? placeholder.querySelector('.icon') : null;
@@ -937,18 +946,20 @@ function startStreamWs(feedEl, serial) {
     session.ws = ws;
 
     if (useWorker) {
-        const worker = new Worker('/static/decoder-worker.js?v=114');
+        const worker = new Worker('/static/decoder-worker.js?v=115');
+        const offscreen = feedEl.transferControlToOffscreen();
+        feedEl.dataset.offscreenTransferred = "1";
+        worker.postMessage({ type: 'init', canvas: offscreen }, [offscreen]);
         let gotKey = false;
         worker.onmessage = (event) => {
             const msg = event.data;
             if (msg.type === 'ready') {
                 console.log(`[Worker] decoder ready ${serial}`);
-            } else if (msg.type === 'frame') {
-                if (msg.bitmap) {
-                    scheduleCanvasDraw(feedEl, serial, msg.bitmap, msg.codedWidth, msg.codedHeight);
-                } else if (msg.frame) {
-                    scheduleCanvasDraw(feedEl, serial, msg.frame, msg.codedWidth, msg.codedHeight);
-                }
+            } else if (msg.type === 'rendered') {
+                feedEl.dataset.videoWidth = msg.codedWidth;
+                feedEl.dataset.videoHeight = msg.codedHeight;
+                feedEl.style.display = 'block';
+                setPlaceholder('', '', false);
             } else if (msg.type === 'needkey') {
                 // Il decoder ha perso frame: chiediamo al server un keyframe
                 // fresco invece di restare congelati sull'ultimo frame buono.
@@ -1191,8 +1202,8 @@ function stopStreamWs(feedEl) {
  * nere (letterbox): senza compensarle il tocco risulta sfalsato.
  */
 function feedCoords(feedEl, ev) {
-    const vw = feedEl.videoWidth || feedEl.width;
-    const vh = feedEl.videoHeight || feedEl.height;
+    const vw = feedEl.videoWidth || Number(feedEl.dataset.videoWidth) || feedEl.width;
+    const vh = feedEl.videoHeight || Number(feedEl.dataset.videoHeight) || feedEl.height;
     if (!vw || !vh) return null;
 
     const rect = feedEl.getBoundingClientRect();

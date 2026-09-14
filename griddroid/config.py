@@ -174,7 +174,7 @@ def load_settings() -> AppSettings:
     """Carica le impostazioni dal file di configurazione, se esiste."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if CONFIG_FILE.exists():
-        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
         settings = AppSettings(**data)
     else:
         settings = AppSettings()
