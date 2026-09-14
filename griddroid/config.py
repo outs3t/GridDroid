@@ -369,7 +369,13 @@ def load_balances_state() -> Dict[str, dict]:
     """Carica lo stato saldi corrente: serial -> {saldo, bookmaker, username, nome, timestamp}."""
     if BALANCES_STATE_FILE.exists():
         try:
-            return json.loads(BALANCES_STATE_FILE.read_text(encoding="utf-8"))
+            state = json.loads(BALANCES_STATE_FILE.read_text(encoding="utf-8"))
+            # Rimuove bookmaker/saldi erronei salvati da versioni vecchie (package Android).
+            for v in state.values():
+                if isinstance(v, dict) and "." in (v.get("bookmaker") or ""):
+                    v["bookmaker"] = ""
+                    v["saldo"] = None
+            return state
         except Exception:
             return {}
     return {}

@@ -141,6 +141,26 @@
                         </div>
                     </div>
                     <div class="sidebar-section">
+                        <h4>Visualizzazione</h4>
+                        <div class="input-group" style="margin-bottom:8px;">
+                            <label class="input-label" for="deviceSortBy">Ordina per</label>
+                            <select id="deviceSortBy" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);">
+                                <option value="default">Ordine manuale</option>
+                                <option value="az">A-Z</option>
+                                <option value="online">Online prima</option>
+                                <option value="offline">Offline prima</option>
+                            </select>
+                        </div>
+                        <div class="input-group" style="align-items:flex-start;gap:6px;">
+                            <input type="checkbox" id="chkShowPlayed" style="margin-top:2px;" />
+                            <label for="chkShowPlayed" style="font-weight:normal;cursor:pointer;">Mostra giocati</label>
+                        </div>
+                        <div class="input-group" style="align-items:flex-start;gap:6px;">
+                            <input type="checkbox" id="chkShowSkipped" style="margin-top:2px;" />
+                            <label for="chkShowSkipped" style="font-weight:normal;cursor:pointer;">Mostra non giocati</label>
+                        </div>
+                    </div>
+                    <div class="sidebar-section">
                         <h4>Selezione</h4>
                         <div style="display:flex;gap:6px;margin-bottom:10px;">
                             <button class="btn btn-success" id="btnSelectAll" style="flex:1;">Tutti</button>

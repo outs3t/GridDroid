@@ -19,6 +19,9 @@ const state = {
     searchText: "",
     searchMode: "name",
     activeGroupFilter: null,
+    showPlayed: localStorage.getItem("griddroid_show_played") === "1",
+    showSkipped: localStorage.getItem("griddroid_show_skipped") === "1",
+    sortBy: localStorage.getItem("griddroid_sort_by") || "default",
 };
 
 // =====================================================================
@@ -172,11 +175,30 @@ function renderGrid() {
         });
     }
 
-    // Ordine manuale (numero crescente), poi A-Z
-    devices.sort((a, b) => (a.order || 0) - (b.order || 0) || (a.display_name || "").localeCompare(b.display_name || ""));
+    // Ordinamento
+    if (state.sortBy === "az") {
+        devices.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || ""));
+    } else if (state.sortBy === "online") {
+        devices.sort((a, b) =>
+            (b.status === "online" ? 1 : 0) - (a.status === "online" ? 1 : 0) ||
+            (a.display_name || "").localeCompare(b.display_name || "")
+        );
+    } else if (state.sortBy === "offline") {
+        devices.sort((a, b) =>
+            (a.status === "online" ? 1 : 0) - (b.status === "online" ? 1 : 0) ||
+            (a.display_name || "").localeCompare(b.display_name || "")
+        );
+    } else {
+        // Ordine manuale (numero crescente), poi A-Z
+        devices.sort((a, b) => (a.order || 0) - (b.order || 0) || (a.display_name || "").localeCompare(b.display_name || ""));
+    }
 
-    // Nascondi i dispositivi segnati come "giocati" o "non giocati"
-    devices = devices.filter((dev) => !dev.played && !dev.skipped);
+    // Mostra/Nascondi giocati e non giocati
+    devices = devices.filter((dev) => {
+        if (dev.played && !state.showPlayed) return false;
+        if (dev.skipped && !state.showSkipped) return false;
+        return true;
+    });
 
     // Filtro "mostra solo questi": tiene solo i seriali selezionati
     if (state.soloSerials) {
@@ -3892,6 +3914,48 @@ function initAccordion() {
 }
 
 // =====================================================================
+// Visualizzazione
+// =====================================================================
+
+function initViewControls() {
+    const sortBy = document.getElementById("deviceSortBy");
+    const chkShowPlayed = document.getElementById("chkShowPlayed");
+    const chkShowSkipped = document.getElementById("chkShowSkipped");
+    const btnSort = document.getElementById("btnSort");
+
+    if (sortBy) {
+        sortBy.value = state.sortBy;
+        sortBy.addEventListener("change", () => {
+            state.sortBy = sortBy.value;
+            localStorage.setItem("griddroid_sort_by", state.sortBy);
+            renderGrid();
+        });
+    }
+
+    if (chkShowPlayed) {
+        chkShowPlayed.checked = state.showPlayed;
+        chkShowPlayed.addEventListener("change", () => {
+            state.showPlayed = chkShowPlayed.checked;
+            localStorage.setItem("griddroid_show_played", state.showPlayed ? "1" : "0");
+            renderGrid();
+        });
+    }
+
+    if (chkShowSkipped) {
+        chkShowSkipped.checked = state.showSkipped;
+        chkShowSkipped.addEventListener("change", () => {
+            state.showSkipped = chkShowSkipped.checked;
+            localStorage.setItem("griddroid_show_skipped", state.showSkipped ? "1" : "0");
+            renderGrid();
+        });
+    }
+
+    if (btnSort) {
+        btnSort.classList.toggle("active", state.sortBy === "az");
+    }
+}
+
+// =====================================================================
 // Search
 // =====================================================================
 
@@ -4267,6 +4331,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initScriptPanel();
     initHeaderButtons();
     initSearch();
+    initViewControls();
     initDragSelect();
     initLogPanel();
     initZoomControls();

@@ -1,3 +1,3 @@
 """GridDroid - Farm manager per dispositivi Android via USB."""
 
-__version__ = "0.1.109"
+__version__ = "0.1.110"
