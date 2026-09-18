@@ -1289,7 +1289,7 @@ function startStreamWs(feedEl, serial) {
     session.jpegMode = jpegMode;
 
     if (!jpegMode && useWorker) {
-        const worker = new Worker('/static/decoder-worker.js?v=123');
+        const worker = new Worker('/static/decoder-worker.js?v=124');
         let gotKey = false;
         worker.onmessage = (event) => {
             const msg = event.data;
@@ -1401,20 +1401,34 @@ function startStreamWs(feedEl, serial) {
 
             const avcc = annexBToAVCC(h264Data);
             if (!avcc) return;
+            // Dopo un delta scartato la catena e' rotta: i delta successivi
+            // non decodificano, aspettiamo il keyframe richiesto al server.
+            if (session.needKey && !isKey) return;
             try {
                 // Latenza zero: se il decoder e' indietro, scartiamo i
-                // delta. Se anche i keyframe si accumulano (> 2), forziamo
+                // delta. Se anche i keyframe si accumulano (> 6), forziamo
                 // un reset del decoder per evitare che il buffer interno
                 // cresca (causa del lag di 1s in fullscreen).
-                if (session.decoder.decodeQueueSize > 2) {
+                // Soglie rilassate: con 20+ stream il decoder hw va in
+                // backlog per picchi brevi e ogni richiesta keyframe costa
+                // un reset_video (re-init completa della cattura).
+                if (session.decoder.decodeQueueSize > 4) {
                     if (!isKey) {
+                        // Chiediamo un keyframe (throttle 1s) invece di
+                        // restare corrotti fino al prossimo errore.
+                        session.needKey = true;
+                        const now = Date.now();
+                        if (!session.lastKeyReq || now - session.lastKeyReq > 1000) {
+                            session.lastKeyReq = now;
+                            try { ws.send('k'); } catch (e) { }
+                        }
                         return;
                     }
                     // Reset soft del decoder: flush, poi se non basta chiudi
                     // e riconfigura al prossimo keyframe.
                     try {
                         session.decoder.flush();
-                        if (session.decoder.decodeQueueSize > 3) {
+                        if (session.decoder.decodeQueueSize > 6) {
                             session.configured = false;
                             session.gotKey = false;
                             session.decoder.close();
@@ -1428,6 +1442,7 @@ function startStreamWs(feedEl, serial) {
                 session.pts += 500_000;
                 const chunk = new EncodedVideoChunk({ type: isKey ? "key" : "delta", timestamp: session.pts, duration: 0, data: avcc });
                 session.decoder.decode(chunk);
+                if (isKey) session.needKey = false;
             } catch (e) {
                 console.error(`Decode ${serial}:`, e);
             }

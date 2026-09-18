@@ -51,6 +51,18 @@ _JAR_PUSHED: Set[str] = set()
 # Seriali per cui l'encoder hardware ha fallito: usiamo software.
 _HW_ENCODER_FAILED: Set[str] = set()
 
+# Righe stdout di scrcpy-server puramente di routine: vengono ripetute a
+# ogni avvio stream e a ogni reset_video (re-init cattura + encoder) e
+# non portano informazione diagnostica. Filtrarle dal log riduce il
+# fan-out websocket verso la UI, che a sua volta allevia l'event loop.
+_SERVER_STDOUT_NOISE: Tuple[str, ...] = (
+    "Display: using DisplayManager API",
+    "Using video encoder",
+    "Using codec option",
+    "Display size set to",
+    "Size alignment",
+)
+
 
 def _degrade_factor(level: int) -> Tuple[float, float]:
     """Ritorna (fattore_fps, fattore_bitrate) per il livello di degradazione."""
@@ -181,6 +193,10 @@ class DeviceStream:
         # in cache e' vecchio e non basta a far partire un nuovo client.
         self._frames_since_key: int = 0
         self._last_key_request: float = 0.0
+        # Reset keyframe ravvicinati: oltre i primi tentativi si passa a un
+        # ritmo piu' lento (un reset al secondo affossa l'encoder senza
+        # salvare un client cronicamente lento).
+        self._key_request_burst: int = 0
         self._subscribers: Set[asyncio.Queue] = set()
         # Code che hanno perso frame: ricevono solo keyframe finche' non si riallineano
         self._desynced: Set[asyncio.Queue] = set()
@@ -306,12 +322,13 @@ class DeviceStream:
             self._control_monitor_task = None
 
     def subscribe(self) -> asyncio.Queue:
-        # Coda da 1 frame: "last frame wins". Il client riceve SEMPRE il
-        # frame piu' recente prodotto dallo scrcpy-server. Se e' lento e
-        # non riesce a consumare, i vecchi frame vengono sovrascritti dai
-        # nuovi in _distribute_frame. Latenza minima possibile per
-        # fullscreen e interazione reattiva.
-        q: asyncio.Queue = asyncio.Queue(maxsize=1)
+        # Buffer di 3 frame (~150ms a 20fps): assorbe i ritardi brevi del
+        # consumer senza scartare nulla. Solo un backlog piu' lungo forza
+        # il "last frame wins" in _distribute_frame, che marca il client
+        # desync e richiede un keyframe. Con profondita' 1 bastava un
+        # singolo frame di ritardo per scatenare un reset_video, ovvero
+        # una re-init completa della cattura sul telefono.
+        q: asyncio.Queue = asyncio.Queue(maxsize=3)
         self._subscribers.add(q)
         # Partenza immediata solo se il keyframe in cache e' ancora l'ultimo
         # frame prodotto. Altrimenti keyframe vecchio + delta recenti = video
@@ -320,18 +337,27 @@ class DeviceStream:
             q.put_nowait(self._last_keyframe)
         else:
             self._desynced.add(q)
-            self.request_keyframe()
+            # Nuovo subscriber: bypassa il slow-mode, non puo' aspettare
+            # 10s per il primo frame (resta il throttle di 1s).
+            self.request_keyframe(force=True)
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self._subscribers.discard(q)
         self._desynced.discard(q)
 
-    def request_keyframe(self) -> None:
-        """Chiede all'encoder un nuovo keyframe (throttle 1s per stream).
+    def request_keyframe(self, force: bool = False) -> None:
+        """Chiede all'encoder un nuovo keyframe (throttle adattivo).
 
         Senza i-frame-interval MediaCodec emette IDR solo all'avvio: un client
         che perde anche un solo delta resterebbe congelato per sempre.
+        reset_video non e' gratis: scrcpy reinizializza tutta la cattura
+        (DisplayManager + encoder). Se un client si desincronizza di
+        continuo, un reset al secondo non lo salva e penalizza tutti gli
+        altri subscriber: dopo 3 richieste ravvicinate passiamo a un reset
+        ogni ~10s, finche' 30s di calma non riportano al ritmo veloce.
+        force=True (nuovo subscriber) salta il slow-mode ma non il throttle
+        base di 1s.
         """
         ctrl = self.control
         if ctrl is None:
@@ -339,6 +365,12 @@ class DeviceStream:
         now = time.monotonic()
         if now - self._last_key_request < 1.0:
             return
+        if not force:
+            if now - self._last_key_request > 30.0:
+                self._key_request_burst = 0
+            if self._key_request_burst >= 3 and now - self._last_key_request < 10.0:
+                return
+            self._key_request_burst += 1
         self._last_key_request = now
         asyncio.create_task(ctrl.reset_video())
 
@@ -1147,7 +1179,7 @@ class DeviceStream:
                         if tag == "server":
                             if any(k in text for k in ("ERROR", "FATAL", "Exception")):
                                 logs.warn(f"{tag}: {text}", serial=self.serial, throttle_s=30)
-                        else:
+                        elif not any(k in text for k in _SERVER_STDOUT_NOISE):
                             logs.info(f"{tag}: {text}", serial=self.serial, throttle_s=30)
                         self._on_server_output(text, tag)
             except Exception:
@@ -1206,23 +1238,22 @@ class DeviceStream:
                         need_key = True
                         continue
                     self._desynced.discard(q)
-                # Last-frame-wins: se la coda e' piena, svuotiamo e
-                # inseriamo il frame piu' recente. Con maxsize=1 il client
-                # riceve SEMPRE l'ultimo frame prodotto da scrcpy.
-                dropped = False
-                while True:
-                    try:
-                        q.get_nowait()
-                        dropped = True
-                    except asyncio.QueueEmpty:
-                        break
-                if dropped and not is_key:
-                    # Il delta scartato era il riferimento di questo: il
-                    # client non puo' piu' decodificare, serve un keyframe.
-                    self._desynced.add(q)
-                    need_key = True
-                    continue
-                q.put_nowait(frame)
+                try:
+                    q.put_nowait(frame)
+                except asyncio.QueueFull:
+                    # Backlog oltre il buffer (3 frame): last-frame-wins,
+                    # si svuota e si tiene solo il piu' recente. I frame
+                    # scartati rompono la catena dei delta: il client non
+                    # puo' piu' decodificare, serve un keyframe.
+                    while True:
+                        try:
+                            q.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    q.put_nowait(frame)
+                    if not is_key:
+                        self._desynced.add(q)
+                        need_key = True
             except Exception:
                 dead.append(q)
         for q in dead:
