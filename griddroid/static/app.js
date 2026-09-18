@@ -1214,6 +1214,7 @@ function createMseRemuxer(videoEl, onReady, onError) {
 
     let sb = null;
     let inited = false;
+    let failed = false;
     let seq = 0;
     let ts = 0;
     let queue = [];
@@ -1255,10 +1256,25 @@ function createMseRemuxer(videoEl, onReady, onError) {
             try { ms.removeSourceBuffer(sb); } catch (e) {}
             sb = null; inited = false; queue = [];
         }
+        // Codec reale dallo stream, poi fallback canonici: alcuni browser
+        // accettano solo stringhe "note" (42E01E Baseline, 4D401F Main,
+        // 640028 High) anche quando il profilo dichiarato e' valido.
+        const candidates = [codec, 'avc1.42E01E', 'avc1.4D401F', 'avc1.640028'];
+        let lastErr = null;
+        for (const c of candidates) {
+            try {
+                sb = ms.addSourceBuffer(`video/mp4; codecs="${c}"`);
+                break;
+            } catch (e) { lastErr = e; sb = null; }
+        }
+        if (!sb) {
+            // Nessun codec accettato: inutile riprovare a ogni keyframe
+            // (errore per frame nel log). Fallisce una volta e basta.
+            failed = true;
+            onError?.(lastErr);
+            return false;
+        }
         try {
-            // addSourceBuffer vuole il MIME completo, non il codec da solo:
-            // 'avc1.640028' lanciava sempre NotSupportedError.
-            sb = ms.addSourceBuffer(`video/mp4; codecs="${codec}"`);
             sb.mode = 'segments';
             sb.addEventListener('updateend', _flush);
             sb.addEventListener('error', (e) => onError?.(e));
@@ -1270,6 +1286,7 @@ function createMseRemuxer(videoEl, onReady, onError) {
     }
 
     function feed(isKey, h264Data) {
+        if (failed) return;
         const spspps = parseSpsPpsFromAnnexB(h264Data);
         if (isKey && spspps.sps && spspps.pps) {
             const changed = !lastSps || !lastPps ||
@@ -5145,43 +5162,90 @@ function initContextMenu() {
 // =====================================================================
 
 document.addEventListener("DOMContentLoaded", () => {
-    connectWebSocket();
-    setInterval(pollDevices, 2000);
-    initDock();
-    initAccordion();
-    initBulkActions();
-    initScriptPanel();
-    initHeaderButtons();
-    initSearch();
-    initViewControls();
-    initDragSelect();
-    initLogPanel();
-    initZoomControls();
-    initMacro();
-    initBookmakers();
-    initBalances();
-    initLedgerSync();
-    initSettings();
-    initGroups();
-    initSelection();
-    initResultModal();
-    initServerInfo();
-    initCommandPalette();
-    initContextMenu();
-    initAutoWatch();
-    // Carica la versione dell'app
-    fetch("/api/version").then(r => r.json()).then(d => {
-        const el = document.getElementById("versionBadge");
-        if (el && d.version) el.textContent = `v${d.version}`;
-    }).catch(() => {});
+    // Guard MSE: isTypeSupported dice SI anche quando addSourceBuffer
+    // poi lancia NotSupportedError (budget decoder esaurito o piattaforma
+    // senza pipeline MSE reale). Il test onesto e' creare un MediaSource
+    // vero e provare addSourceBuffer: se fallisce passiamo a Nativa.
+    const startApp = () => {
+        connectWebSocket();
+        setInterval(pollDevices, 2000);
+        initDock();
+        initAccordion();
+        initBulkActions();
+        initScriptPanel();
+        initHeaderButtons();
+        initSearch();
+        initViewControls();
+        initDragSelect();
+        initLogPanel();
+        initZoomControls();
+        initMacro();
+        initBookmakers();
+        initBalances();
+        initLedgerSync();
+        initSettings();
+        initGroups();
+        initSelection();
+        initResultModal();
+        initServerInfo();
+        initCommandPalette();
+        initContextMenu();
+        initAutoWatch();
+        // Carica la versione dell'app
+        fetch("/api/version").then(r => r.json()).then(d => {
+            const el = document.getElementById("versionBadge");
+            if (el && d.version) el.textContent = `v${d.version}`;
+        }).catch(() => {});
 
-    // Esito ultimo aggiornamento: toast di conferma o errore al riavvio
-    fetch("/api/update/result").then(r => r.json()).then(d => {
-        if (!d.pending) return;
-        if (d.success) {
-            toast(`Aggiornamento riuscito: GridDroid v${d.current}`, "success");
-        } else {
-            toast(`Aggiornamento a v${d.expected || "?"} NON riuscito — versione attuale v${d.current}`, "error");
+        // Esito ultimo aggiornamento: toast di conferma o errore al riavvio
+        fetch("/api/update/result").then(r => r.json()).then(d => {
+            if (!d.pending) return;
+            if (d.success) {
+                toast(`Aggiornamento riuscito: GridDroid v${d.current}`, "success");
+            } else {
+                toast(`Aggiornamento a v${d.expected || "?"} NON riuscito — versione attuale v${d.current}`, "error");
+            }
+        }).catch(() => {});
+    };
+
+    if (state.videoMode === 'mse' && typeof MediaSource !== 'undefined') {
+        try {
+            const testMs = new MediaSource();
+            const testVideo = document.createElement('video');
+            const bail = setTimeout(() => {
+                // sourceopen mai arrivato: MediaSource creato ma rotto.
+                state.videoMode = 'jpeg';
+                location.reload();
+            }, 3000);
+            testMs.addEventListener('sourceopen', () => {
+                let ok = false;
+                try {
+                    testMs.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
+                    ok = true;
+                } catch (e) { ok = false; }
+                clearTimeout(bail);
+                if (!ok) {
+                    toast('MSE non funzionante su questo browser: passo a Nativa', 'warn');
+                    state.videoMode = 'jpeg';
+                    location.reload();
+                    return;
+                }
+                startApp();
+            }, { once: true });
+            // sourceopen scatta solo con il MediaSource attaccato a un video.
+            testVideo.src = URL.createObjectURL(testMs);
+            return;
+        } catch (e) {
+            // MediaSource non creabile: Nativa diretta.
+            state.videoMode = 'jpeg';
+            location.reload();
+            return;
         }
-    }).catch(() => {});
+    } else if (state.videoMode === 'mse') {
+        // MediaSource proprio assente.
+        state.videoMode = 'jpeg';
+        location.reload();
+        return;
+    }
+    startApp();
 });
