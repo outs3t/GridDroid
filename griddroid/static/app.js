@@ -26,12 +26,13 @@ const state = {
     // (+ quella in fullscreen). Il server continua a far girare scrcpy.
     autoWatch: localStorage.getItem("griddroid.autoWatch") !== "0",
     visibleSerials: new Set(),
-    // Modalita' video: 'h264' decodifica nel browser (WebCodecs),
-    // 'mse' usa il <video> con remuxer fMP4 nativo, 'jpeg' decodifica
-    // sul server (ffmpeg -> JPEG) per i browser senza WebCodecs.
+    // Modalita' video: 'jpeg' = decode nativo sul server via ffmpeg
+    // (architettura Panda: il browser non vede mai H264 -> niente MSE,
+    // niente backlog decoder, niente reset). 'h264' = WebCodecs nel
+    // browser, 'mse' = <video> con remuxer fMP4.
     videoMode: ["h264", "mse", "jpeg"].includes(localStorage.getItem("griddroid.videoMode"))
         ? localStorage.getItem("griddroid.videoMode")
-        : "h264",
+        : "jpeg",
 };
 
 // =====================================================================

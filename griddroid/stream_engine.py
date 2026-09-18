@@ -434,6 +434,11 @@ class DeviceStream:
         )
         cmd = [
             ffmpeg, "-hide_banner", "-loglevel", "error",
+            # Decode in hardware quando possibile (D3D11VA/DXVA2/NVDEC):
+            # stessa scelta di Panda (decode nativo fuori dal browser).
+            # Se la GPU non supporta il formato, ffmpeg torna a software
+            # da solo — hwaccel auto non fallisce mai.
+            "-hwaccel", "auto",
             "-fflags", "nobuffer", "-flags", "low_delay",
             "-probesize", "32", "-analyzeduration", "0",
             "-f", "h264", "-i", "pipe:0",

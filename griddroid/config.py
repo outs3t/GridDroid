@@ -144,7 +144,7 @@ class StreamSettings(BaseModel):
     max_concurrent_stream_starts: int = Field(default=4, ge=1, le=32)
     # Modalita' JPEG server-side (fallback compatibile): il server
     # decodifica l'H264 con ffmpeg e manda JPEG pronti al browser.
-    jpeg_fps: int = Field(default=10, ge=1, le=30)
+    jpeg_fps: int = Field(default=15, ge=1, le=30)
     jpeg_max_size: int = Field(default=720, ge=240, le=2800)  # lato lungo
     jpeg_quality: int = Field(default=6, ge=2, le=31)  # -q:v ffmpeg: 2=migliore, 31=peggiore
     # Tier "focus" opzionale: il device in fullscreen puo' ricevere uno
