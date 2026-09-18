@@ -4404,12 +4404,21 @@ function renderBalances() {
         (cells[rowName] ||= {})[serial] = rec;
     };
     for (const [serial, b] of Object.entries(_balancesCache)) {
+        let placed = false;
         if (b.books) {
             for (const [book, rec] of Object.entries(b.books)) {
-                if (rec.saldo) put(serial, book, rec);
+                if (rec.saldo) { put(serial, book, rec); placed = true; }
             }
-        } else if (b.saldo && b.bookmaker) {
+        }
+        if (!placed && b.saldo && b.bookmaker) {
             put(serial, b.bookmaker, b);
+            placed = true;
+        }
+        // Saldo senza book riconosciuto (sito non mappato): finiva in un
+        // buco — la cella non compariva da nessuna parte della matrice.
+        // Riga dedicata "ALTRO" cosi' il valore resta comunque visibile.
+        if (!placed && b.saldo) {
+            put(serial, "ALTRO", b);
         }
     }
 
