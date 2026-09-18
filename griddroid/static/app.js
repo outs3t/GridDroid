@@ -1285,7 +1285,7 @@ function startStreamWs(feedEl, serial) {
     session.jpegMode = jpegMode;
 
     if (!jpegMode && useWorker) {
-        const worker = new Worker('/static/decoder-worker.js?v=121');
+        const worker = new Worker('/static/decoder-worker.js?v=122');
         let gotKey = false;
         worker.onmessage = (event) => {
             const msg = event.data;
@@ -3040,31 +3040,25 @@ async function initSettings() {
     if (btnExportConfig) {
         btnExportConfig.addEventListener("click", async () => {
             try {
-                const r = await fetch("/api/settings/export");
-                if (!r.ok) throw new Error("errore esportazione");
-                const payload = await r.json();
                 // Il server non vede il localStorage del browser: lo
-                // aggiungiamo noi cosi' viaggiano anche i bookmaker
-                // custom e tutte le preferenze UI (videoMode, ordinamento,
-                // filtri giocati/non giocati, slot/panda mode, ecc.).
+                // mandiamo noi cosi' viaggiano anche i bookmaker custom e
+                // tutte le preferenze UI (videoMode, ordinamento, filtri
+                // giocati/non giocati, slot/panda mode, ecc.).
                 const ls = {};
                 for (let i = 0; i < localStorage.length; i++) {
                     const k = localStorage.key(i);
                     if (k && k.startsWith("griddroid")) ls[k] = localStorage.getItem(k);
                 }
-                payload.localStorage = ls;
-                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                const disp = r.headers.get("content-disposition") || "";
-                const m = disp.match(/filename="?([^"]+)"?/);
-                a.download = m ? m[1] : "griddroid-config.json";
-                a.href = url;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                URL.revokeObjectURL(url);
-                toast("Configurazione esportata", "success");
+                const r = await fetch("/api/settings/export", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ localStorage: ls }),
+                });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok || !data.ok) throw new Error(data.error || "errore esportazione");
+                // Il server salva in .griddroid/backups/ e apre Explorer
+                // col file selezionato: il toast conferma il percorso.
+                toast(`Configurazione esportata in ${data.path}`, "success", 8000);
             } catch (e) {
                 toast("Errore esportazione configurazione", "error");
             }
@@ -3565,13 +3559,13 @@ function clearLog() {
 // Toast
 // =====================================================================
 
-function toast(message, type = "info") {
+function toast(message, type = "info", duration = 4000) {
     const container = document.getElementById("toastContainer");
     const div = document.createElement("div");
     div.className = `toast ${type}`;
     div.textContent = message;
     container.appendChild(div);
-    setTimeout(() => div.remove(), 4000);
+    setTimeout(() => div.remove(), duration);
 }
 
 // =====================================================================

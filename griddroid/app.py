@@ -757,12 +757,44 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                     logs.error(f"Errore riavvio stream: {exc}", serial=serial)
         return {"ok": True}
 
+    @app.post("/api/settings/export")
+    async def export_settings_save(request: Request):
+        """Salva l'export completo su disco in .griddroid/backups/ e apre
+        Explorer con il file selezionato: l'utente vede subito dove e'
+        finita la configurazione. Il body puo' contenere localStorage
+        (bookmakers custom, preferenze UI) raccolto dal frontend."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        payload = {
+            "app": "griddroid",
+            "version": __version__,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "files": export_all(),
+        }
+        if isinstance(body.get("localStorage"), dict):
+            payload["localStorage"] = body["localStorage"]
+        backup_dir = CONFIG_DIR / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"griddroid-config-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        path = backup_dir / filename
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        logs.info(f"Configurazione esportata in {path}")
+        # Apre Explorer con il file selezionato: risposta immediata al
+        # "dove e' finito il file?".
+        if sys.platform == "win32":
+            try:
+                subprocess.Popen(["explorer", "/select,", str(path)])
+            except Exception:
+                pass
+        return {"ok": True, "path": str(path), "filename": filename}
+
     @app.get("/api/settings/export")
     async def export_settings():
-        """Esporta TUTTI i file di stato di .griddroid (config, etichette,
-        tag, giocati/skipati, seriali noti, override video, colori, ordine,
-        saldi, CSV ledger). Il frontend aggiunge il localStorage
-        (bookmakers custom, preferenze UI) prima di salvare il file."""
+        """Download diretto del JSON di export (senza localStorage)."""
         payload = {
             "app": "griddroid",
             "version": __version__,
