@@ -302,8 +302,10 @@ class ScriptEngine:
 
     async def _spegni_schermo(self, serial: str, params: dict) -> ScriptResult:
         """Spegne il pannello senza bloccare: lo stream da PC continua."""
-        await self._adb.screen_off(serial)
-        if not await self._schermo_acceso(serial):
+        # Non si verifica via dumpsys: il display-off via SurfaceControl
+        # lascia mScreenState=ON (DisplayManager non lo sa) e produrrebbe
+        # un falso "non riuscito" — conta solo l'esito di screen_off.
+        if await self._adb.screen_off(serial):
             return ScriptResult(serial, True, "Schermo spento")
         return ScriptResult(serial, False, "Spegnimento schermo non riuscito")
 

@@ -567,8 +567,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     @app.post("/api/devices/{serial}/screen-off")
     async def screen_off(serial: str):
-        await adb.screen_off(serial)
-        return {"ok": True}
+        return {"ok": await adb.screen_off(serial)}
 
     @app.post("/api/devices/{serial}/reboot")
     async def reboot_device(serial: str):

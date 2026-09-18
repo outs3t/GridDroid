@@ -205,6 +205,12 @@ class AdbManager:
         self._balances: Dict[str, dict] = load_balances_state()
         # Task di auto-lettura saldi in background per device (serial -> task)
         self._balance_tasks: Dict[str, asyncio.Task] = {}
+        # Semaforo globale sulle letture CDP: ogni lettura fa 2 spawn adb
+        # (forward + remove) piu' HTTP+WS; senza limite le ~25 letture si
+        # risincronizzano a raffica ogni 30s e la congestione del loop fa
+        # desincronizzare TUTTI i subscriber video nello stesso istante —
+        # e' la causa dei "Video capture reset" di massa nel log.
+        self._balance_sem = asyncio.Semaphore(2)
         # Timestamp ultima auto-lettura per device (throttle: non ripetere
         # prima di 60s per non saturare adb)
         self._last_balance_read: Dict[str, float] = {}
@@ -600,7 +606,11 @@ class AdbManager:
         if not dev or dev.status != DeviceStatus.ONLINE:
             return
         now = time.time()
-        if now - self._last_balance_read.get(serial, 0.0) < 30.0:
+        # Jitter deterministico per device (0-4.5s): senza fase propria le
+        # letture restano allineate dopo ogni raffica e la congestione si
+        # ripete a cadenza fissa. hash() del seriale e' stabile in processo.
+        jitter = (hash(serial) % 10) * 0.5
+        if now - self._last_balance_read.get(serial, 0.0) < 30.0 + jitter:
             return
         # Una task per device alla volta
         existing = self._balance_tasks.get(serial)
@@ -617,7 +627,8 @@ class AdbManager:
             # Solo CDP: niente uiautomator (congela la UI). Se Chrome non
             # c'e', il saldo non si aggiorna in automatico — ma il telefono
             # resta usabile dall'utente, che e' il requisito.
-            cdp = await self._saldo_via_cdp(serial)
+            async with self._balance_sem:
+                cdp = await self._saldo_via_cdp(serial)
             self._record_cdp(serial, cdp)
         except Exception as exc:
             logs.warn(f"Auto-lettura saldo fallita: {exc}", serial=serial, throttle_s=60)
@@ -2048,7 +2059,11 @@ class AdbManager:
             return False
         return True
 
-    async def screen_off(self, serial: str) -> None:
+    async def screen_off(self, serial: str) -> bool:
+        """Spegne lo schermo. True = eseguito (display-off via scrcpy o
+        sleep verificato); False = non riuscito. Il display-off via
+        SurfaceControl NON e' visibile in dumpsys (mScreenState resta ON):
+        chi verifica deve fidarsi di questo valore di ritorno."""
         # Registriamo l'intenzione PRIMA di spegnere: se nel frattempo lo
         # stream si riavvia, il suo KEYCODE_WAKEUP viene saltato invece di
         # riaccendere il device appena bloccato.
@@ -2059,7 +2074,7 @@ class AdbManager:
             if serial in self._devices:
                 self._devices[serial].screen_on = False
             logs.info("Schermo spento (display off, device sbloccato)", serial=serial)
-            return
+            return True
         # Senza stream attivo non c'e' canale scrcpy: l'unico comando adb
         # e' il tasto sleep, che pero' porta anche al lockscreen.
         await self.shell(serial, "input keyevent KEYCODE_SLEEP")
@@ -2071,10 +2086,11 @@ class AdbManager:
             await asyncio.sleep(0.4)
             if await self._is_screen_on(serial):
                 logs.warn("Blocco schermo non riuscito", serial=serial)
-                return
+                return False
         if serial in self._devices:
             self._devices[serial].screen_on = False
         logs.info("Schermo spento (con blocco — nessuno stream attivo)", serial=serial)
+        return True
 
     async def reboot(self, serial: str) -> None:
         logs.info("Riavvio in corso...", serial=serial)

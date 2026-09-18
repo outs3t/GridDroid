@@ -333,14 +333,13 @@ class DeviceStream:
             self._control_monitor_task = None
 
     def subscribe(self) -> asyncio.Queue:
-        # Buffer di 8 frame (~400ms a 20fps): assorbe i ritardi brevi del
-        # consumer senza scartare nulla. Solo un backlog piu' lungo forza
-        # il "last frame wins" in _distribute_frame, che marca il client
-        # desync e richiede un keyframe. Ogni keyframe costa un reset_video
-        # ovvero una re-init completa di cattura+encoder sul telefono:
-        # con gli slot in alta motion il browser va in backlog di continuo
-        # e una coda corta trasforma ogni singhiozzo in un reset.
-        q: asyncio.Queue = asyncio.Queue(maxsize=8)
+        # Buffer di 30 frame (~2s a 15fps, ~60KB a 300kbps): uno stallo
+        # breve del loop o del browser non deve mai costare un desync —
+        # ogni desync forza un keyframe, e ogni keyframe costa un
+        # reset_video ovvero una re-init completa di cattura+encoder sul
+        # telefono. Con 25+ device gli stalli periodici (letture saldi,
+        # raffiche adb) producevano reset di massa a cadenza fissa.
+        q: asyncio.Queue = asyncio.Queue(maxsize=30)
         self._subscribers.add(q)
         # Partenza immediata solo se il keyframe in cache e' ancora l'ultimo
         # frame prodotto. Altrimenti keyframe vecchio + delta recenti = video

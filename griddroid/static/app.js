@@ -1739,6 +1739,15 @@ function setupInputHandlers(feedEl, serial) {
         const c = feedCoords(feedEl, ev);
         if (!c) return;
 
+        // Rilascia il focus da input attivi (barra ricerca ecc.):
+        // preventDefault qui sotto blocca il blur automatico del browser,
+        // e il click sulla cella non arriva (stopPropagation sul feed) —
+        // senza questo la tastiera restava intrappolata nel box di testo.
+        const active = document.activeElement;
+        if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT")) {
+            active.blur();
+        }
+
         ev.preventDefault();
 
         // Se il secondo click di un doppio clic arriva troppo presto,
