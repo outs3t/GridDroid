@@ -41,12 +41,9 @@ jobs:
           $ver = "${{ github.event.inputs.version }}"
           if ([string]::IsNullOrWhiteSpace($ver)) {
             $ver = (python -c "import griddroid; print(griddroid.__version__)")
-            # Push su main: versione sempre crescente = base + numero commit,
-            # cosi' ogni push aggiorna il sito senza bump manuale.
-            if ("${{ github.ref_type }}" -eq "branch") {
-              $n = (git rev-list --count HEAD)
-              $ver = "$ver.$n"
-            }
+            # La versione pubblicata deve coincidere con __version__ dentro
+            # l'exe: un suffisso extra (es. commit count) farebbe vedere
+            # all'updater un "nuovo aggiornamento" per sempre.
           }
           "version=$ver" >> $env:GITHUB_OUTPUT
 
@@ -69,12 +66,20 @@ jobs:
         shell: powershell
         run: |
           $ver = "${{ steps.ver.outputs.version }}"
+          # Stesso schema di deploy_landing.py: l'updater legge
+          # installer_url/installer_silent_args per le installazioni Inno e
+          # portable_url per l'exe portatile. Senza portable_url la
+          # portatile scaricherebbe il setup e lo copierebbe sopra l'exe.
+          $base = "https://outs3t.github.io/GridDroid"
           $json = @{
             version = $ver
             build_time = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             windows = @{
-              download_url = "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe"
-              silent_args = @()
+              download_url = "$base/GridDroid_Setup.exe"
+              silent_args = @("/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES")
+              installer_url = "$base/GridDroid_Setup.exe"
+              installer_silent_args = @("/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES")
+              portable_url = "$base/GridDroid.exe"
             }
             linux = @{
               download_url = "https://raw.githubusercontent.com/outs3t/GridDroid/main/install_linux.sh"
@@ -92,11 +97,15 @@ jobs:
           git fetch origin gh-pages:gh-pages
           git worktree add .gh-pages-work gh-pages
           Copy-Item -Path dist\GridDroid_Setup.exe -Destination .gh-pages-work\GridDroid_Setup.exe -Force
+          # Anche la portatile: senza questo passo GridDroid.exe sul sito
+          # restava quello del deploy manuale e portable_url serviva una
+          # versione vecchia.
+          Copy-Item -Path dist\GridDroid.exe -Destination .gh-pages-work\GridDroid.exe -Force
           Copy-Item -Path version.json -Destination .gh-pages-work\version.json -Force
           Push-Location .gh-pages-work
           git pull --rebase origin gh-pages
           git add -A
-          git commit -m "release: GridDroid_Setup.exe v$ver"
+          git commit -m "release: GridDroid v$ver"
           if ($LASTEXITCODE -ne 0) { exit 0 }
           git push origin gh-pages
           Pop-Location
