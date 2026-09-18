@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
+import queue as _queue
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -48,6 +50,11 @@ class LogManager:
         self._throttle: Dict[Tuple[str, str], float] = {}
         self._file = None
         self._file_path: Optional[Path] = None
+        # Le righe vengono scritte da un thread dedicato: log() resta
+        # non-bloccante anche se il disco e' lento (nessuna write/flush
+        # sull'event loop). Flush per riga mantenuto nel writer.
+        self._line_q: "_queue.Queue" = _queue.Queue(maxsize=5000)
+        self._writer_thread: Optional[threading.Thread] = None
 
     # ------------------------------------------------------------------
     # File di sessione
@@ -69,6 +76,11 @@ class LogManager:
             path = logs_dir / f"sessione-{stamp}.log"
             self._file = path.open("a", encoding="utf-8", buffering=1)
             self._file_path = path
+            if self._writer_thread is None or not self._writer_thread.is_alive():
+                self._writer_thread = threading.Thread(
+                    target=self._writer_loop, name="log-writer", daemon=True
+                )
+                self._writer_thread.start()
             return path
         except Exception:
             self._file = None
@@ -88,7 +100,34 @@ class LogManager:
     def session_file(self) -> Optional[Path]:
         return self._file_path
 
+    def _writer_loop(self) -> None:
+        """Consuma la coda e scrive sul file di sessione.
+
+        Il flush avviene a ogni riga come prima (log completo anche in
+        caso di crash), ma qui il blocco su disco non ferma l'event loop.
+        """
+        while True:
+            line = self._line_q.get()
+            if line is None:
+                return
+            f = self._file
+            if f is None:
+                continue
+            try:
+                f.write(line)
+                f.flush()
+            except Exception:
+                pass
+
     def close_session_file(self) -> None:
+        # Svuota la coda e ferma il writer prima di chiudere il file.
+        if self._writer_thread is not None and self._writer_thread.is_alive():
+            try:
+                self._line_q.put(None, timeout=2.0)
+            except Exception:
+                pass
+            self._writer_thread.join(timeout=3.0)
+            self._writer_thread = None
         if self._file is not None:
             try:
                 self._file.flush()
@@ -103,9 +142,13 @@ class LogManager:
         try:
             ts = time.strftime("%H:%M:%S", time.localtime(entry.timestamp))
             serial = entry.serial or "-"
-            self._file.write(
+            self._line_q.put_nowait(
                 f"{ts} [{entry.level.value.upper():7}] {serial:20} {entry.message}\n"
             )
+        except _queue.Full:
+            # Disco saturato: meglio perdere una riga di log che stallare
+            # l'event loop (e quindi i video di tutti i device).
+            pass
         except Exception:
             pass
 

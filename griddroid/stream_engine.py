@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from .adb_manager import get_adb_cmd_lock, adb_server_args
+from .adb_manager import get_adb_cmd_lock, adb_server_args, run_proc
 from .config import AppSettings, load_device_overrides, save_device_overrides
 from .control_channel import ControlChannel
 from .device import SCREEN_OFF_REQUESTED
@@ -206,6 +206,11 @@ class DeviceStream:
         self._jpeg_proc: Optional[asyncio.subprocess.Process] = None
         self._jpeg_task: Optional[asyncio.Task] = None
         self._jpeg_stop_task: Optional[asyncio.Task] = None
+        # Coda AU -> stdin di ffmpeg + task feeder: il loop _stream_h264
+        # non deve MAI attendere il drain di ffmpeg (un encoder lento
+        # frenava la distribuzione video a tutti i subscriber).
+        self._jpeg_inq: Optional[asyncio.Queue] = None
+        self._jpeg_feeder: Optional[asyncio.Task] = None
         # True dal primo keyframe inviato a ffmpeg: prima di un IDR il
         # decoder h264 non puo' produrre nulla.
         self._jpeg_feed_ok: bool = False
@@ -460,15 +465,25 @@ class DeviceStream:
         self._jpeg_feed_ok = False
         logs.info(f"Transcoder JPEG avviato ({s.jpeg_fps}fps/{size}px)",
                   serial=self.serial)
+        # Coda + feeder separato: la scrittura su stdin (drain lento se
+        # ffmpeg e' in backlog) avviene fuori dal loop di distribuzione.
+        # ~6s di AU a 15fps: oltre, il transcoder viene considerato
+        # incapace di reggere e fermato.
+        self._jpeg_inq = asyncio.Queue(maxsize=90)
+        self._jpeg_feeder = asyncio.create_task(self._jpeg_stdin_feeder())
         # Se il keyframe in cache e' ancora l'ultimo frame prodotto, lo
         # diamo subito a ffmpeg: il primo JPEG arriva senza attendere il
         # prossimo IDR dell'encoder.
         if self._last_keyframe and self._frames_since_key == 0:
-            await self._feed_jpeg(True, self._last_keyframe[1:])
+            self._jpeg_inq.put_nowait((True, self._last_keyframe[1:]))
+        # Riferimento locale: _stop_jpeg_transcoder puo' azzerare
+        # self._jpeg_proc mentre il loop legge — senza questo scattava
+        # AttributeError su .stdout di None.
+        proc = self._jpeg_proc
         try:
             buf = bytearray()
             while True:
-                chunk = await self._jpeg_proc.stdout.read(65536)
+                chunk = await proc.stdout.read(65536)
                 if not chunk:
                     break
                 buf.extend(chunk)
@@ -485,29 +500,61 @@ class DeviceStream:
         except Exception as exc:
             logs.warn(f"Transcoder JPEG: {exc}", serial=self.serial)
         finally:
+            if self._jpeg_feeder is not None:
+                self._jpeg_feeder.cancel()
+                self._jpeg_feeder = None
+            self._jpeg_inq = None
             await self._stop_jpeg_transcoder()
 
     async def _feed_jpeg(self, is_key: bool, au: bytes) -> None:
-        """Scrive un'access unit Annex-B nello stdin di ffmpeg."""
+        """Accoda un'access unit al feeder di ffmpeg — MAI bloccante.
+
+        Se la coda e' piena ffmpeg non smaltisce il flusso: meglio
+        fermare il transcoder che far attendere il loop video.
+        """
         proc = self._jpeg_proc
-        if proc is None or proc.returncode is not None or proc.stdin is None:
+        q = self._jpeg_inq
+        if proc is None or q is None:
             return
         try:
-            if not self._jpeg_feed_ok:
-                if not is_key:
-                    # Senza un IDR iniziale il decoder h264 non decodifica.
+            q.put_nowait((is_key, au))
+        except asyncio.QueueFull:
+            logs.warn("Transcoder JPEG in backlog: fermato", serial=self.serial)
+            asyncio.create_task(self._stop_jpeg_transcoder())
+
+    async def _jpeg_stdin_feeder(self) -> None:
+        """Consuma la coda e scrive le AU nello stdin di ffmpeg."""
+        q = self._jpeg_inq
+        try:
+            while q is not None:
+                try:
+                    item = await asyncio.wait_for(q.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # Nessuna AU per 30s: schermo statico, tutto normale.
+                    continue
+                is_key, au = item
+                proc = self._jpeg_proc
+                if proc is None or proc.returncode is not None or proc.stdin is None:
                     return
-                # SPS/PPS davanti al primo keyframe se non gia' inclusi.
-                if self._h264_config and self._h264_config not in au:
-                    proc.stdin.write(self._h264_config)
-                self._jpeg_feed_ok = True
-            proc.stdin.write(au)
-            # Timeout sul drain: un ffmpeg inceppato non deve bloccare il
-            # loop _stream_h264 (frenerebbe TUTTI i subscriber del device).
-            await asyncio.wait_for(proc.stdin.drain(), timeout=1.0)
-        except asyncio.TimeoutError:
-            logs.warn("Transcoder JPEG lento: fermato", serial=self.serial)
-            await self._stop_jpeg_transcoder()
+                if not self._jpeg_feed_ok:
+                    if not is_key:
+                        # Senza un IDR iniziale il decoder h264 non decodifica.
+                        continue
+                    # SPS/PPS davanti al primo keyframe se non gia' inclusi.
+                    if self._h264_config and self._h264_config not in au:
+                        proc.stdin.write(self._h264_config)
+                    self._jpeg_feed_ok = True
+                proc.stdin.write(au)
+                # Timeout sul drain: un ffmpeg inceppato viene fermato —
+                # qui possiamo attendere, siamo fuori dal loop video.
+                try:
+                    await asyncio.wait_for(proc.stdin.drain(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logs.warn("Transcoder JPEG lento: fermato", serial=self.serial)
+                    await self._stop_jpeg_transcoder()
+                    return
+        except asyncio.CancelledError:
+            pass
         except (BrokenPipeError, ConnectionError, OSError):
             await self._stop_jpeg_transcoder()
         except Exception:
@@ -517,6 +564,13 @@ class DeviceStream:
         proc = self._jpeg_proc
         self._jpeg_proc = None
         self._jpeg_feed_ok = False
+        # Ferma il feeder: senza processo non ha piu' senso consumare.
+        # Guardia: se lo chiama il feeder stesso (drain timeout), non
+        # auto-cancellarsi — altrimenti lo stop viene interrotto a meta'.
+        cur = asyncio.current_task()
+        if self._jpeg_feeder is not None and self._jpeg_feeder is not cur:
+            self._jpeg_feeder.cancel()
+        self._jpeg_feeder = None
         if proc is not None:
             try:
                 if proc.stdin is not None:
@@ -631,16 +685,13 @@ class DeviceStream:
         adb = self._settings.adb_path or "adb"
         async with get_adb_cmd_lock():
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    adb, *adb_server_args(self.serial),
-                    "-s", self.serial, "get-state",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **_SUBPROCESS_KW,
-                )
                 # Timeout corto: un device appeso non deve tenere il lock
                 # adb globale per 30s bloccando il polling di tutti.
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8.0)
+                _, stdout, _ = await run_proc(
+                    [adb, *adb_server_args(self.serial),
+                     "-s", self.serial, "get-state"],
+                    8.0,
+                )
                 return stdout.decode("utf-8", errors="replace").strip() == "device"
             except Exception:
                 return False
@@ -1010,23 +1061,14 @@ class DeviceStream:
 
     async def _adb_exec(self, adb: str, *args: str, timeout: float = 30.0) -> str:
         async with get_adb_cmd_lock():
-            proc = await asyncio.create_subprocess_exec(
-                adb, *adb_server_args(self.serial), "-s", self.serial, *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **_SUBPROCESS_KW,
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
+                rc, stdout, stderr = await run_proc(
+                    [adb, *adb_server_args(self.serial), "-s", self.serial, *args],
+                    timeout,
                 )
             except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
                 raise RuntimeError("timeout ADB")
-            if proc.returncode != 0:
+            if rc != 0:
                 text = stdout.decode("utf-8", errors="replace").strip()
                 if not text:
                     text = stderr.decode("utf-8", errors="replace").strip()

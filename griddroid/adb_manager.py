@@ -11,6 +11,7 @@ import re
 import shutil
 import socket
 import time
+import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -68,6 +69,44 @@ def get_adb_cmd_lock(priority: str = "shell") -> asyncio.Lock:
     if priority not in _ADB_CMD_LOCKS:
         _ADB_CMD_LOCKS[priority] = asyncio.Lock()
     return _ADB_CMD_LOCKS[priority]
+
+
+async def run_proc(
+    cmd: List[str], timeout: float = 30.0,
+    env: Optional[Dict[str, str]] = None,
+) -> Tuple[int, bytes, bytes]:
+    """Esegue un processo breve e ritorna (rc, stdout, stderr).
+
+    Su Windows asyncio.create_subprocess_exec lancia subprocess.Popen()
+    SUL thread dell'event loop (~20-50ms a spawn sotto carico): ogni
+    comando adb fermava il loop intero — distribuzione video compresa.
+    Qui Popen + communicate girano in un thread worker: il loop non si
+    blocca mai. I processi long-lived (scrcpy-server, ffmpeg) restano su
+    create_subprocess_exec perche' servono pipe asyncio vere.
+
+    Timeout: uccide il processo e rilancia asyncio.TimeoutError — i
+    chiamanti conservano i loro handler esistenti.
+    """
+    def _run() -> Tuple[int, bytes, bytes]:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            **_SUBPROCESS_KW,
+        )
+        try:
+            out, err = proc.communicate(timeout=timeout)
+            return proc.returncode or 0, out or b"", err or b""
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            proc.communicate()
+            raise asyncio.TimeoutError()
+
+    return await asyncio.to_thread(_run)
 
 
 # Regex per parsare l'output di `adb devices -l`
@@ -168,6 +207,9 @@ class AdbManager:
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
         self._adb = settings.adb_path or "adb"
+        # Cache dell'env ADB_VENDOR_KEYS (60s): il collect fa glob sul
+        # filesystem e rifarlo a ogni comando era I/O ripetuto sul loop.
+        self._adb_env_cache = None
         self._devices: Dict[str, DeviceState] = {}
         # Riferimento al StreamManager, iniettato da app.py dopo la
         # costruzione: serve a screen_off/screen_on per usare il canale
@@ -211,6 +253,11 @@ class AdbManager:
         # desincronizzare TUTTI i subscriber video nello stesso istante —
         # e' la causa dei "Video capture reset" di massa nel log.
         self._balance_sem = asyncio.Semaphore(2)
+        # Forward CDP persistenti per serial: un 'adb forward' creato una
+        # sola volta viene riusato a ogni lettura invece di essere
+        # creato+distrutto a ciclo (2 comandi adb in meno per lettura).
+        # Viene dimenticato solo quando la lettura fallisce.
+        self._cdp_fwd: Dict[str, int] = {}
         # Timestamp ultima auto-lettura per device (throttle: non ripetere
         # prima di 60s per non saturare adb)
         self._last_balance_read: Dict[str, float] = {}
@@ -1139,24 +1186,28 @@ class AdbManager:
         except Exception:
             return empty
         try:
-            # Porta locale libera per il forward
-            for _ in range(20):
-                candidate = random.randint(39300, 39900)
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(0.2)
-                    if s.connect_ex(("127.0.0.1", candidate)) != 0:
-                        port = candidate
-                        break
+            # Riusa il forward persistente se esiste; altrimenti creane uno
+            # su una porta locale libera e tienilo per le prossime letture.
+            port = self._cdp_fwd.get(serial, 0)
             if not port:
-                return empty
+                for _ in range(20):
+                    candidate = random.randint(39300, 39900)
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.settimeout(0.2)
+                        if s.connect_ex(("127.0.0.1", candidate)) != 0:
+                            port = candidate
+                            break
+                if not port:
+                    return empty
 
-            rc, _, _ = await self.adb_command(
-                "forward", f"tcp:{port}",
-                "localabstract:chrome_devtools_remote",
-                serial=serial, timeout=10.0,
-            )
-            if rc != 0:
-                return empty
+                rc, _, _ = await self.adb_command(
+                    "forward", f"tcp:{port}",
+                    "localabstract:chrome_devtools_remote",
+                    serial=serial, timeout=10.0,
+                )
+                if rc != 0:
+                    return empty
+                self._cdp_fwd[serial] = port
 
             async def _cdp() -> dict:
                 # Lista target: HTTP minimale su localhost (niente requests).
@@ -1301,10 +1352,11 @@ class AdbManager:
                 )
             return result
         except Exception:
-            # Chrome non attivo o CDP non raggiungibile: fallback uiautomator
-            return empty
-        finally:
+            # Chrome non attivo / CDP irraggiungibile / forward morto:
+            # dimentica il forward persistente e rimuovilo — alla prossima
+            # lettura ne viene creato uno pulito.
             if port:
+                self._cdp_fwd.pop(serial, None)
                 try:
                     await self.adb_command(
                         "forward", "--remove", f"tcp:{port}",
@@ -1312,6 +1364,7 @@ class AdbManager:
                     )
                 except Exception:
                     pass
+            return empty
 
     # ------------------------------------------------------------------
     # Etichette
@@ -1464,17 +1517,19 @@ class AdbManager:
         return keys
 
     def _adb_env(self) -> Dict[str, str]:
-        """Env per i subprocess adb: ADB_VENDOR_KEYS con tutte le chiavi.
-
-        Il server adb le carica solo al suo avvio: per questo quando
-        compaiono device 'unauthorized' facciamo un kill-server una tantum
-        cosi' il prossimo comando riparte con l'env completo.
-        """
+        """Env per i subprocess adb: ADB_VENDOR_KEYS con tutte le chiavi."""
+        # Il server adb le carica solo al suo avvio: per questo quando
+        # compaiono device 'unauthorized' facciamo un kill-server una tantum
+        # cosi' il prossimo comando riparte con l'env completo.
+        now = time.monotonic()
+        if self._adb_env_cache and now - self._adb_env_cache[0] < 60.0:
+            return self._adb_env_cache[1]
         env = dict(os.environ)
         keys = self._collect_adb_keys()
         if keys:
             sep = ";" if os.name == "nt" else ":"
             env["ADB_VENDOR_KEYS"] = sep.join(keys)
+        self._adb_env_cache = (now, env)
         return env
 
     def _adb_ports(self) -> List[int]:
@@ -1522,15 +1577,8 @@ class AdbManager:
                 cmd += ["-s", serial]
             cmd += list(args)
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=self._adb_env(),
-                    **_SUBPROCESS_KW,
-                )
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
+                rc, stdout, stderr = await run_proc(
+                    cmd, timeout, env=self._adb_env()
                 )
                 out_str = stdout.decode("utf-8", errors="replace")
                 err_str = stderr.decode("utf-8", errors="replace")
@@ -1556,11 +1604,7 @@ class AdbManager:
                             dev.status = DeviceStatus.DISCONNECTED
                             dev.streaming = False
                             logs.warn("Dispositivo segnato offline da ADB", serial=serial)
-                return (
-                    proc.returncode or 0,
-                    out_str,
-                    err_str,
-                )
+                return (rc, out_str, err_str)
             except asyncio.TimeoutError:
                 logs.warn(f"Timeout comando ADB: {' '.join(cmd)}")
                 return -1, "", "timeout"
@@ -2183,14 +2227,8 @@ class AdbManager:
         cmd = [self._adb, *adb_server_args(serial),
                "-s", serial, "exec-out", "screencap", "-p"]
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **_SUBPROCESS_KW,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
-            if proc.returncode == 0 and stdout:
+            rc, stdout, _ = await run_proc(cmd, 15.0)
+            if rc == 0 and stdout:
                 return stdout
         except Exception:
             pass
