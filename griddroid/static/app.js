@@ -568,6 +568,33 @@ function addDevicesToGroup(serials, groupName) {
     toast(`${serials.length} telefono/i aggiunti a "${groupName}"`, "success");
 }
 
+function removeDevicesFromGroup(serials, groupName) {
+    groupName = (groupName || "").trim();
+    if (!groupName) return;
+    let removed = 0;
+    serials.forEach((s) => {
+        const d = state.devices.find((dev) => dev.serial === s);
+        if (d && (d.tags || []).includes(groupName)) {
+            d.tags = d.tags.filter((t) => t !== groupName);
+            wsSend({ action: "tags", serial: s, tags: d.tags });
+            removed++;
+        }
+    });
+    if (!removed) return;
+    // Se il gruppo tolto era il filtro attivo e non ha piu' membri, la
+    // vista resterebbe vuota: meglio spegnere il filtro.
+    if (
+        state.activeGroupFilter === groupName &&
+        !state.devices.some((d) => (d.tags || []).includes(groupName))
+    ) {
+        state.activeGroupFilter = null;
+    }
+    renderGroups();
+    renderGrid();
+    renderAssignDevice();
+    toast(`${removed} telefono/i rimossi da "${groupName}"`, "success");
+}
+
 function createContextGroupForSelection(serials) {
     const name = window.prompt("Nome del nuovo gruppo:");
     if (name) addDevicesToGroup(serials, name);
@@ -640,6 +667,38 @@ function showDeviceContextMenu(e, serial) {
                 btn.addEventListener("click", (ev) => {
                     ev.stopPropagation();
                     if (confirm(`Rimuovere il gruppo "${btn.dataset.group}"?`)) removeGroup(btn.dataset.group);
+                    hideDeviceContextMenu();
+                });
+            });
+        }
+    }
+
+    // "Rimuovi da gruppo": solo i gruppi di cui almeno un device target
+    // fa parte — inutile proporre gruppi dove non e' membro.
+    const removeList = document.getElementById("contextGroupRemoveList");
+    if (removeList) {
+        const memberGroups = new Set();
+        targets.forEach((s) => {
+            const d = state.devices.find((dev) => dev.serial === s);
+            (d?.tags || []).forEach((t) => memberGroups.add(t));
+        });
+        const groups = [...memberGroups].sort();
+        if (!groups.length) {
+            removeList.innerHTML = `<div class="command-palette-empty" style="padding:8px 14px;font-size:11px;">Nessun gruppo</div>`;
+        } else {
+            removeList.innerHTML = groups
+                .map(
+                    (g) => `
+                <div class="context-menu-item" data-rmgroup="${escapeHtml(g)}">
+                    <span>${escapeHtml(g)}</span>
+                    <span class="group-btn" title="Rimuovi da questo gruppo">−</span>
+                </div>
+            `
+                )
+                .join("");
+            removeList.querySelectorAll("[data-rmgroup]").forEach((row) => {
+                row.addEventListener("click", () => {
+                    if (row.dataset.rmgroup) removeDevicesFromGroup(targets, row.dataset.rmgroup);
                     hideDeviceContextMenu();
                 });
             });
