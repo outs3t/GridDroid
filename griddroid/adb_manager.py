@@ -1013,7 +1013,7 @@ class AdbManager:
       const t = vis(el);
       if (t && t.length < 80) {
         const v = pick(t);
-        if (v) return {saldo: v, site: location.hostname, user: findUser()};
+        if (v) return {saldo: v, site: location.hostname, user: findUser(), vis: document.visibilityState};
       }
     }
   }
@@ -1023,7 +1023,7 @@ class AdbManager:
     const t = vis(el);
     if (t && t.length < 80 && kw.test(t)) {
       const v = pick(t);
-      if (v) return {saldo: v, site: location.hostname, user: findUser()};
+      if (v) return {saldo: v, site: location.hostname, user: findUser(), vis: document.visibilityState};
     }
   }
   for (const el of leaves) {
@@ -1031,10 +1031,10 @@ class AdbManager:
     const t = vis(el);
     if (t && t.length < 40) {
       const v = pick(t);
-      if (v) return {saldo: v, site: location.hostname, user: findUser()};
+      if (v) return {saldo: v, site: location.hostname, user: findUser(), vis: document.visibilityState};
     }
   }
-  return {saldo: null, site: location.hostname, user: findUser()};
+  return {saldo: null, site: location.hostname, user: findUser(), vis: document.visibilityState};
 })()
 """
 
@@ -1089,61 +1089,85 @@ class AdbManager:
                 if len(body) < 2:
                     return empty
                 targets = json.loads(body[1].decode("utf-8", errors="replace"))
-                # Prima pagina web reale (skip chrome:// e about:blank)
-                page = next(
-                    (
-                        t for t in targets
-                        if t.get("type") == "page"
-                        and t.get("url", "").startswith("http")
-                    ),
-                    None,
-                )
-                if not page or not page.get("webSocketDebuggerUrl"):
+                # TUTTE le pagine web reali (skip chrome:// e about:blank):
+                # con piu' tab aperte il primo target non e' quello visibile
+                # — leggere la tab sbagliata attribuiva saldi al book di
+                # un'altra pagina. Si valuta ogni tab e si preferisce
+                # quella con visibilityState 'visible' (tab attiva).
+                pages = [
+                    t for t in targets
+                    if t.get("type") == "page"
+                    and t.get("url", "").startswith("http")
+                    and t.get("webSocketDebuggerUrl")
+                ]
+                if not pages:
                     return empty
-                async with websockets.connect(
-                    page["webSocketDebuggerUrl"],
-                    open_timeout=3, close_timeout=1, max_size=2**20,
-                ) as ws:
-                    await ws.send(json.dumps({
-                        "id": 1,
-                        "method": "Runtime.evaluate",
-                        "params": {
-                            "expression": self._CDP_JS,
-                            "returnByValue": True,
-                        },
-                    }))
-                    while True:
-                        msg = json.loads(
-                            await asyncio.wait_for(ws.recv(), timeout=5.0)
-                        )
-                        if msg.get("id") != 1:
-                            continue
-                        val = (
-                            msg.get("result", {})
-                            .get("result", {})
-                            .get("value")
-                        )
-                        if not isinstance(val, dict) or (
-                            not val.get("saldo") and not val.get("site")
-                        ):
-                            return empty
-                        saldo_val = val.get("saldo")
-                        saldo = None
-                        if saldo_val:
-                            num = re.search(
-                                r"[0-9]+(?:[.,][0-9]+)*[.,][0-9]{1,2}\b",
-                                str(saldo_val),
+
+                async def _eval_page(page: dict):
+                    async with websockets.connect(
+                        page["webSocketDebuggerUrl"],
+                        open_timeout=3, close_timeout=1, max_size=2**20,
+                    ) as ws:
+                        await ws.send(json.dumps({
+                            "id": 1,
+                            "method": "Runtime.evaluate",
+                            "params": {
+                                "expression": self._CDP_JS,
+                                "returnByValue": True,
+                            },
+                        }))
+                        while True:
+                            msg = json.loads(
+                                await asyncio.wait_for(ws.recv(), timeout=5.0)
                             )
-                            saldo = (
-                                self._normalize_amount(num.group(0)) if num else None
+                            if msg.get("id") != 1:
+                                continue
+                            return (
+                                msg.get("result", {})
+                                .get("result", {})
+                                .get("value")
                             )
-                        site = (val.get("site") or "").replace("www.", "")
-                        bookmaker = self._bookmaker_from_package(site) if site else ""
-                        return {
-                            "saldo": saldo,
-                            "bookmaker": bookmaker,
-                            "username": (val.get("user") or "")[:40],
-                        }
+
+                # Valuta ogni tab e scegli la migliore: la tab attiva
+                # (visibilityState='visible') con saldo, poi attiva senza
+                # saldo, poi la prima con saldo, poi la prima valida.
+                candidates = []
+                for page in pages:
+                    try:
+                        val = await _eval_page(page)
+                    except Exception:
+                        continue
+                    if not isinstance(val, dict) or not val.get("site"):
+                        continue
+                    saldo = None
+                    saldo_val = val.get("saldo")
+                    if saldo_val:
+                        num = re.search(
+                            r"[0-9]+(?:[.,][0-9]+)*[.,][0-9]{1,2}\b",
+                            str(saldo_val),
+                        )
+                        saldo = (
+                            self._normalize_amount(num.group(0)) if num else None
+                        )
+                    site = (val.get("site") or "").replace("www.", "")
+                    candidates.append({
+                        "saldo": saldo,
+                        "bookmaker": (
+                            self._bookmaker_from_package(site) if site else ""
+                        ),
+                        "username": (val.get("user") or "")[:40],
+                        "_vis": val.get("vis") == "visible",
+                    })
+                if not candidates:
+                    return empty
+                best = (
+                    next((c for c in candidates if c["_vis"] and c["saldo"]), None)
+                    or next((c for c in candidates if c["_vis"]), None)
+                    or next((c for c in candidates if c["saldo"]), None)
+                    or candidates[0]
+                )
+                best.pop("_vis", None)
+                return best
 
             result = await asyncio.wait_for(_cdp(), timeout=10.0)
             if result.get("saldo"):
