@@ -1348,8 +1348,20 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
         elif action == "select_all":
             selected = cmd.get("selected", True)
-            for dev in adb.devices.values():
-                dev.selected = selected
+            serials = cmd.get("serials")
+            if isinstance(serials, list):
+                # Lista esplicita (Ctrl+A con filtro attivo in UI):
+                # 'true' = seleziona SOLO questi, 'false' = deseleziona
+                # solo questi e lascia il resto com'e'.
+                wanted = set(serials)
+                for s, dev in adb.devices.items():
+                    if selected:
+                        dev.selected = s in wanted
+                    elif s in wanted:
+                        dev.selected = False
+            else:
+                for dev in adb.devices.values():
+                    dev.selected = selected
 
         elif action == "set_played":
             adb.set_played(serial, cmd.get("played", True))

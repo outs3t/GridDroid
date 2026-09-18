@@ -175,12 +175,10 @@ function remoteLog(level, message, serial) {
 // Rendering Griglia
 // =====================================================================
 
-function renderGrid() {
-    const grid = document.getElementById("deviceGrid");
-    const container = document.getElementById("gridContainer");
-    // Preserva lo scroll: il re-render non deve riportare la vista in cima
-    const scrollTop = container ? container.scrollTop : 0;
-    const scrollLeft = container ? container.scrollLeft : 0;
+// Device visibili in griglia: filtro gruppo attivo + ricerca +
+// giocati/skipati + "solo questi". Condivisa fra renderGrid e Ctrl+A:
+// la selezione totale copre solo i device in vista, non tutto il farm.
+function getVisibleDevices() {
     let devices = [...state.devices];
 
     // Filtro per gruppo attivo
@@ -199,6 +197,28 @@ function renderGrid() {
         });
     }
 
+    // Mostra/Nascondi giocati e non giocati
+    devices = devices.filter((dev) => {
+        if (dev.played && !state.showPlayed) return false;
+        if (dev.skipped && !state.showSkipped) return false;
+        return true;
+    });
+
+    // Filtro "mostra solo questi": tiene solo i seriali selezionati
+    if (state.soloSerials) {
+        devices = devices.filter((dev) => state.soloSerials.has(dev.serial));
+    }
+    return devices;
+}
+
+function renderGrid() {
+    const grid = document.getElementById("deviceGrid");
+    const container = document.getElementById("gridContainer");
+    // Preserva lo scroll: il re-render non deve riportare la vista in cima
+    const scrollTop = container ? container.scrollTop : 0;
+    const scrollLeft = container ? container.scrollLeft : 0;
+    let devices = getVisibleDevices();
+
     // Ordinamento
     if (state.sortBy === "az") {
         devices.sort((a, b) => (a.display_name || "").localeCompare(b.display_name || ""));
@@ -215,18 +235,6 @@ function renderGrid() {
     } else {
         // Ordine manuale (numero crescente), poi A-Z
         devices.sort((a, b) => (a.order || 0) - (b.order || 0) || (a.display_name || "").localeCompare(b.display_name || ""));
-    }
-
-    // Mostra/Nascondi giocati e non giocati
-    devices = devices.filter((dev) => {
-        if (dev.played && !state.showPlayed) return false;
-        if (dev.skipped && !state.showSkipped) return false;
-        return true;
-    });
-
-    // Filtro "mostra solo questi": tiene solo i seriali selezionati
-    if (state.soloSerials) {
-        devices = devices.filter((dev) => state.soloSerials.has(dev.serial));
     }
 
     // Aggiorna colonne CSS in base a zoom e larghezza container
@@ -4144,7 +4152,7 @@ function renderGroups() {
     });
     list.querySelectorAll("button[data-action='select']").forEach((btn) => {
         btn.addEventListener("click", () => {
-            if (btn.dataset.group === "__all__") selectAllDevices();
+            if (btn.dataset.group === "__all__") selectAllDevicesUnfiltered();
             else selectGroup(btn.dataset.group);
         });
     });
@@ -4742,6 +4750,31 @@ function savePaletteHistory(name, command) {
 }
 
 function selectAllDevices() {
+    // Ctrl+A seleziona i device in vista: con un filtro attivo (gruppo,
+    // ricerca, solo-questi) tocca solo quelli, non tutto il farm.
+    const visible = getVisibleDevices();
+    if (!visible.length) return;
+    const wanted = new Set(visible.map((d) => d.serial));
+    const filtered = wanted.size !== state.devices.length;
+    state.devices.forEach((d) => { d.selected = wanted.has(d.serial); });
+    // Con filtro attivo invio la lista esplicita: il 'select_all' nudo
+    // marcherebbe selezionati anche i device nascosti dal filtro.
+    wsSend(filtered
+        ? { action: "select_all", selected: true, serials: [...wanted] }
+        : { action: "select_all", selected: true });
+    renderGrid();
+    renderPhoneSelection();
+    toast(
+        filtered
+            ? `${wanted.size} dispositivi selezionati (vista filtrata)`
+            : "Tutti i dispositivi selezionati",
+        "success"
+    );
+}
+
+// Seleziona davvero tutti i device, ignorando i filtri di vista:
+// serve al pulsante "Tutti i telefoni" nel pannello Gruppi.
+function selectAllDevicesUnfiltered() {
     if (!state.devices.length) return;
     state.devices.forEach((d) => { d.selected = true; });
     wsSend({ action: "select_all", selected: true });
@@ -4751,9 +4784,19 @@ function selectAllDevices() {
 }
 
 function deselectAllDevices() {
-    if (!state.devices.length) return;
-    state.devices.forEach((d) => { d.selected = false; });
-    wsSend({ action: "select_all", selected: false });
+    // Simmetrico a Ctrl+A: con filtro attivo azzera solo i device in
+    // vista; senza filtro azzera tutto come prima.
+    const visible = getVisibleDevices();
+    if (!visible.length) return;
+    const wanted = new Set(visible.map((d) => d.serial));
+    const filtered = wanted.size !== state.devices.length;
+    if (filtered) {
+        state.devices.forEach((d) => { if (wanted.has(d.serial)) d.selected = false; });
+        wsSend({ action: "select_all", selected: false, serials: [...wanted] });
+    } else {
+        state.devices.forEach((d) => { d.selected = false; });
+        wsSend({ action: "select_all", selected: false });
+    }
     renderGrid();
     renderPhoneSelection();
     toast("Selezione azzerata", "success");
