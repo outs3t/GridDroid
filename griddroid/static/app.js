@@ -4361,32 +4361,10 @@ function _fmtEuro(v) {
     });
 }
 
-function openSaldi() {
-    const ov = document.getElementById("saldiOverlay");
-    if (!ov) return;
-    ov.hidden = false;
-    fetchBalances();
-}
-
-function closeSaldi() {
-    const ov = document.getElementById("saldiOverlay");
-    if (ov) ov.hidden = true;
-}
-
-function renderBalances() {
-    const wrap = document.getElementById("balancesTable");
-    const summary = document.getElementById("balancesSummary");
-    if (!wrap) return;
-    // Overlay chiuso: non ricostruire mille celle a ogni refresh.
-    const ov = document.getElementById("saldiOverlay");
-    if (ov && ov.hidden) return;
-
-    const q = (document.getElementById("balanceSearch")?.value || "").trim().toLowerCase();
-    const onlyFilled = document.getElementById("saldiOnlyWithBalance")?.checked;
-
-    // --- Celle: nome-riga -> serial -> {saldo, username, timestamp} ---
-    // books[book] del backend tiene l'ultimo saldo per OGNI book del
-    // telefono; il top-level e' il fallback per record pre-matrice.
+// Costruisce la mappa celle {riga-book -> {serial -> record}} condivisa
+// tra il render della matrice e l'export CSV: stessa identica logica
+// (books per-book, fallback top-level, riga ALTRO per saldi orfani).
+function _balancesCells() {
     const listNames = bookmakerNames();
     const normToName = {};
     listNames.forEach(n => { normToName[_normBookKey(n)] = n; });
@@ -4421,10 +4399,82 @@ function renderBalances() {
             put(serial, "ALTRO", b);
         }
     }
-
     const bookRows = [...listNames, ...extraBooks]
         .filter((n, i, a) => a.indexOf(n) === i)
         .sort((a, b) => a.localeCompare(b, "it"));
+    return { cells, bookRows };
+}
+
+// Export CSV della matrice vista (bookmaker x telefono, con totali):
+// separatore ';' e decimali con virgola — si apre diretto in Excel IT.
+function downloadMatrixCsv() {
+    const { cells, bookRows } = _balancesCells();
+    const devices = state.devices.slice();
+    const devName = d => d.display_name || d.serial;
+    const num = v => {
+        const f = parseFloat(v);
+        return isNaN(f) ? "" : String(f).replace(".", ",");
+    };
+    const rows = [];
+    rows.push(["BOOK", ...devices.map(devName), "TOTALE"]);
+    for (const n of bookRows) {
+        const row = cells[n] || {};
+        let tot = 0, has = false;
+        const cols = devices.map(d => {
+            const r = row[d.serial];
+            const v = r ? parseFloat(r.saldo) : NaN;
+            if (!isNaN(v)) { tot += v; has = true; }
+            return r && r.saldo ? num(r.saldo) : "";
+        });
+        rows.push([n, ...cols, has ? num(tot) : ""]);
+    }
+    let grand = 0, any = false;
+    const foot = devices.map(d => {
+        let tot = 0, has = false;
+        bookRows.forEach(n => {
+            const r = (cells[n] || {})[d.serial];
+            const v = r ? parseFloat(r.saldo) : NaN;
+            if (!isNaN(v)) { tot += v; has = true; }
+        });
+        if (has) { grand += tot; any = true; }
+        return has ? num(tot) : "";
+    });
+    rows.push(["TOTALE", ...foot, any ? num(grand) : ""]);
+    const esc = s => `"${String(s).replace(/"/g, '""')}"`;
+    const csv = "﻿" + rows.map(r => r.map(esc).join(";")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `saldi_matrice_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+function openSaldi() {
+    const ov = document.getElementById("saldiOverlay");
+    if (!ov) return;
+    ov.hidden = false;
+    fetchBalances();
+}
+
+function closeSaldi() {
+    const ov = document.getElementById("saldiOverlay");
+    if (ov) ov.hidden = true;
+}
+
+function renderBalances() {
+    const wrap = document.getElementById("balancesTable");
+    const summary = document.getElementById("balancesSummary");
+    if (!wrap) return;
+    // Overlay chiuso: non ricostruire mille celle a ogni refresh.
+    const ov = document.getElementById("saldiOverlay");
+    if (ov && ov.hidden) return;
+
+    const q = (document.getElementById("balanceSearch")?.value || "").trim().toLowerCase();
+    const onlyFilled = document.getElementById("saldiOnlyWithBalance")?.checked;
+
+    // --- Celle: nome-riga -> serial -> {saldo, username, timestamp} ---
+    const { cells, bookRows } = _balancesCells();
     const devices = state.devices.slice();
     const devName = d => d.display_name || d.serial;
 
@@ -4552,6 +4602,8 @@ function initBalances() {
             if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSaldi(); }
         });
     }
+    const btnMatrixCsv = document.getElementById("btnMatrixCsv");
+    if (btnMatrixCsv) btnMatrixCsv.addEventListener("click", downloadMatrixCsv);
     if (btnClose) btnClose.addEventListener("click", closeSaldi);
     if (btnCsv) btnCsv.addEventListener("click", downloadBalancesCsv);
     if (search) search.addEventListener("input", renderBalances);
