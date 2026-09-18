@@ -1180,7 +1180,9 @@ function createMseRemuxer(videoEl, onReady, onError) {
             sb = null; inited = false; queue = [];
         }
         try {
-            sb = ms.addSourceBuffer(codec);
+            // addSourceBuffer vuole il MIME completo, non il codec da solo:
+            // 'avc1.640028' lanciava sempre NotSupportedError.
+            sb = ms.addSourceBuffer(`video/mp4; codecs="${codec}"`);
             sb.mode = 'segments';
             sb.addEventListener('updateend', _flush);
             sb.addEventListener('error', (e) => onError?.(e));
