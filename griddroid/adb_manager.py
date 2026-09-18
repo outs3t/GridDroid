@@ -127,6 +127,41 @@ def adb_server_args(serial: str) -> List[str]:
     return []
 
 
+# Testi che indicano una pagina NON loggata: l'importo nel DOM e' promo
+# ('2.000€ di bonus'), non il saldo reale — quelle pagine si scartano.
+_LOGGED_OUT_RE = re.compile(
+    r"non sei collegat|non hai un account|accedi|registrati|"
+    r"log\s?in|sign\s?in|effettua l'?accesso",
+    re.I,
+)
+
+
+def _clean_username(raw: str) -> str:
+    """Pulisce lo username estratto dal DOM del bookmaker.
+
+    Il testo grezzo puo' contenere righe multiple e parole di UI
+    ('LOGOUT\nKekkopag', 'ESCI', 'Ciao Mario'): teniamo le righe che non
+    sono comandi/saluti e togliamo i prefissi di cortesia.
+    """
+    parts = []
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if re.search(r"(?i)\b(log\s?out|sign\s?out|esci|disconnett)\b", line):
+            line = re.sub(
+                r"(?i)\b(log\s?out|sign\s?out|esci|disconnett)\b", "", line
+            ).strip(" ,;:-")
+            if not line:
+                continue
+        line = re.sub(
+            r"(?i)^(?:ciao|benvenut[oa]|welcome|hello|hi)[,!\s]+", "", line
+        ).strip()
+        if line:
+            parts.append(line)
+    return " ".join(parts)[:40]
+
+
 class AdbManager:
     """Worker asincrono per il monitoraggio dei dispositivi ADB."""
 
@@ -583,20 +618,41 @@ class AdbManager:
             # c'e', il saldo non si aggiorna in automatico — ma il telefono
             # resta usabile dall'utente, che e' il requisito.
             cdp = await self._saldo_via_cdp(serial)
-            if cdp.get("saldo"):
-                self.record_balance(
-                    serial,
-                    cdp["saldo"],
-                    bookmaker=cdp.get("bookmaker", ""),
-                    username=cdp.get("username", ""),
-                )
-                logs.info(
-                    f"Saldo auto: {cdp['saldo']} ({cdp.get('bookmaker', '?')})",
-                    serial=serial,
-                    throttle_s=30,
-                )
+            self._record_cdp(serial, cdp)
         except Exception as exc:
             logs.warn(f"Auto-lettura saldo fallita: {exc}", serial=serial, throttle_s=60)
+
+    def _record_cdp(self, serial: str, cdp: dict) -> int:
+        """Persiste il risultato CDP: il saldo della tab migliore piu'
+        quelli di OGNI tab su un bookmaker noto (un telefono con piu'
+        book aperti aggiorna tutta la sua riga della matrice).
+        Ritorna quanti record sono stati scritti."""
+        written = 0
+        if cdp.get("saldo"):
+            self.record_balance(
+                serial,
+                cdp["saldo"],
+                bookmaker=cdp.get("bookmaker", ""),
+                username=cdp.get("username", ""),
+            )
+            written += 1
+        for b in cdp.get("books") or []:
+            # record_balance ignora duplicati identici gia' freschi
+            self.record_balance(
+                serial,
+                b["saldo"],
+                bookmaker=b["bookmaker"],
+                username=b.get("username", ""),
+            )
+            written += 1
+        if written:
+            logs.info(
+                f"Saldo auto: {cdp.get('saldo') or '-'} "
+                f"({cdp.get('bookmaker', '?')}) +{written - 1} book",
+                serial=serial,
+                throttle_s=30,
+            )
+        return written
 
     async def read_account_info(
         self,
@@ -1077,13 +1133,19 @@ class AdbManager:
                 return empty
 
             async def _cdp() -> dict:
-                # Lista target: HTTP minimale su localhost (niente requests)
+                # Lista target: HTTP minimale su localhost (niente requests).
+                # IMPORTANTE: Host DEVE includere la porta — Chrome valida
+                # l'header e con 'Host: 127.0.0.1' nudo chiude la connessione
+                # senza rispondere (0 byte). Inoltre webSocketDebuggerUrl
+                # eredita host:porta dall'Host inviato.
+                host = f"127.0.0.1:{port}"
                 reader, writer = await asyncio.wait_for(
                     asyncio.open_connection("127.0.0.1", port), timeout=3.0
                 )
                 try:
                     writer.write(
-                        b"GET /json HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n"
+                        f"GET /json HTTP/1.1\r\nHost: {host}\r\n"
+                        f"Connection: close\r\n\r\n".encode()
                     )
                     await writer.drain()
                     raw = await asyncio.wait_for(reader.read(65536), timeout=3.0)
@@ -1108,8 +1170,16 @@ class AdbManager:
                     return empty
 
                 async def _eval_page(page: dict):
+                    # webSocketDebuggerUrl replica l'host della richiesta:
+                    # lo forziamo comunque alla porta del forward — se Chrome
+                    # risponde con localhost:9222 o un host suo, il ws
+                    # punterebbe nel vuoto e la lettura fallirebbe zitta.
+                    ws_url = page["webSocketDebuggerUrl"]
+                    ws_url = re.sub(
+                        r"^ws://[^/]+", f"ws://127.0.0.1:{port}", ws_url
+                    )
                     async with websockets.connect(
-                        page["webSocketDebuggerUrl"],
+                        ws_url,
                         open_timeout=3, close_timeout=1, max_size=2**20,
                     ) as ws:
                         await ws.send(json.dumps({
@@ -1154,23 +1224,47 @@ class AdbManager:
                             self._normalize_amount(num.group(0)) if num else None
                         )
                     site = (val.get("site") or "").replace("www.", "")
+                    user = _clean_username(val.get("user") or "")
                     candidates.append({
                         "saldo": saldo,
                         "bookmaker": (
                             self._bookmaker_from_package(site) if site else ""
                         ),
-                        "username": (val.get("user") or "")[:40],
+                        "username": user,
                         "_vis": val.get("vis") == "visible",
+                        # Pagina non loggata: l'importo nel DOM e' promo
+                        # (es. '2.000€ bonus'), non il saldo reale.
+                        "_logged_out": bool(_LOGGED_OUT_RE.search(user)),
                     })
                 if not candidates:
                     return empty
+                # Le pagine non loggate non possono mostrare un saldo reale:
+                # fuori dalla scelta e dai saldi per-book.
+                valid = [c for c in candidates if not c["_logged_out"]]
+                if not valid:
+                    return empty
                 best = (
-                    next((c for c in candidates if c["_vis"] and c["saldo"]), None)
-                    or next((c for c in candidates if c["_vis"]), None)
-                    or next((c for c in candidates if c["saldo"]), None)
-                    or candidates[0]
+                    next((c for c in valid if c["_vis"] and c["saldo"]), None)
+                    or next((c for c in valid if c["_vis"]), None)
+                    or next((c for c in valid if c["saldo"]), None)
+                    or valid[0]
                 )
                 best.pop("_vis", None)
+                best.pop("_logged_out", None)
+                # Ogni tab su un bookmaker noto aggiorna la sua cella della
+                # matrice: non solo la tab visibile. Senza doppioni per book.
+                books = []
+                seen_bm = set()
+                for c in valid:
+                    bm = c["bookmaker"]
+                    if bm and c["saldo"] and bm not in seen_bm:
+                        seen_bm.add(bm)
+                        books.append({
+                            "bookmaker": bm,
+                            "saldo": c["saldo"],
+                            "username": c["username"],
+                        })
+                best["books"] = books
                 return best
 
             result = await asyncio.wait_for(_cdp(), timeout=10.0)
