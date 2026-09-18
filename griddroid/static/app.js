@@ -3828,14 +3828,51 @@ const BOOKMAKER_DEFAULTS = [
     { name: "ZONAGIOCO", url: "https://www.zonagioco.it" },
 ];
 
-// Nomi dei bookmaker: default + custom da localStorage. Serve alla
+// Bookmaker custom caricati dal server (persistenza in bookmakers.json):
+// il localStorage si perdeva' a ogni cambio porta dell'origine — il file
+// sul disco invece sopravvive a riavvii, update e cambi porta.
+let _customBookmakers = [];
+
+async function loadCustomBookmakers() {
+    try {
+        const res = await fetch("/api/bookmakers");
+        const data = await res.json();
+        _customBookmakers = data.custom || [];
+    } catch (e) {
+        _customBookmakers = [];
+    }
+    // Migrazione una tantum: custom salvati in localStorage dalle vecchie
+    // versioni vengono importati sul server, poi la chiave si svuota.
+    try {
+        const legacy = JSON.parse(localStorage.getItem("griddroid_bookmakers") || "[]");
+        if (legacy.length) {
+            const known = new Set(_customBookmakers.map(b => b.url));
+            const add = legacy.filter(b => b && b.name && b.url && !known.has(b.url));
+            if (add.length) {
+                _customBookmakers = [..._customBookmakers, ...add];
+                await saveCustomBookmakers(_customBookmakers);
+            }
+            localStorage.removeItem("griddroid_bookmakers");
+        }
+    } catch (e) { /* ignora */ }
+    return _customBookmakers;
+}
+
+async function saveCustomBookmakers(list) {
+    _customBookmakers = list;
+    try {
+        await fetch("/api/bookmakers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ custom: list }),
+        });
+    } catch (e) { /* il prossimo salvataggio riprova */ }
+}
+
+// Nomi dei bookmaker: default + custom dal server. Serve alla
 // matrice Saldi per costruire le righe nella stessa lista della sezione.
 function bookmakerNames() {
-    let custom = [];
-    try {
-        custom = JSON.parse(localStorage.getItem("griddroid_bookmakers") || "[]");
-    } catch (e) { /* ignora */ }
-    return [...BOOKMAKER_DEFAULTS, ...custom].map(b => b.name);
+    return [...BOOKMAKER_DEFAULTS, ..._customBookmakers].map(b => b.name);
 }
 
 function initBookmakers() {
@@ -3850,18 +3887,21 @@ function initBookmakers() {
 
     const defaults = BOOKMAKER_DEFAULTS;
 
-    function loadCustom() {
-        try {
-            return JSON.parse(localStorage.getItem("griddroid_bookmakers") || "[]");
-        } catch (e) {
-            return [];
-        }
-    }
-    function saveCustom(custom) {
-        localStorage.setItem("griddroid_bookmakers", JSON.stringify(custom));
-    }
-    let custom = loadCustom();
+    // custom viene dal server (bookmakers.json): il localStorage si
+    // perdeva al cambio porta dell'origine. Il fetch completa in async
+    // e poi la griglia si ridisegna coi siti salvati.
+    let custom = _customBookmakers.slice();
     let all = [...defaults, ...custom];
+    function saveCustom(list) {
+        custom = list;
+        all = [...defaults, ...custom];
+        saveCustomBookmakers(custom);
+    }
+    loadCustomBookmakers().then(() => {
+        custom = _customBookmakers.slice();
+        all = [...defaults, ...custom];
+        applySearch();
+    });
 
     function render(list) {
         grid.innerHTML = "";

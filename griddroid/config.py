@@ -31,6 +31,7 @@ KNOWN_FILE = CONFIG_DIR / "known.json"
 DEVICE_OVERRIDES_FILE = CONFIG_DIR / "device_overrides.json"
 LABEL_COLORS_FILE = CONFIG_DIR / "label_colors.json"
 DEVICE_ORDER_FILE = CONFIG_DIR / "device_order.json"
+BOOKMAKERS_FILE = CONFIG_DIR / "bookmakers.json"
 
 
 def _find_bundled_adb() -> str:
@@ -330,6 +331,28 @@ def save_skipped(skipped: List[str]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     SKIPPED_FILE.write_text(
         json.dumps(skipped, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_bookmakers() -> List[dict]:
+    """Carica i bookmaker custom salvati dall'utente (lista {name, url}).
+
+    Persistenza server-side: il localStorage del frontend si perde quando
+    cambia la porta dell'origine (es. 8470 occupata -> 8471 al riavvio),
+    quindi i siti custom stanno in un file accanto a tags/labels.
+    """
+    if BOOKMAKERS_FILE.exists():
+        data = json.loads(BOOKMAKERS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    return []
+
+
+def save_bookmakers(bookmakers: List[dict]) -> None:
+    """Salva la lista dei bookmaker custom su disco."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    BOOKMAKERS_FILE.write_text(
+        json.dumps(bookmakers, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
 

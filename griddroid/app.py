@@ -487,6 +487,38 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             },
         )
 
+    @app.get("/api/bookmakers")
+    async def get_bookmakers():
+        """Bookmaker custom salvati dall'utente (persistenza server-side:
+        il localStorage si perde se cambia la porta dell'origine)."""
+        from .config import load_bookmakers
+
+        return {"custom": load_bookmakers()}
+
+    @app.post("/api/bookmakers")
+    async def post_bookmakers(request: Request):
+        """Salva la lista completa dei bookmaker custom (sovrascrive)."""
+        from .config import save_bookmakers
+
+        body = await request.json()
+        raw = body.get("custom")
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="custom deve essere una lista")
+        custom = []
+        for item in raw[:200]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()[:80]
+            url = str(item.get("url") or "").strip()[:300]
+            if name and url:
+                custom.append({"name": name, "url": url})
+        try:
+            save_bookmakers(custom)
+        except Exception as exc:
+            logs.warn(f"Salvataggio bookmakers fallito: {exc}", throttle_s=60)
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "count": len(custom)}
+
     @app.get("/api/ledger/nicknames")
     async def ledger_nicknames():
         """Nickname caricati dal CSV Ledger per la UI di sincronizzazione."""
