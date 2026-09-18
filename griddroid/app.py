@@ -136,6 +136,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     # Servizi
     adb = AdbManager(settings)
     streams = StreamManager(settings)
+    adb.set_streams(streams)
     native = NativeViewerManager()
     input_relay = InputRelay(adb, streams)
     bulk = BulkActionRunner(adb, max_concurrent=settings.max_concurrent_installs)

@@ -134,6 +134,10 @@ class AdbManager:
         self._settings = settings
         self._adb = settings.adb_path or "adb"
         self._devices: Dict[str, DeviceState] = {}
+        # Riferimento al StreamManager, iniettato da app.py dopo la
+        # costruzione: serve a screen_off/screen_on per usare il canale
+        # scrcpy (set_display_power) che spegne il pannello senza bloccare.
+        self._streams = None
         self._labels: Dict[str, str] = load_labels()
         self._label_colors: Dict[str, str] = load_label_colors()
         self._order: Dict[str, int] = load_device_order()
@@ -1899,30 +1903,71 @@ class AdbManager:
     # Comandi utili
     # ------------------------------------------------------------------
 
+    def set_streams(self, streams) -> None:
+        """Inietta il StreamManager (chiamato da app.py dopo il wiring)."""
+        self._streams = streams
+
+    async def _display_power(self, serial: str, on: bool) -> bool:
+        """Accende/spegne il pannello via canale scrcpy: schermo buio ma
+        device sbloccato e stream video sempre attivo. False se non c'e'
+        uno stream con canale di controllo attivo su cui inviarlo."""
+        streams = self._streams
+        if streams is None:
+            return False
+        stream = streams.get_stream(serial)
+        if stream is None:
+            return False
+        return await stream.set_display_power(on)
+
     async def screen_on(self, serial: str) -> None:
         SCREEN_OFF_REQUESTED.discard(serial)
+        # Riaccende il pannello se era in display-off; il WAKEUP copre il
+        # caso di device messo in standby dal fallback senza stream.
+        await self._display_power(serial, True)
         await self.shell(serial, "input keyevent KEYCODE_WAKEUP")
         if serial in self._devices:
             self._devices[serial].screen_on = True
         logs.info("Schermo acceso", serial=serial)
 
     async def _is_screen_on(self, serial: str) -> Optional[bool]:
-        """Stato reale del display, None se non determinabile."""
+        """Stato reale del display, None se non determinabile.
+
+        Controlla sia il wakefulness che lo stato del pannello: con il
+        display spento via set_display_power il device resta 'Awake' ma il
+        pannello e' OFF — guardare solo il wakefulness sbaglierebbe.
+        """
         try:
             out = await self.shell(
-                serial, "dumpsys power | grep -m1 mWakefulness=", timeout=10.0
+                serial,
+                "dumpsys power | grep -E 'mWakefulness=|Display Power: state='",
+                timeout=10.0,
             )
         except Exception:
             return None
-        if "mWakefulness=" not in out:
+        wake = re.search(r"mWakefulness=(\w+)", out)
+        disp = re.search(r"Display Power:\s*state=(\w+)", out)
+        if not wake and not disp:
             return None
-        return "Awake" in out
+        if wake and wake.group(1) != "Awake":
+            return False
+        if disp and disp.group(1) == "OFF":
+            return False
+        return True
 
     async def screen_off(self, serial: str) -> None:
         # Registriamo l'intenzione PRIMA di spegnere: se nel frattempo lo
         # stream si riavvia, il suo KEYCODE_WAKEUP viene saltato invece di
         # riaccendere il device appena bloccato.
         SCREEN_OFF_REQUESTED.add(serial)
+        # Via scrcpy (MOD+O): spegne solo la retroilluminazione — il device
+        # NON si blocca e da PC si continua a vedere lo schermo.
+        if await self._display_power(serial, False):
+            if serial in self._devices:
+                self._devices[serial].screen_on = False
+            logs.info("Schermo spento (display off, device sbloccato)", serial=serial)
+            return
+        # Senza stream attivo non c'e' canale scrcpy: l'unico comando adb
+        # e' il tasto sleep, che pero' porta anche al lockscreen.
         await self.shell(serial, "input keyevent KEYCODE_SLEEP")
         # Il keyevent puo' andare perso se il device e' occupato: verifichiamo
         # l'esito e ritentiamo una volta invece di dichiarare successo al buio.
@@ -1935,7 +1980,7 @@ class AdbManager:
                 return
         if serial in self._devices:
             self._devices[serial].screen_on = False
-        logs.info("Schermo spento", serial=serial)
+        logs.info("Schermo spento (con blocco — nessuno stream attivo)", serial=serial)
 
     async def reboot(self, serial: str) -> None:
         logs.info("Riavvio in corso...", serial=serial)

@@ -253,6 +253,17 @@ class DeviceStream:
             return self._control
         return None
 
+    async def set_display_power(self, on: bool) -> bool:
+        """Spegne/accende il pannello senza bloccare il device.
+
+        False se lo stream non e' attivo o il canale di controllo e' giu':
+        il chiamante ricade su input keyevent (che pero' blocca il device).
+        """
+        ctrl = self.control
+        if ctrl is None:
+            return False
+        return await ctrl.set_display_power(on)
+
     async def start(self) -> None:
         if self._running:
             return

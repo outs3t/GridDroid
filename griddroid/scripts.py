@@ -300,6 +300,20 @@ class ScriptEngine:
             await self._key(serial, KEY_SLEEP)
         return ScriptResult(serial, True, "Dispositivo bloccato")
 
+    async def _spegni_schermo(self, serial: str, params: dict) -> ScriptResult:
+        """Spegne il pannello senza bloccare: lo stream da PC continua."""
+        await self._adb.screen_off(serial)
+        if not await self._schermo_acceso(serial):
+            return ScriptResult(serial, True, "Schermo spento")
+        return ScriptResult(serial, False, "Spegnimento schermo non riuscito")
+
+    async def _accendi_schermo(self, serial: str, params: dict) -> ScriptResult:
+        """Riaccende il pannello (anche dopo display-off) e sveglia il device."""
+        await self._adb.screen_on(serial)
+        if await self._schermo_acceso(serial):
+            return ScriptResult(serial, True, "Schermo acceso")
+        return ScriptResult(serial, False, "Accensione schermo non riuscita")
+
     # ------------------------------------------------------------------
     # Handler: informazioni dispositivo
     # ------------------------------------------------------------------
@@ -432,15 +446,15 @@ class ScriptEngine:
             descrizione="Sveglia il display senza sbloccare.",
             categoria="Sblocco e schermo",
             icona="💡",
-            comandi=[f"input keyevent {KEY_WAKEUP}"],
+            handler=ScriptEngine._accendi_schermo,
         ))
         self._aggiungi(Script(
             id="spegni_schermo",
             nome="Spegni schermo",
-            descrizione="Manda il display in standby.",
+            descrizione="Spegne il display senza bloccare: da PC lo schermo resta visibile.",
             categoria="Sblocco e schermo",
             icona="🌙",
-            comandi=[f"input keyevent {KEY_SLEEP}"],
+            handler=ScriptEngine._spegni_schermo,
         ))
         self._aggiungi(Script(
             id="schermo_sempre_acceso",

@@ -28,6 +28,9 @@ TYPE_BACK_OR_SCREEN_ON = 4
 TYPE_EXPAND_NOTIFICATION_PANEL = 5
 TYPE_EXPAND_SETTINGS_PANEL = 6
 TYPE_COLLAPSE_PANELS = 7
+# scrcpy >= 2.0: accende/spegne il pannello via SurfaceControl senza
+# bloccare il device (e' il MOD+O di scrcpy) — lo stream continua.
+TYPE_SET_DISPLAY_POWER = 10
 # scrcpy >= 3.0: riavvia l'encoder video, che riparte con SPS/PPS + IDR.
 TYPE_RESET_VIDEO = 17
 
@@ -259,6 +262,18 @@ class ControlChannel:
 
     async def collapse_panels(self) -> bool:
         return await self._send(struct.pack(">B", TYPE_COLLAPSE_PANELS))
+
+    async def set_display_power(self, on: bool) -> bool:
+        """Spegne/accende il pannello fisico senza toccare il keyguard.
+
+        A differenza di `input keyevent KEYCODE_SLEEP/POWER` (che mette il
+        device in standby e lo blocca), qui SurfaceControl spegne solo la
+        retroilluminazione: il telefono resta sbloccato e lo stream video
+        da PC continua a mostrare lo schermo. Payload: 1 byte on/off.
+        """
+        return await self._send(
+            struct.pack(">BB", TYPE_SET_DISPLAY_POWER, 1 if on else 0)
+        )
 
     async def reset_video(self) -> bool:
         """Forza un nuovo keyframe: l'encoder riparte con SPS/PPS + IDR.
