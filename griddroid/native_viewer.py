@@ -8,6 +8,7 @@ lo stream web viene fermato e viceversa.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -83,7 +84,9 @@ class NativeViewerManager:
             args += ["--video-encoder", video_encoder]
 
         try:
-            proc = subprocess.Popen(args, env=env)
+            # Popen in thread: lo spawn e' sincrono (~20-40ms su Windows)
+            # e non deve fermare l'event loop anche se e' un'azione rara.
+            proc = await asyncio.to_thread(subprocess.Popen, args, env=env)
         except Exception as exc:
             logs.error(f"Errore lancio scrcpy nativo: {exc}", serial=serial)
             raise
