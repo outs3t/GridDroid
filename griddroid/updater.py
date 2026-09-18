@@ -46,8 +46,14 @@ def _version_tuple(v: str):
 
 
 def is_newer(remote: str, local: str) -> bool:
-    """Restituisce True se `remote` è una versione maggiore di `local`."""
-    return _version_tuple(remote) > _version_tuple(local)
+    """Restituisce True se `remote` è una versione maggiore di `local`.
+
+    La CI pubblica versioni con un quarto segmento (0.1.124.157): non e'
+    una nuova release, solo un build dello stesso __version__. Senza il
+    confronto troncato a major.minor.patch l'exe installato vedeva un
+    "aggiornamento disponibile" a ogni avvio.
+    """
+    return _version_tuple(remote)[:3] > _version_tuple(local)[:3]
 
 
 def is_installed() -> bool:

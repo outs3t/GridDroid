@@ -996,6 +996,11 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             elif platform_info.get("portable_url"):
                 download_url = platform_info["portable_url"]
                 silent_args = []
+            else:
+                # Portatile ma version.json senza portable_url (schema CI
+                # rotto): scaricare il setup e copiarlo sopra l'exe
+                # romperebbe l'installazione. Meglio niente update.
+                return {"available": False, "version": __version__}
         return {
             "available": True,
             "current_version": __version__,
