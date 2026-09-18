@@ -4460,9 +4460,17 @@ function renderBalances() {
         const val = isNaN(v) ? escapeHtml(rec.saldo) : _fmtEuro(v);
         const user = rec.username
             ? `<span class="saldi-user">${escapeHtml(rec.username)}</span>` : "";
+        // Delta rispetto all'ultima variazione vista dal backend:
+        // freccia su/giu' colorata, solo se il saldo si e' mosso.
+        let delta = "";
+        if (typeof rec.diff === "number" && rec.diff !== 0) {
+            const up = rec.diff > 0;
+            delta = `<span class="saldi-delta ${up ? "up" : "down"}">` +
+                `${up ? "▲" : "▼"} ${_fmtEuro(Math.abs(rec.diff))}</span>`;
+        }
         const age = ageTxt ? `<span class="saldi-age">${ageTxt}</span>` : "";
         return `<td class="saldi-cell${stale ? " stale" : ""}" title="${escapeHtml(tip)}">` +
-            `<span class="saldi-val">${val}</span>${user}${age}</td>`;
+            `<span class="saldi-val">${val}</span>${user}${delta}${age}</td>`;
     };
 
     const headCells = visDevs.map(d =>

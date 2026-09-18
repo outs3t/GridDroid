@@ -316,10 +316,25 @@ class AdbManager:
             }
         )
         if bookmaker:
+            old_rec = entry.get("books", {}).get(bookmaker) or {}
+            old_saldo = old_rec.get("saldo")
+            # diff = variazione rispetto all'ultimo valore CAMBIATO: se il
+            # saldo e' identico conserviamo il diff gia' visto, cosi' la
+            # matrice continua a mostrare la direzione dell'ultima mossa
+            # invece di azzerarla a ogni rilettura uguale.
+            diff = old_rec.get("diff")
+            if old_saldo is None:
+                diff = None
+            elif old_saldo != saldo:
+                try:
+                    diff = round(float(saldo) - float(old_saldo), 2)
+                except (TypeError, ValueError):
+                    diff = None
             entry.setdefault("books", {})[bookmaker] = {
                 "saldo": saldo,
                 "username": username,
                 "timestamp": ts,
+                "diff": diff,
             }
         save_balances_state(self._balances)
 

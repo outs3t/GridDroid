@@ -2446,6 +2446,13 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
     overflow: hidden;
     text-overflow: ellipsis;
 }
+.saldi-cell .saldi-delta {
+    display: block;
+    font-size: 10px;
+    font-weight: 600;
+}
+.saldi-cell .saldi-delta.up { color: #4ade80; }
+.saldi-cell .saldi-delta.down { color: #f87171; }
 .saldi-cell .saldi-age {
     display: block;
     font-size: 9px;
