@@ -1392,7 +1392,7 @@ function startStreamWs(feedEl, serial) {
     session.jpegMode = jpegMode;
 
     if (!jpegMode && useWorker) {
-        const worker = new Worker('/static/decoder-worker.js?v=124');
+        const worker = new Worker('/static/decoder-worker.js?v=126');
         let gotKey = false;
         worker.onmessage = (event) => {
             const msg = event.data;

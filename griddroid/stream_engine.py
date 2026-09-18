@@ -1044,12 +1044,15 @@ class DeviceStream:
                     au.extend(nal)
                     pending.clear()
 
-                    payload = (b"\x01" if is_key else b"\x00") + bytes(au)
+                    # bytes + bytearray = una sola copia (non due come
+                    # flag + bytes(au)): ~12MB/s di copie risparmiati a
+                    # 25 device x 20fps x ~50KB/frame.
+                    payload = (b"\x01" if is_key else b"\x00") + au
                     if is_key:
                         self._last_keyframe = payload
                     self._distribute_frame(payload)
                     if self._jpeg_proc is not None:
-                        await self._feed_jpeg(is_key, bytes(au))
+                        await self._feed_jpeg(is_key, au)
                     au_count += 1
                     if au_count == 1:
                         logs.success(f"Stream H264 attivo (primo frame {len(au)} bytes)", serial=self.serial)
