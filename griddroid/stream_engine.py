@@ -81,17 +81,21 @@ def _tools_dir() -> Path:
 
 
 def _find_start_code(b: bytearray, start: int) -> int:
-    """Trova la posizione del prossimo start code Annex-B (00 00 01 o 00 00 00 01)."""
-    n = len(b)
-    i = start
-    while i + 2 < n:
-        if b[i] == 0 and b[i + 1] == 0:
-            if b[i + 2] == 1:
-                return i
-            if b[i + 2] == 0 and i + 3 < n and b[i + 3] == 1:
-                return i
-        i += 1
-    return -1
+    """Posizione del prossimo start code Annex-B (00 00 01 o 00 00 00 01).
+
+    find() gira in C: il vecchio loop Python scandiva ~1M byte/s per
+    stream sull'event loop (~30-50ms di CPU/s per device a 8Mbps) —
+    con 25 device era il maggior consumo CPU del processo.
+    Il codice a 4 byte 00 00 00 01 contiene 00 00 01 all'offset 1, quindi
+    il primo match di find e' sempre il codice piu' precoce; se il byte
+    prima del match e' 0 il vero inizio e' p-1 (forma a 4 byte).
+    """
+    p = b.find(b"\x00\x00\x01", start)
+    if p < 0:
+        return -1
+    if p > start and b[p - 1] == 0:
+        return p - 1
+    return p
 
 
 def _find_scrcpy_server() -> Optional[str]:
