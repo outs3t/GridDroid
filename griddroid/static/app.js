@@ -4438,14 +4438,22 @@ function renderBalances() {
     const cellHtml = rec => {
         if (!rec || !rec.saldo) return '<td class="saldi-cell empty"></td>';
         const v = parseFloat(rec.saldo);
-        let stale = false;
+        let stale = false, ageTxt = "";
         if (rec.timestamp) {
             const t = new Date(String(rec.timestamp).replace(" ", "T")).getTime();
-            stale = isNaN(t) ? false : now - t > 10 * 60 * 1000;
+            if (!isNaN(t)) {
+                const mins = Math.floor((now - t) / 60000);
+                stale = mins > 10;
+                ageTxt = mins < 1 ? "ora" : mins < 60 ? `${mins}m fa` : `${Math.floor(mins / 60)}h fa`;
+            }
         }
         const tip = [rec.username, rec.timestamp].filter(Boolean).join(" · ");
         const val = isNaN(v) ? escapeHtml(rec.saldo) : _fmtEuro(v);
-        return `<td class="saldi-cell${stale ? " stale" : ""}" title="${escapeHtml(tip)}">${val}</td>`;
+        const user = rec.username
+            ? `<span class="saldi-user">${escapeHtml(rec.username)}</span>` : "";
+        const age = ageTxt ? `<span class="saldi-age">${ageTxt}</span>` : "";
+        return `<td class="saldi-cell${stale ? " stale" : ""}" title="${escapeHtml(tip)}">` +
+            `<span class="saldi-val">${val}</span>${user}${age}</td>`;
     };
 
     const headCells = visDevs.map(d =>
@@ -4494,7 +4502,19 @@ function renderBalances() {
 
     if (summary) {
         const n = Object.values(cells).reduce((acc, r) => acc + Object.keys(r).length, 0);
-        summary.textContent = `${n} celle con saldo${any ? " · Totale: " + _fmtEuro(grand) : ""}`;
+        const devCount = new Set(
+            Object.values(cells).flatMap(r => Object.keys(r))
+        ).size;
+        const latest = Object.values(_balancesCache)
+            .map(b => b.timestamp).filter(Boolean).sort().pop();
+        const parts = [
+            `${n} celle con saldo`,
+            `${devCount} telefoni`,
+            `${Object.keys(cells).length} book`,
+        ];
+        if (any) parts.push(`Totale: ${_fmtEuro(grand)}`);
+        if (latest) parts.push(`Ultima lettura: ${latest.slice(11, 16)}`);
+        summary.textContent = parts.join(" · ");
     }
 }
 
@@ -4507,6 +4527,8 @@ function initBalances() {
     const search = document.getElementById("balanceSearch");
     const onlyFilled = document.getElementById("saldiOnlyWithBalance");
     const btnRefresh = document.getElementById("btnRefreshBalances");
+    const btnTop = document.getElementById("btnSaldi");
+    if (btnTop) btnTop.addEventListener("click", openSaldi);
     if (dock) {
         dock.addEventListener("click", openSaldi);
         dock.addEventListener("keydown", e => {
