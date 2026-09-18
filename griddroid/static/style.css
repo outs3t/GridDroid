@@ -2232,6 +2232,13 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
     background: #2a2e35;
     margin: 6px 0;
 }
+.context-menu-danger {
+    color: #f87171;
+}
+.context-menu-danger:hover {
+    background: #3a1f22;
+    color: #fca5a5;
+}
 
 /* Mini-conferma inline: appare vicino al punto del click, non al centro */
 .inline-confirm {

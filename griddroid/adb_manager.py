@@ -85,6 +85,16 @@ _DEVICE_RE = re.compile(
 # con molti dispositivi
 _DEVICE_RE_PLAIN = re.compile(r"^(?P<serial>\S+)\s+(?P<state>\S+)", re.MULTILINE)
 
+# Seriali validi: alfanumerici con - _ . : ammessi (TCP "ip:porta",
+# mDNS "adb-xxx._adb-tls-connect._tcp.", emulator-5554). Tutto il resto —
+# '(no', '*', 'adb:' — e' rumore dell'output adb/server di terzi che una
+# volta finiva in known.json come device fantasma.
+_SERIAL_VALID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]*(?::[0-9]+)?$")
+
+
+def _is_valid_serial(serial: str) -> bool:
+    return bool(serial) and bool(_SERIAL_VALID_RE.match(serial))
+
 
 # Mappa seriale -> porta del server adb che lo enumera (5037 standard,
 # 5038 = QuickForward/Panda). Modulo-level perche' stream_engine crea
@@ -208,6 +218,7 @@ class AdbManager:
         self._skipped_serials = set(load_skipped())
         self._known = load_known()
         self._balances = load_balances_state()
+        self._drop_invalid_serials()
         self._ledger_account_map = {}
         self._ledger_accounts = []
         self._load_ledger_csv()
@@ -267,6 +278,70 @@ class AdbManager:
             dev.skipped = False
         save_skipped([])
         logs.info("Ripristinati tutti i dispositivi non giocati")
+
+    def _drop_invalid_serials(self) -> None:
+        """Rimuove seriali spurie (es. '(no' da output adb corrotto o da
+        un backup importato) da tutto lo stato persistito."""
+        bad = {s for s in self._known if not _is_valid_serial(s)}
+        if not bad:
+            return
+        for s in bad:
+            self._devices.pop(s, None)
+            self._known.pop(s, None)
+            self._labels.pop(s, None)
+            self._label_colors.pop(s, None)
+            self._order.pop(s, None)
+            self._tags.pop(s, None)
+            self._played_serials.discard(s)
+            self._skipped_serials.discard(s)
+            self._balances.pop(s, None)
+        save_known(self._known)
+        save_labels(self._labels)
+        save_label_colors(self._label_colors)
+        save_device_order(self._order)
+        save_tags(self._tags)
+        save_played(sorted(self._played_serials))
+        save_skipped(sorted(self._skipped_serials))
+        save_balances_state(self._balances)
+        logs.warn(f"Rimossi seriali non validi: {sorted(bad)}")
+
+    def remove_device(self, serial: str) -> bool:
+        """Elimina un device: memoria + tutti i file persistiti.
+
+        Per telefoni vecchi/venduti e card duplicate che restano in
+        griglia. Lo storico CSV dei saldi resta (e' l'audit di Ledger);
+        gli override stream li rimuove StreamManager.remove_device_override.
+        """
+        existed = serial in self._devices or serial in self._known
+        self.stop_autoclick(serial)
+        task = self._balance_tasks.pop(serial, None)
+        if task and not task.done():
+            task.cancel()
+        self._devices.pop(serial, None)
+        self._known.pop(serial, None)
+        self._labels.pop(serial, None)
+        self._label_colors.pop(serial, None)
+        self._order.pop(serial, None)
+        self._tags.pop(serial, None)
+        self._played_serials.discard(serial)
+        self._skipped_serials.discard(serial)
+        self._balances.pop(serial, None)
+        self._missing.pop(serial, None)
+        self._last_reconnect.pop(serial, None)
+        self._last_balance_read.pop(serial, None)
+        self._balance_cache.pop(serial, None)
+        _SERIAL_PORT.pop(serial, None)
+        save_known(self._known)
+        save_labels(self._labels)
+        save_label_colors(self._label_colors)
+        save_device_order(self._order)
+        save_tags(self._tags)
+        save_played(sorted(self._played_serials))
+        save_skipped(sorted(self._skipped_serials))
+        save_balances_state(self._balances)
+        if existed:
+            logs.info("Dispositivo eliminato", serial=serial)
+        return existed
 
     # ------------------------------------------------------------------
     # Auto-clicker (anti-rilevamento)
@@ -1062,6 +1137,7 @@ class AdbManager:
         self._running = True
         # Card persistenti (come il registro di Panda): ogni device mai
         # visto resta in griglia marcato 'non rilevato' finche' non torna.
+        self._drop_invalid_serials()
         for serial, k in self._known.items():
             if serial in self._devices:
                 continue
@@ -1461,7 +1537,7 @@ class AdbManager:
                     regex = _DEVICE_RE if use_long else _DEVICE_RE_PLAIN
                     for match in regex.finditer(out):
                         serial = match.group("serial")
-                        if serial == "List":
+                        if serial == "List" or not _is_valid_serial(serial):
                             continue
                         if serial not in seen_serials:
                             seen_serials.add(serial)

@@ -597,6 +597,10 @@ function showDeviceContextMenu(e, serial) {
     if (soloItem) {
         soloItem.textContent = targetCount === 1 ? "Mostra solo questo" : `Mostra solo questi ${targetCount}`;
     }
+    const removeItem = menu.querySelector('[data-action="remove-device"]');
+    if (removeItem) {
+        removeItem.textContent = targetCount === 1 ? "Elimina dispositivo" : `Elimina ${targetCount} dispositivi`;
+    }
 
     // Lista gruppi esistenti
     const groupList = document.getElementById("contextGroupList");
@@ -1285,7 +1289,7 @@ function startStreamWs(feedEl, serial) {
     session.jpegMode = jpegMode;
 
     if (!jpegMode && useWorker) {
-        const worker = new Worker('/static/decoder-worker.js?v=122');
+        const worker = new Worker('/static/decoder-worker.js?v=123');
         let gotKey = false;
         worker.onmessage = (event) => {
             const msg = event.data;
@@ -4798,6 +4802,20 @@ function initContextMenu() {
             updateHeader();
             toast(`Mostro solo ${targets.length === 1 ? "1 dispositivo" : targets.length + " dispositivi"}`, "info");
             hideDeviceContextMenu();
+        }
+        const rmItem = e.target.closest('[data-action="remove-device"]');
+        if (rmItem) {
+            const serial = menu.dataset.serial;
+            if (!serial) return;
+            const targets = getContextTargetSerials(serial);
+            const msg = targets.length === 1
+                ? "Eliminare il dispositivo? Verranno rimossi nome, gruppi, stato giocato e saldo."
+                : `Eliminare ${targets.length} dispositivi? Verranno rimossi nome, gruppi, stato giocato e saldi.`;
+            confirmAt(e.clientX, e.clientY, msg, () => {
+                targets.forEach((s) => wsSend({ action: "remove_device", serial: s }));
+            });
+            hideDeviceContextMenu();
+            return;
         }
     });
 

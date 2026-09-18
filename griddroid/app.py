@@ -1326,6 +1326,21 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         elif action == "reset_skipped":
             adb.reset_skipped()
 
+        elif action == "remove_device":
+            # Elimina device (telefoni vecchi/duplicati): ferma stream e
+            # viewer nativo, poi rimuove seriale da memoria + file.
+            try:
+                await streams.stop_stream(serial)
+            except Exception:
+                pass
+            try:
+                if native.is_running(serial):
+                    await native.stop(serial)
+            except Exception:
+                pass
+            if adb.remove_device(serial):
+                streams.remove_device_override(serial)
+
         elif action == "autoclick_start":
             adb.start_autoclick(
                 serial,

@@ -1246,6 +1246,11 @@ class StreamManager:
         """Ricarica gli override video per device da disco (dopo un import)."""
         self._device_overrides = load_device_overrides()
 
+    def remove_device_override(self, serial: str) -> None:
+        """Dimentica gli override stream di un device eliminato."""
+        if self._device_overrides.pop(serial, None) is not None:
+            save_device_overrides(self._device_overrides)
+
     @property
     def streams(self) -> Dict[str, DeviceStream]:
         return self._streams
