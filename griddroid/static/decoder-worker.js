@@ -24,12 +24,17 @@ function requestKeyframe() {
 }
 
 function findStartCode(b, start) {
-    const n = b.length;
-    let i = start;
-    while (i + 2 < n) {
-        if (b[i] === 0 && b[i + 1] === 0) {
-            if (b[i + 2] === 1) return i;
-            if (b[i + 2] === 0 && i + 3 < n && b[i + 3] === 1) return i;
+    // Trova il prossimo start code Annex-B (00 00 01 o 00 00 00 01).
+    // indexOf(1) gira in C: il loop byte-per-byte costava ~ms per frame
+    // per worker — i byte 0x01 sono rari nel payload, i candidati sono
+    // pochi e ognuno verifica solo i due byte precedenti.
+    for (let i = Math.max(start + 2, 2); i < b.length;) {
+        i = b.indexOf(1, i);
+        if (i < 0) return -1;
+        if (b[i - 1] === 0 && b[i - 2] === 0) {
+            const p = i - 2;
+            // Se il byte prima e' 0 il vero inizio e' p-1 (forma 4 byte).
+            return (p > start && b[p - 1] === 0) ? p - 1 : p;
         }
         i += 1;
     }
@@ -81,16 +86,14 @@ function buildAvcDescription(sps, pps) {
 
 function annexBToAVCC(data) {
     const nalStarts = [];
-    for (let i = 0; i + 3 < data.length; i++) {
-        if (data[i] === 0 && data[i + 1] === 0) {
-            if (data[i + 2] === 1) {
-                nalStarts.push(i);
-                i += 2;
-            } else if (data[i + 2] === 0 && data[i + 3] === 1) {
-                nalStarts.push(i);
-                i += 3;
-            }
-        }
+    // Raccolta dei confini via findStartCode (indexOf in C) invece del
+    // loop byte-per-byte: gira a ogni frame per ogni stream.
+    let i = 0;
+    for (;;) {
+        const p = findStartCode(data, i);
+        if (p < 0) break;
+        nalStarts.push(p);
+        i = p + 3;
     }
     if (nalStarts.length === 0) return null;
     let total = 0;

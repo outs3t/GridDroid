@@ -989,29 +989,40 @@ function remoteLiteMode() {
     return !["localhost", "127.0.0.1", "::1"].includes(location.hostname);
 }
 
+function findStartCode(b, start) {
+    // Trova il prossimo start code Annex-B (00 00 01 o 00 00 00 01).
+    // indexOf(1) gira in C: il loop byte-per-byte costava ~ms per frame —
+    // i byte 0x01 sono rari nel payload, i candidati sono pochi e ognuno
+    // verifica solo i due byte precedenti.
+    for (let i = Math.max(start + 2, 2); i < b.length;) {
+        i = b.indexOf(1, i);
+        if (i < 0) return -1;
+        if (b[i - 1] === 0 && b[i - 2] === 0) {
+            const p = i - 2;
+            // Se il byte prima e' 0 il vero inizio e' p-1 (forma 4 byte).
+            return (p > start && b[p - 1] === 0) ? p - 1 : p;
+        }
+        i += 1;
+    }
+    return -1;
+}
+
 function parseSpsPpsFromAnnexB(data) {
     let sps = null, pps = null;
     let i = 0;
     while (i + 4 < data.length) {
-        let scLen = 0;
-        if (data[i] === 0 && data[i+1] === 0 && data[i+2] === 0 && data[i+3] === 1) scLen = 4;
-        else if (data[i] === 0 && data[i+1] === 0 && data[i+2] === 1) scLen = 3;
-        if (scLen > 0) {
-            const nalType = data[i + scLen] & 0x1F;
-            let j = i + scLen + 1;
-            while (j + 2 < data.length) {
-                if (data[j] === 0 && data[j+1] === 0 && (data[j+2] === 1 || (data[j+2] === 0 && j+3 < data.length && data[j+3] === 1))) break;
-                j++;
-            }
-            if (j + 2 >= data.length) j = data.length;
-            const nalData = data.subarray(i + scLen, j);
-            if (nalType === 7) sps = nalData;
-            else if (nalType === 8) pps = nalData;
-            if (sps && pps) break;
-            i = j;
-        } else {
-            i++;
-        }
+        const p = findStartCode(data, i);
+        if (p < 0) break;
+        const scLen = data[p + 2] === 1 ? 3 : 4;
+        if (p + scLen >= data.length) break;
+        const nalType = data[p + scLen] & 0x1F;
+        const nxt = findStartCode(data, p + scLen);
+        const j = nxt < 0 ? data.length : nxt;
+        const nalData = data.subarray(p + scLen, j);
+        if (nalType === 7) sps = nalData;
+        else if (nalType === 8) pps = nalData;
+        if (sps && pps) break;
+        i = j;
     }
     return { sps, pps };
 }
@@ -1037,16 +1048,13 @@ function buildAvcDescription(sps, pps) {
 
 function annexBToAVCC(data) {
     const nalStarts = [];
-    for (let i = 0; i + 3 < data.length; i++) {
-        if (data[i] === 0 && data[i+1] === 0) {
-            if (data[i+2] === 1) {
-                nalStarts.push({ pos: i, scLen: 3 });
-                i += 2;
-            } else if (data[i+2] === 0 && i + 3 < data.length && data[i+3] === 1) {
-                nalStarts.push({ pos: i, scLen: 4 });
-                i += 3;
-            }
-        }
+    // Confini via findStartCode (indexOf in C): gira a ogni frame nel
+    // percorso senza Worker.
+    for (let i = 0;;) {
+        const p = findStartCode(data, i);
+        if (p < 0) break;
+        nalStarts.push({ pos: p, scLen: data[p + 2] === 1 ? 3 : 4 });
+        i = p + 3;
     }
     if (nalStarts.length === 0) return data;
 
