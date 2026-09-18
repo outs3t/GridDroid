@@ -2872,9 +2872,9 @@ async function initSettings() {
         if (maxFps) maxFps.value = data.stream?.max_fps ?? 15;
         if (maxSize) maxSize.value = data.stream?.max_size ?? 2400;
         if (bitRate) bitRate.value = Math.round((data.stream?.bit_rate ?? 4000000) / 1000);
-        if (focusFps) focusFps.value = data.stream?.focus_max_fps ?? 25;
-        if (focusSize) focusSize.value = data.stream?.focus_max_size ?? 1600;
-        if (focusBitRate) focusBitRate.value = Math.round((data.stream?.focus_bit_rate ?? 2000000) / 1000);
+        if (focusFps) focusFps.value = data.stream?.focus_max_fps ?? 0;
+        if (focusSize) focusSize.value = data.stream?.focus_max_size ?? 0;
+        if (focusBitRate) focusBitRate.value = Math.round((data.stream?.focus_bit_rate ?? 0) / 1000);
         if (chkStartWithWindows) chkStartWithWindows.checked = data.start_with_windows ?? false;
         if (chkStartMinimized) chkStartMinimized.checked = data.start_minimized ?? false;
         if (chkMinimizeToTray) chkMinimizeToTray.checked = data.minimize_to_tray ?? false;

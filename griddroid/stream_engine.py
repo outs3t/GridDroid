@@ -1373,6 +1373,12 @@ class StreamManager:
         (enter/exit fullscreen in rapida sequenza) annullano il ciclo
         precedente invece di riavviare a cascata.
         """
+        fs = self._settings.stream
+        if not (fs.focus_max_size or fs.focus_max_fps or fs.focus_bit_rate):
+            # Tier focus non configurato: funzione disattivata, il
+            # fullscreen non provoca nessun restart dello stream.
+            self._focused_serial = None
+            return
         if focused:
             if self._focused_serial == serial:
                 return
