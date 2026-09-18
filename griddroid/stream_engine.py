@@ -827,7 +827,11 @@ class DeviceStream:
         params = f"max_fps={max_fps} video_bit_rate={bit_rate} "
         # Nessun B-frame: il decoder non deve riordinare, ogni frame e'
         # mostrabile appena arriva (stessa opzione usata da Okto).
-        params += "video_codec_options=max-bframes:int=0 "
+        # profile:int=1 = AVC Baseline (MediaFormat.KEY_PROFILE): profilo
+        # universale per MSE/WebCodecs — alcuni client rifiutano High
+        # (avc1.64xxxx). Se l'encoder ignora l'opzione resta High, che
+        # funziona comunque; il client ricava il codec dall'SPS.
+        params += "video_codec_options=max-bframes:int=0,profile:int=1 "
         # Encoder SOFTWARE (OMX.google) solo se esplicito o fallback.
         if use_software:
             params += "video_encoder=OMX.google.h264.encoder "
