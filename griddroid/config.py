@@ -468,3 +468,77 @@ def save_device_order(order: Dict[str, int]) -> None:
     DEVICE_ORDER_FILE.write_text(
         json.dumps(order, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+# =====================================================================
+# Export/import completo della configurazione
+# =====================================================================
+
+# File che NON vanno migrati: lock di sessione, log e marker di update.
+_EXPORT_SKIP = {"griddroid.lock", "griddroid.log", "update_pending.json"}
+_EXPORT_EXT = {".json", ".csv", ".txt"}
+
+
+def export_all() -> Dict[str, object]:
+    """Esporta TUTTI i file di stato di .griddroid.
+
+    Ritorna {filename: content}: i .json come oggetto (leggibile e
+    modificabile nel file esportato), gli altri (.csv, .txt) come testo.
+    Include tutto — etichette, tag, giocati/skipati, seriali noti,
+    override video per device, colori, ordine, saldi, CSV ledger —
+    cosi' niente si perde nel trasferimento su un altro PC.
+    """
+    files: Dict[str, object] = {}
+    if not CONFIG_DIR.exists():
+        return files
+    for path in sorted(CONFIG_DIR.iterdir()):
+        if not path.is_file() or path.name in _EXPORT_SKIP:
+            continue
+        if path.suffix.lower() not in _EXPORT_EXT:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            files[path.name] = json.loads(text) if path.suffix.lower() == ".json" else text
+        except Exception:
+            continue
+    return files
+
+
+def import_all(files: Dict[str, object]) -> List[str]:
+    """Scrive i file di stato in .griddroid. Ritorna i nomi scritti.
+
+    Accetta solo nomi sicuri (basename puro, estensione .json/.csv/.txt,
+    niente lock/log/update): un export manomesso non puo' scrivere fuori
+    da .griddroid ne' sovrascrivere file di sistema. config.json viene
+    scritto cosi' com'e': load_settings() sistema da solo i path di un
+    altro PC (adb_path rotto -> auto-detect bundled).
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    written: List[str] = []
+    if not isinstance(files, dict):
+        return written
+    for name, content in files.items():
+        if not isinstance(name, str) or name in _EXPORT_SKIP:
+            continue
+        safe = Path(name).name
+        if safe != name or safe.startswith(".") or "/" in name or "\\" in name:
+            continue
+        if Path(safe).suffix.lower() not in _EXPORT_EXT:
+            continue
+        try:
+            target = CONFIG_DIR / safe
+            if safe.lower().endswith(".json"):
+                target.write_text(
+                    content if isinstance(content, str)
+                    else json.dumps(content, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            else:
+                target.write_text(
+                    content if isinstance(content, str) else str(content),
+                    encoding="utf-8",
+                )
+            written.append(safe)
+        except Exception:
+            continue
+    return written

@@ -23,7 +23,11 @@ from fastapi.staticfiles import StaticFiles
 
 from .adb_manager import AdbManager, adb_server_args
 from .bulk_actions import BulkActionRunner
-from .config import AppSettings, CONFIG_DIR, load_settings, save_settings, load_labels, load_tags, load_played, load_known
+from .config import (
+    AppSettings, CONFIG_DIR, load_settings, save_settings,
+    load_labels, load_tags, load_played, load_known,
+    export_all, import_all,
+)
 from .device import DeviceStatus
 from .input_relay import InputRelay
 from .log_manager import logs
@@ -755,14 +759,15 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     @app.get("/api/settings/export")
     async def export_settings():
+        """Esporta TUTTI i file di stato di .griddroid (config, etichette,
+        tag, giocati/skipati, seriali noti, override video, colori, ordine,
+        saldi, CSV ledger). Il frontend aggiunge il localStorage
+        (bookmakers custom, preferenze UI) prima di salvare il file."""
         payload = {
+            "app": "griddroid",
             "version": __version__,
             "exported_at": datetime.now(timezone.utc).isoformat(),
-            "settings": settings.model_dump(),
-            "labels": load_labels(),
-            "tags": load_tags(),
-            "played": load_played(),
-            "known": load_known(),
+            "files": export_all(),
         }
         data = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
         filename = f"griddroid-config-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
@@ -771,6 +776,41 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             media_type="application/json",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @app.post("/api/settings/import")
+    async def import_settings(request: Request):
+        """Importa un export completo: riscrive i file di .griddroid e
+        ricarica lo stato in memoria (etichette, tag, giocati, override
+        video, saldi, CSV ledger) senza riavviare. Il frontend ripristina
+        il localStorage da solo e ricarica la pagina."""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "JSON non valido"}, status_code=400)
+        if body.get("app") != "griddroid" or not isinstance(body.get("files"), dict):
+            return JSONResponse(
+                {"ok": False, "error": "File di export non riconosciuto"},
+                status_code=400,
+            )
+        written = import_all(body["files"])
+        # Ricarica lo stato in memoria cosi' la griglia si allinea subito.
+        try:
+            adb.reload_state()
+        except Exception as exc:
+            logs.warn(f"Import: ricarica stato ADB fallita: {exc}")
+        try:
+            streams.reload_overrides()
+        except Exception as exc:
+            logs.warn(f"Import: ricarica override stream fallita: {exc}")
+        # Ricarica anche le settings runtime (adb_path di un altro PC
+        # viene sistemato da load_settings con l'auto-detect).
+        try:
+            new_settings = load_settings()
+            app.state.settings = new_settings
+        except Exception as exc:
+            logs.warn(f"Import: ricarica settings fallita: {exc}")
+        logs.info(f"Configurazione importata: {len(written)} file ripristinati")
+        return {"ok": True, "written": written}
 
     @app.get("/api/devices")
     async def get_devices():

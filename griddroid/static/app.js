@@ -27,8 +27,8 @@ const state = {
     autoWatch: localStorage.getItem("griddroid.autoWatch") !== "0",
     visibleSerials: new Set(),
     // Modalita' video: 'h264' decodifica nel browser (WebCodecs),
-    // 'mse' usa il <video>+JMuxer legacy, 'jpeg' decodifica sul server
-    // (ffmpeg -> JPEG) per i browser senza WebCodecs.
+    // 'mse' usa il <video> con remuxer fMP4 nativo, 'jpeg' decodifica
+    // sul server (ffmpeg -> JPEG) per i browser senza WebCodecs.
     videoMode: ["h264", "mse", "jpeg"].includes(localStorage.getItem("griddroid.videoMode"))
         ? localStorage.getItem("griddroid.videoMode")
         : "h264",
@@ -113,12 +113,26 @@ function wsSend(obj) {
     }
 }
 
+// Flag antiricorsione: se /api/client-log non e' raggiungibile, la fetch
+// rigetta e l'handler unhandledrejection la re-inoltrerebbe a remoteLog,
+// creando un loop infinito di "Failed to fetch". Con questo flag i reject
+// della fetch di logging vengono ignorati silenziosamente.
+let _remoteLogFailing = false;
+
 function remoteLog(level, message, serial) {
+    if (_remoteLogFailing) return;
     try {
         fetch("/api/client-log", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ level, message: String(message), serial }),
+        }).catch(() => {
+            // La fetch di logging e' fallita (server giu' / rete assente).
+            // Silenziamo i tentativi successivi per evitare il loop
+            // autoreferenziale con l'handler unhandledrejection.
+            _remoteLogFailing = true;
+            // Riprova fra 10s: se il server torna, riprendiamo a loggare.
+            setTimeout(() => { _remoteLogFailing = false; }, 10000);
         });
     } catch (e) {}
 }
@@ -290,8 +304,8 @@ function renderGrid() {
     }
 }
 
-// In modalita' 'mse' la cella ha solo il <video> (JMuxer), come in
-// produzione fino alla 0.1.116. Altrimenti canvas + WebCodecs.
+// In modalita' 'mse' la cella ha solo il <video> (remuxer fMP4 nativo).
+// Altrimenti canvas + WebCodecs.
 const USE_WEBCODECS = state.videoMode !== 'mse';
 
 function createDeviceCell(dev) {
@@ -347,6 +361,12 @@ function createDeviceCell(dev) {
             e.stopPropagation();
             toggleDeviceSelection(dev.serial);
             return;
+        }
+        // Togli il focus dalla barra di ricerca (o altro input attivo) così la
+        // tastiera globale viene inviata al device e non rimane nel box di testo.
+        const active = document.activeElement;
+        if (active && active !== cell && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT")) {
+            active.blur();
         }
         wsSend({ action: "focus", serial: dev.serial });
     });
@@ -981,6 +1001,221 @@ function annexBToAVCC(data) {
     return result;
 }
 
+// =====================================================================
+// Native MSE remuxer: sostituisce JMuxer per qualita' piena a 1080/1440.
+// JMuxer batcha i frame (flushingTime), pulisce il buffer (clearBuffer)
+// e gestisce male i cambi di risoluzione. Questo remuxer costruisce fMP4
+// nativo: init segment da SPS/PPS + media segment per ogni frame, zero
+// latenza, nessun batching.
+// =====================================================================
+
+function _fmp4Box(type, payload) {
+    const len = 8 + (payload ? payload.length : 0);
+    const buf = new Uint8Array(len);
+    new DataView(buf.buffer).setUint32(0, len);
+    buf[4] = type.charCodeAt(0);
+    buf[5] = type.charCodeAt(1);
+    buf[6] = type.charCodeAt(2);
+    buf[7] = type.charCodeAt(3);
+    if (payload) buf.set(payload, 8);
+    return buf;
+}
+
+function _fmp4Concat(...boxes) {
+    let total = 0;
+    for (const b of boxes) total += b.length;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const b of boxes) { out.set(b, off); off += b.length; }
+    return out;
+}
+
+// Init segment: ftyp + moov con avcC da SPS/PPS.
+function _fmp4InitSegment(sps, pps) {
+    const avcC = buildAvcDescription(sps, pps);
+    if (!avcC) return null;
+
+    const ftyp = _fmp4Box('ftyp', new Uint8Array([
+        0x69,0x73,0x6F,0x6D, 0x00,0x00,0x00,0x01,
+        0x69,0x73,0x6F,0x6D, 0x61,0x76,0x63,0x31,
+    ]));
+
+    const mvhd = _fmp4Box('mvhd', new Uint8Array([
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0x03,0xE8, 0,0,0,0,
+        0,1,0,0, 0x01,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,1,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,1,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0x40,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,2,
+    ]));
+
+    const tkhd = _fmp4Box('tkhd', new Uint8Array([
+        0,0,0,7, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,1,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,1,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0x40,0,0,0, 0,0,0,0, 0,0,0,0,
+    ]));
+
+    const mdhd = _fmp4Box('mdhd', new Uint8Array([
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0x03,0xE8, 0,0,0,0, 0x55,0xC4,0,0,
+    ]));
+
+    const hdlr = _fmp4Box('hdlr', new Uint8Array([
+        0,0,0,0, 0,0,0,0, 0x76,0x69,0x64,0x65,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,
+    ]));
+
+    const vmhd = _fmp4Box('vmhd', new Uint8Array([0,0,0,1, 0,0,0,0, 0,0,0,0]));
+    const url_ = _fmp4Box('url ', new Uint8Array([0,0,0,1]));
+    const dref = _fmp4Box('dref', _fmp4Concat(new Uint8Array([0,0,0,0, 0,0,0,1]), url_));
+    const dinf = _fmp4Box('dinf', dref);
+
+    // avc1 sample entry: width/height = 0 (MSE li ricava dallo stream)
+    const avc1Hdr = new Uint8Array([
+        0,0,0,0, 0,0,0,1,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,0,0,0, 0,0,0,0,
+        0,0x48,0,0, 0,0x48,0,0, 0,0,0,0, 0,1,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0x18, 0xFF,0xFF,
+    ]);
+    const avc1 = _fmp4Box('avc1', _fmp4Concat(avc1Hdr, _fmp4Box('avcC', avcC)));
+
+    const stsd = _fmp4Box('stsd', _fmp4Concat(new Uint8Array([0,0,0,0, 0,0,0,1]), avc1));
+    const stts = _fmp4Box('stts', new Uint8Array([0,0,0,0, 0,0,0,0]));
+    const stsc = _fmp4Box('stsc', new Uint8Array([0,0,0,0, 0,0,0,0]));
+    const stsz = _fmp4Box('stsz', new Uint8Array([0,0,0,0, 0,0,0,0, 0,0,0,0]));
+    const stco = _fmp4Box('stco', new Uint8Array([0,0,0,0, 0,0,0,0]));
+    const stbl = _fmp4Box('stbl', _fmp4Concat(stsd, stts, stsc, stsz, stco));
+    const minf = _fmp4Box('minf', _fmp4Concat(vmhd, dinf, stbl));
+    const mdia = _fmp4Box('mdia', _fmp4Concat(mdhd, hdlr, minf));
+    const trak = _fmp4Box('trak', _fmp4Concat(tkhd, mdia));
+    const trex = _fmp4Box('trex', new Uint8Array([0,0,0,0, 0,0,0,1, 0,0,0,1, 0,0,0,0, 0,0,0,0, 0,0,0,0]));
+    const mvex = _fmp4Box('mvex', trex);
+    const moov = _fmp4Box('moov', _fmp4Concat(mvhd, trak, mvex));
+
+    return _fmp4Concat(ftyp, moov);
+}
+
+// Media segment: moof + mdat per un singolo frame AVCC.
+// Struttura fissa: moof = 92 byte, mdat header = 8 byte, data_offset = 100.
+function _fmp4MediaSegment(seq, avcc, timestamp, duration) {
+    const mfhd = _fmp4Box('mfhd', new Uint8Array([
+        0,0,0,0,
+        (seq >>> 24)&0xFF, (seq >>> 16)&0xFF, (seq >>> 8)&0xFF, seq&0xFF,
+    ]));
+    const tfhd = _fmp4Box('tfhd', new Uint8Array([0,0,0,0x20, 0,0,0,1]));
+    const tfdt = _fmp4Box('tfdt', new Uint8Array([
+        0,0,0,0,
+        (timestamp >>> 24)&0xFF, (timestamp >>> 16)&0xFF, (timestamp >>> 8)&0xFF, timestamp&0xFF,
+    ]));
+    // trun flags 0x000301: data-offset + sample-duration + sample-size
+    const trunData = new Uint8Array(20);
+    const tv = new DataView(trunData.buffer);
+    tv.setUint32(0, 0x000301);
+    tv.setUint32(4, 1);          // sample_count
+    tv.setInt32(8, 100);         // data_offset = moof.length(92) + mdat_header(8)
+    tv.setUint32(12, duration);  // sample_duration
+    tv.setUint32(16, avcc.length); // sample_size
+    const trun = _fmp4Box('trun', trunData);
+    const traf = _fmp4Box('traf', _fmp4Concat(tfhd, tfdt, trun));
+    const moof = _fmp4Box('moof', _fmp4Concat(mfhd, traf));
+    const mdat = _fmp4Box('mdat', avcc);
+    return _fmp4Concat(moof, mdat);
+}
+
+// Crea un remuxer MSE nativo per un elemento <video>.
+// onReady: callback quando il MediaSource e' aperto.
+// Ritorna { feed, destroy }.
+function createMseRemuxer(videoEl, onReady, onError) {
+    const ms = new MediaSource();
+    videoEl.src = URL.createObjectURL(ms);
+
+    let sb = null;
+    let inited = false;
+    let seq = 0;
+    let ts = 0;
+    let queue = [];
+    let lastSps = null;
+    let lastPps = null;
+    const FRAME_DUR = 50; // 20fps @ timescale 1000ms
+
+    function _append(data) {
+        if (sb && !sb.updating) {
+            try { sb.appendBuffer(data); } catch (e) { onError?.(e); }
+        } else {
+            queue.push(data);
+        }
+    }
+
+    function _flush() {
+        while (queue.length > 0 && sb && !sb.updating) {
+            try { sb.appendBuffer(queue.shift()); } catch (e) { onError?.(e); break; }
+        }
+        // Mantieni solo gli ultimi 2s di buffer per latenza minima
+        if (sb && !sb.updating && sb.buffered.length > 0) {
+            const end = sb.buffered.end(sb.buffered.length - 1);
+            const start = sb.buffered.start(0);
+            if (end - start > 2) {
+                try { sb.remove(start, end - 2); } catch (e) {}
+            }
+        }
+    }
+
+    function _init(sps, pps) {
+        const initSeg = _fmp4InitSegment(sps, pps);
+        if (!initSeg) return false;
+        const profile = sps[1].toString(16).padStart(2, '0');
+        const constraints = sps[2].toString(16).padStart(2, '0');
+        const level = sps[3].toString(16).padStart(2, '0');
+        const codec = `avc1.${profile}${constraints}${level}`;
+
+        if (sb) {
+            try { ms.removeSourceBuffer(sb); } catch (e) {}
+            sb = null; inited = false; queue = [];
+        }
+        try {
+            sb = ms.addSourceBuffer(codec);
+            sb.mode = 'segments';
+            sb.addEventListener('updateend', _flush);
+            sb.addEventListener('error', (e) => onError?.(e));
+        } catch (e) { onError?.(e); return false; }
+        _append(initSeg);
+        inited = true;
+        lastSps = sps; lastPps = pps;
+        return true;
+    }
+
+    function feed(isKey, h264Data) {
+        const spspps = parseSpsPpsFromAnnexB(h264Data);
+        if (isKey && spspps.sps && spspps.pps) {
+            const changed = !lastSps || !lastPps ||
+                lastSps.length !== spspps.sps.length ||
+                lastPps.length !== spspps.pps.length ||
+                lastSps.some((b, i) => b !== spspps.sps[i]) ||
+                lastPps.some((b, i) => b !== spspps.pps[i]);
+            if (changed || !inited) _init(spspps.sps, spspps.pps);
+        }
+        if (!inited) return;
+        const avcc = annexBToAVCC(h264Data);
+        if (!avcc) return;
+        seq++;
+        const seg = _fmp4MediaSegment(seq, avcc, ts, FRAME_DUR);
+        ts += FRAME_DUR;
+        _append(seg);
+    }
+
+    function destroy() {
+        queue = [];
+        if (sb) { try { ms.removeSourceBuffer(sb); } catch (e) {} sb = null; }
+        inited = false;
+    }
+
+    ms.addEventListener('sourceopen', () => onReady?.());
+    return { feed, destroy };
+}
+
 const _frameBuffers = new Map();
 
 function scheduleCanvasDraw(feedEl, serial, source, width, height) {
@@ -1029,10 +1264,10 @@ function startStreamWs(feedEl, serial) {
     feedEl.style.display = 'none';
     setPlaceholder('Connessione in corso...', '⏳');
 
-    const session = { ws: null, feedEl, jmuxer: null, decoder: null, ctx: null, pts: 0, configured: false, gotKey: false };
+    const session = { ws: null, feedEl, mseRemuxer: null, decoder: null, ctx: null, pts: 0, configured: false, gotKey: false };
     // Modalita' JPEG: il server decodifica con ffmpeg e manda JPEG pronti
     // (flag 0x02). Il browser disegna senza decodificare H264: serve solo
-    // un canvas, niente worker/decoder/JMuxer.
+    // un canvas, niente worker/decoder/MSE.
     const jpegMode = state.videoMode === 'jpeg';
     if (jpegMode && feedEl.tagName !== 'CANVAS') {
         setPlaceholder('Modalità JPEG richiede canvas', '⚠️');
@@ -1050,7 +1285,7 @@ function startStreamWs(feedEl, serial) {
     session.jpegMode = jpegMode;
 
     if (!jpegMode && useWorker) {
-        const worker = new Worker('/static/decoder-worker.js?v=117');
+        const worker = new Worker('/static/decoder-worker.js?v=121');
         let gotKey = false;
         worker.onmessage = (event) => {
             const msg = event.data;
@@ -1082,8 +1317,8 @@ function startStreamWs(feedEl, serial) {
 
     if (!jpegMode && useWebCodecs) {
         session.ctx = feedEl.getContext("2d", { alpha: false });
-    } else if (!jpegMode && !useWorker && typeof JMuxer === "undefined") {
-        console.error("JMuxer non caricato");
+    } else if (!jpegMode && !useWorker && typeof MediaSource === "undefined") {
+        console.error("MediaSource non supportato");
         setPlaceholder('Errore player MSE', '⚠️');
         return;
     }
@@ -1193,34 +1428,20 @@ function startStreamWs(feedEl, serial) {
                 console.error(`Decode ${serial}:`, e);
             }
         } else {
-            // Fallback MSE/JMuxer
-            if (!session.jmuxer) {
+            // MSE nativo: remuxer fMP4 senza JMuxer (qualita' piena a 1080/1440).
+            // JMuxer batcha/pulisce buffer e degrada le alte risoluzioni.
+            if (!session.mseRemuxer) {
                 try {
-                    // fps reale dello stream: con 5 cablato lo stream a
-                    // 15-20fps andava a rallentatore fino al buffer nero.
-                    let streamFps = parseInt(document.getElementById('maxFps')?.value, 10) || 20;
-                    if (streamFps < 1 || streamFps > 60) streamFps = 20;
-                    if (DEBUG_STREAM()) console.log(`[JMuxer] init ${serial} @ ${streamFps}fps`);
-                    session.jmuxer = new JMuxer({
-                        node: feedEl,
-                        mode: 'video',
-                        fps: streamFps,
-                        flushingTime: 50,
-                        clearBuffer: true,
-                        maxDelay: 1000,
-                        readFpsFromTrack: false,
-                        debug: DEBUG_STREAM(),
-                        onReady: () => {
-                            feedEl.style.display = 'block';
-                            setPlaceholder('', '', false);
-                            feedEl.play().catch(() => {});
-                        },
-                        onError: (err) => {
-                            console.error(`JMuxer ${serial}:`, err);
-                        },
+                    if (DEBUG_STREAM()) console.log(`[MSE] init remuxer nativo ${serial}`);
+                    session.mseRemuxer = createMseRemuxer(feedEl, () => {
+                        feedEl.style.display = 'block';
+                        setPlaceholder('', '', false);
+                        feedEl.play().catch(() => {});
+                    }, (err) => {
+                        console.error(`MSE remuxer ${serial}:`, err);
                     });
                 } catch (err) {
-                    console.error(`Inizializzazione JMuxer ${serial}:`, err);
+                    console.error(`Inizializzazione MSE ${serial}:`, err);
                     setPlaceholder('Errore player MSE', '⚠️');
                     return;
                 }
@@ -1230,9 +1451,9 @@ function startStreamWs(feedEl, serial) {
                 session.gotKey = true;
             }
             try {
-                session.jmuxer.feed({ video: h264Data, duration: session.jmuxer.frameDuration });
+                session.mseRemuxer.feed(isKey, h264Data);
             } catch (err) {
-                console.error(`Feed JMuxer ${serial}:`, err);
+                console.error(`Feed MSE ${serial}:`, err);
             }
         }
     };
@@ -1253,8 +1474,9 @@ function startStreamWs(feedEl, serial) {
             feedEl.dataset.wsRetryAt = Date.now() + 3000 + Math.random() * 3000;
             delete streamSessions[serial];
         }
-        if (session.jmuxer) {
-            try { session.jmuxer.destroy(); } catch (e) { }
+        if (session.mseRemuxer) {
+            try { session.mseRemuxer.destroy(); } catch (e) { }
+            session.mseRemuxer = null;
         }
         if (session.decoder) {
             try { session.decoder.close(); } catch (e) { }
@@ -1303,7 +1525,7 @@ function stopStreamWs(feedEl) {
             }
         } catch (e) { }
         try {
-            if (session.jmuxer) session.jmuxer.destroy();
+            if (session.mseRemuxer) session.mseRemuxer.destroy();
             if (session.decoder) session.decoder.close();
             if (session.worker) { session.worker.terminate(); }
         } catch (e) { }
@@ -1637,9 +1859,8 @@ function setDeviceStreamParams(serial, { maxSize, maxFps, bitRate } = {}) {
 }
 
 function exitFullscreen() {
-    if (state.fullscreenSerial) {
-        fetch(`/api/devices/${state.fullscreenSerial}/unzoom`, { method: "POST" }).catch(() => { });
-    }
+    // Non c'e' piu' un /zoom da annullare (rimosso per evitare il riavvio
+    // stream): l'unzoom era un no-op se _pre_zoom non era mai stato impostato.
     document.querySelectorAll(".fullscreen-cell").forEach((c) => {
         if (c._fsDrag) {
             document.removeEventListener("pointermove", c._fsDrag.onMove);
@@ -1659,7 +1880,20 @@ function exitFullscreen() {
         c.style.left = "";
         c.style.transform = "";
         c.classList.remove("fullscreen-cell");
-        if (c._fsParent && document.contains(c._fsParent)) {
+        // Mentre eravamo in fullscreen, renderGrid puo' aver creato una
+        // nuova cella per lo stesso serial (perche' questa era in body).
+        // Se esiste gia', rimuoviamo questa vecchia invece di re-inserirla
+        // (altrimenti il device compare due volte nella griglia).
+        const existing = document.querySelector(
+            `.device-cell[data-serial="${c.dataset.serial}"]:not(.fullscreen-cell)`
+        );
+        if (existing) {
+            // La nuova cella e' gia' in griglia: ferma lo stream di questa
+            // e scartala. L'AutoWatch della nuova cella e' gestito da renderGrid.
+            const feed = c.querySelector(".device-feed");
+            if (feed) stopStreamWs(feed);
+            c.remove();
+        } else if (c._fsParent && document.contains(c._fsParent)) {
             c._fsParent.insertBefore(c, c._fsNext && c._fsNext.parentNode === c._fsParent ? c._fsNext : null);
         } else {
             document.getElementById("deviceGrid")?.appendChild(c);
@@ -1667,7 +1901,9 @@ function exitFullscreen() {
         c._fsParent = null;
         c._fsNext = null;
         // Torna in griglia: l'AutoWatch deve rivalutare la visibilita'.
-        awObserveCell(c);
+        // (solo se la cella e' ancora nel DOM: se era duplicata e' stata
+        // rimossa sopra, e la nuova cella in griglia ha gia' il suo observer)
+        if (document.contains(c)) awObserveCell(c);
     });
     document.getElementById("fullscreenBackdrop")?.remove();
     document.querySelectorAll(".fs-left-label").forEach((el) => el.remove());
@@ -1695,8 +1931,10 @@ function toggleFullscreen(serial, cell) {
         cell.classList.add("fullscreen-cell");
         state.fullscreenSerial = serial;
 
-        // Zoom: risoluzione/fps/bitrate per fullscreen (720p/15fps/500k)
-        fetch(`/api/devices/${serial}/zoom`, { method: "POST" }).catch(() => { });
+        // Non riavviare lo stream con /zoom: il riavvio lato server spezza
+        // il WebSocket e il video si blocca per 3-6s (cooldown riconnessione).
+        // Il feed viene scalato via CSS; l'utente puo' cambiare qualita' dal
+        // pannello destro (Applica stream) se serve piu' risoluzione.
 
         // In fullscreen libera il decoder degli altri device: fermiamo i
         // loro WebSocket. Il server continua a streammare, ma al ritorno
@@ -2804,7 +3042,18 @@ async function initSettings() {
             try {
                 const r = await fetch("/api/settings/export");
                 if (!r.ok) throw new Error("errore esportazione");
-                const blob = await r.blob();
+                const payload = await r.json();
+                // Il server non vede il localStorage del browser: lo
+                // aggiungiamo noi cosi' viaggiano anche i bookmaker
+                // custom e tutte le preferenze UI (videoMode, ordinamento,
+                // filtri giocati/non giocati, slot/panda mode, ecc.).
+                const ls = {};
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    if (k && k.startsWith("griddroid")) ls[k] = localStorage.getItem(k);
+                }
+                payload.localStorage = ls;
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 const disp = r.headers.get("content-disposition") || "";
@@ -2818,6 +3067,51 @@ async function initSettings() {
                 toast("Configurazione esportata", "success");
             } catch (e) {
                 toast("Errore esportazione configurazione", "error");
+            }
+        });
+    }
+
+    const btnImportConfig = document.getElementById("btnImportConfig");
+    const importFileInput = document.getElementById("importConfigFile");
+    if (btnImportConfig && importFileInput) {
+        btnImportConfig.addEventListener("click", () => importFileInput.click());
+        importFileInput.addEventListener("change", async () => {
+            const file = importFileInput.files && importFileInput.files[0];
+            importFileInput.value = "";
+            if (!file) return;
+            let payload;
+            try {
+                payload = JSON.parse(await file.text());
+            } catch (e) {
+                toast("File di configurazione non valido", "error");
+                return;
+            }
+            if (payload.app !== "griddroid" || !payload.files) {
+                toast("File non riconosciuto come export GridDroid", "error");
+                return;
+            }
+            if (!confirm("Importare la configurazione? Sovrascrive etichette, tag, giocati, saldi, bookmaker e tutte le impostazioni.")) return;
+            try {
+                const r = await fetch("/api/settings/import", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ app: "griddroid", files: payload.files }),
+                });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok || !data.ok) throw new Error(data.error || "errore importazione");
+                // Ripristina il localStorage esportato (bookmaker custom
+                // e preferenze UI) prima di ricaricare.
+                if (payload.localStorage && typeof payload.localStorage === "object") {
+                    for (const [k, v] of Object.entries(payload.localStorage)) {
+                        if (typeof k === "string" && k.startsWith("griddroid") && typeof v === "string") {
+                            try { localStorage.setItem(k, v); } catch (e) {}
+                        }
+                    }
+                }
+                toast(`Importati ${data.written ? data.written.length : 0} file — ricarico`, "success");
+                setTimeout(() => location.reload(), 800);
+            } catch (e) {
+                toast(`Errore importazione: ${e.message || e}`, "error");
             }
         });
     }

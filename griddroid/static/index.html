@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-<link rel="stylesheet" href="/static/style.css?v=57">
+<link rel="stylesheet" href="/static/style.css?v=59">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -379,9 +379,11 @@
                     <div class="sidebar-section">
                         <h4>Backup</h4>
                         <p style="font-size:11px;color:var(--text-2);margin:0 0 8px 0;">
-                            Esporta etichette, tag, dispositivi giocati e il registro dei seriali noti per trasferire la configurazione o farla tornare utile dopo un reset.
+                            Esporta TUTTO: impostazioni, etichette, tag, giocati/non giocati, seriali noti, override video, colori, ordine, saldi, bookmaker e preferenze UI. Serve per spostare GridDroid su un altro PC senza perdere niente.
                         </p>
                         <button class="btn btn-accent" id="btnExportConfig" style="width:100%;">Esporta configurazione</button>
+                        <button class="btn" id="btnImportConfig" style="width:100%;margin-top:6px;">Importa configurazione</button>
+                        <input type="file" id="importConfigFile" accept="application/json,.json" style="display:none;" />
                     </div>
                     <div class="sidebar-section">
                         <h4>Avvio</h4>
@@ -500,7 +502,7 @@
     </div>
 
     <script src="/static/jmuxer.min.js?v=87"></script>
-    <script src="/static/app.js?v=117"></script>
+    <script src="/static/app.js?v=121"></script>
     <script>
     (async () => {
         try {

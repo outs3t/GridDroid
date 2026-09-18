@@ -193,6 +193,31 @@ class AdbManager:
         except Exception as exc:
             logs.warn(f"Errore caricamento CSV Ledger: {exc}")
 
+    def reload_state(self) -> None:
+        """Ricarica da disco tutto lo stato persistito (dopo un import).
+
+        Aggiorna labels, colori, ordine, tag, giocati, skipati, seriali
+        noti, saldi e il CSV Ledger, poi ri-applica label/played/skipped
+        ai device gia' visti cosi' la griglia si allinea subito.
+        """
+        self._labels = load_labels()
+        self._label_colors = load_label_colors()
+        self._order = load_device_order()
+        self._tags = load_tags()
+        self._played_serials = set(load_played())
+        self._skipped_serials = set(load_skipped())
+        self._known = load_known()
+        self._balances = load_balances_state()
+        self._ledger_account_map = {}
+        self._ledger_accounts = []
+        self._load_ledger_csv()
+        for serial, dev in self._devices.items():
+            dev.label = self._labels.get(serial, dev.label)
+            dev.label_color = self._label_colors.get(serial, "")
+            dev.tags = list(self._tags.get(serial, []))
+            dev.played = serial in self._played_serials
+            dev.skipped = serial in self._skipped_serials
+
     @property
     def devices(self) -> Dict[str, DeviceState]:
         return self._devices

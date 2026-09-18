@@ -1242,6 +1242,10 @@ class StreamManager:
         self._start_sem = asyncio.Semaphore(starts)
         self._device_overrides = load_device_overrides()
 
+    def reload_overrides(self) -> None:
+        """Ricarica gli override video per device da disco (dopo un import)."""
+        self._device_overrides = load_device_overrides()
+
     @property
     def streams(self) -> Dict[str, DeviceStream]:
         return self._streams
