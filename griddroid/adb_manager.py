@@ -241,6 +241,43 @@ class AdbManager:
         """Stato saldi corrente: serial -> {saldo, bookmaker, username, nome, timestamp}."""
         return self._balances
 
+    def record_balance(
+        self,
+        serial: str,
+        saldo: str,
+        bookmaker: str = "",
+        username: str = "",
+        nome: str = "",
+        timestamp: str = "",
+    ) -> None:
+        """Registra un saldo letto: aggiorna il corrente e lo storico per-book.
+
+        books[bookmaker] conserva l'ultima lettura per OGNI book del
+        telefono: la matrice saldi mostra cosi' una cella per ciascun
+        book, non solo per quello rilevato piu' di recente.
+        """
+        ts = timestamp or time.strftime("%Y-%m-%d %H:%M:%S")
+        if not nome:
+            dev = self._devices.get(serial)
+            nome = dev.display_name if dev else serial
+        entry = self._balances.setdefault(serial, {})
+        entry.update(
+            {
+                "saldo": saldo,
+                "bookmaker": bookmaker,
+                "username": username,
+                "nome": nome,
+                "timestamp": ts,
+            }
+        )
+        if bookmaker:
+            entry.setdefault("books", {})[bookmaker] = {
+                "saldo": saldo,
+                "username": username,
+                "timestamp": ts,
+            }
+        save_balances_state(self._balances)
+
     def set_played(self, serial: str, played: bool = True) -> None:
         """Segna un dispositivo come giocato e lo salva su disco."""
         if played:
@@ -446,6 +483,17 @@ class AdbManager:
         "betway": "Betway", "leovegas": "LeoVegas", "admiral": "AdmiralBet",
         "betsson": "Betsson", "daznbet": "DaznBet", "netbet": "NetBet", "fantasyteam": "FantasyTeam",
         "betclic": "Betclic", "novibet": "Novibet", "stake": "Stake",
+        # Book della sezione Bookmakers senza package nella mappa
+        "betpassion": "BetPassion", "betwin": "BetWin360",
+        "betpoint": "Betpoint", "domusbet": "DomusBet",
+        "eplay24": "Eplay24", "fastbet": "Fastbet",
+        "gioca7": "Gioca7", "giocodigitale": "Gioco Digitale",
+        "marathon": "MarathonBet", "mylottery": "MyLottery",
+        "quigioco": "QuiGioco", "sportbet": "SportBet",
+        "sportium": "Sportium", "stanleybet": "StanleyBet",
+        "starvegas": "StarVegas", "staryes": "StarYes",
+        "sunbet": "Sunbet", "totosi": "Totosì",
+        "vincitu": "VinciTu", "zonagioco": "ZonaGioco",
     }
 
     @staticmethod
@@ -513,7 +561,7 @@ class AdbManager:
         if not dev or dev.status != DeviceStatus.ONLINE:
             return
         now = time.time()
-        if now - self._last_balance_read.get(serial, 0.0) < 60.0:
+        if now - self._last_balance_read.get(serial, 0.0) < 30.0:
             return
         # Una task per device alla volta
         existing = self._balance_tasks.get(serial)
@@ -532,16 +580,12 @@ class AdbManager:
             # resta usabile dall'utente, che e' il requisito.
             cdp = await self._saldo_via_cdp(serial)
             if cdp.get("saldo"):
-                dev = self._devices.get(serial)
-                nome = dev.display_name if dev else serial
-                self._balances[serial] = {
-                    "saldo": cdp["saldo"],
-                    "bookmaker": cdp.get("bookmaker", ""),
-                    "username": cdp.get("username", ""),
-                    "nome": nome,
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                }
-                save_balances_state(self._balances)
+                self.record_balance(
+                    serial,
+                    cdp["saldo"],
+                    bookmaker=cdp.get("bookmaker", ""),
+                    username=cdp.get("username", ""),
+                )
                 logs.info(
                     f"Saldo auto: {cdp['saldo']} ({cdp.get('bookmaker', '?')})",
                     serial=serial,
@@ -925,7 +969,6 @@ class AdbManager:
   const money = /(?:€|EUR|USD|\$|£)\s*[0-9][0-9.,\s]*[0-9]|[0-9][0-9.,]*[0-9]\s*(?:€|EUR|USD|\$|£)/i;
   const kw = /saldo|balance|totale|available|disponibil|conto|wallet|fondi|credit/i;
   const pick = t => { const m = t.match(money); return m ? m[0] : null; };
-  const out = v => ({saldo: v, site: location.hostname});
   // Testo VISIBILE: innerText e' vuoto su display:none, ma textContent no —
   // il fallback va usato solo se l'elemento e' davvero visibile, altrimenti
   // si leggono saldi nascosti (es. 'bonus 0,00') al posto di quello reale.
@@ -935,27 +978,63 @@ class AdbManager:
     const visible = el.checkVisibility ? el.checkVisibility() : el.offsetParent !== null;
     return visible ? (el.textContent || '').trim() : '';
   };
+  // Username: classi tipiche dei widget account, o testo 'Ciao X' /
+  // 'Benvenuto X' nei nodi foglia. Il valore resta grezzo — il trim dei
+  // prefissi saluto e' nel parsing python.
+  const userSels = ['[class*="username" i]','[class*="user-name" i]',
+                    '[class*="nickname" i]','[class*="account" i]',
+                    '[class*="profile" i]','[data-testid*="user" i]'];
+  const greet = /^(?:ciao|benvenut[oa]|welcome|hello|hi)[,!\s]+(.{1,30})$/i;
+  const findUser = () => {
+    for (const s of userSels) {
+      for (const el of document.querySelectorAll(s)) {
+        const t = vis(el);
+        if (t && t.length > 2 && t.length < 40 && !money.test(t)) {
+          const g = t.match(greet); return g ? g[1].trim() : t;
+        }
+      }
+    }
+    for (const el of document.querySelectorAll('body *')) {
+      if (el.children.length) continue;
+      const t = vis(el);
+      if (t && t.length < 60) { const g = t.match(greet); if (g) return g[1].trim(); }
+    }
+    return '';
+  };
   const sels = ['[class*="balance" i]','[class*="saldo" i]','[id*="balance" i]',
                 '[id*="saldo" i]','[class*="wallet" i]','[class*="credit" i]',
-                '[data-testid*="balance" i]'];
+                '[class*="amount" i]','[class*="money" i]','[class*="funds" i]',
+                '[class*="cash" i]','[class*="credito" i]','[class*="deposit" i]',
+                '[class*="importo" i]','[aria-label*="saldo" i]',
+                '[aria-label*="balance" i]','[data-testid*="balance" i]',
+                '[data-testid*="saldo" i]','[id*="wallet" i]','[id*="credit" i]'];
   for (const s of sels) {
     for (const el of document.querySelectorAll(s)) {
       const t = vis(el);
-      if (t && t.length < 80) { const v = pick(t); if (v) return out(v); }
+      if (t && t.length < 80) {
+        const v = pick(t);
+        if (v) return {saldo: v, site: location.hostname, user: findUser()};
+      }
     }
   }
   const leaves = document.querySelectorAll('body *');
   for (const el of leaves) {
     if (el.children.length) continue;
     const t = vis(el);
-    if (t && t.length < 80 && kw.test(t)) { const v = pick(t); if (v) return out(v); }
+    if (t && t.length < 80 && kw.test(t)) {
+      const v = pick(t);
+      if (v) return {saldo: v, site: location.hostname, user: findUser()};
+    }
   }
   for (const el of leaves) {
     if (el.children.length) continue;
     const t = vis(el);
-    if (t && t.length < 40) { const v = pick(t); if (v) return out(v); }
+    if (t && t.length < 40) {
+      const v = pick(t);
+      if (v) return {saldo: v, site: location.hostname, user: findUser()};
+    }
   }
-  return {saldo: null, site: location.hostname};
+  return {saldo: null, site: location.hostname, user: findUser()};
 })()
 """
 
@@ -1063,7 +1142,7 @@ class AdbManager:
                         return {
                             "saldo": saldo,
                             "bookmaker": bookmaker,
-                            "username": "",
+                            "username": (val.get("user") or "")[:40],
                         }
 
             result = await asyncio.wait_for(_cdp(), timeout=10.0)
@@ -1761,6 +1840,16 @@ class AdbManager:
                         f"con {len(keys_now)} chiavi ({keys_now})"
                     )
                     asyncio.ensure_future(self._reload_server_keys())
+
+        # Lettura saldi periodica: non solo alla transizione ONLINE — se
+        # l'utente naviga verso una pagina saldi mentre il device resta
+        # online, il valore deve aggiornarsi da solo. Il throttle interno
+        # (30s per device) mantiene il carico basso; solo CDP, mai
+        # uiautomator (congela la UI del telefono).
+        for serial in seen_serials:
+            dev = self._devices.get(serial)
+            if dev and dev.status == DeviceStatus.ONLINE:
+                self._schedule_balance_read(serial)
 
     async def _reload_server_keys(self) -> None:
         """kill-server + start-server con ADB_VENDOR_KEYS: il nuovo server

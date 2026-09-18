@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-<link rel="stylesheet" href="/static/style.css?v=60">
+<link rel="stylesheet" href="/static/style.css?v=61">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -298,37 +298,10 @@
             </div>
         </div>
 
-        <!-- Saldi -->
-        <div class="dock-item" data-target="flyoutBalances" tabindex="0" role="button" title="Saldi">
+        <!-- Saldi: apre la vista a schermo (matrice), non un flyout -->
+        <div class="dock-item" id="dockSaldi" tabindex="0" role="button" title="Saldi">
             <span class="dock-icon">💰</span>
             <span class="dock-label">Saldi</span>
-            <div class="flyout" id="flyoutBalances">
-                <div class="flyout-header"><span>Saldi</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
-                <div class="flyout-body">
-                    <div class="sidebar-section active">
-                        <h4>Saldi per conto</h4>
-                        <div style="display:flex;gap:6px;margin-bottom:10px;">
-                            <input type="text" id="balanceSearch" placeholder="Cerca..." style="flex:1" />
-                            <button class="btn" id="btnRefreshBalances" title="Aggiorna">↻</button>
-                        </div>
-                        <div id="balancesTable" class="balances-table"></div>
-                        <div id="balancesSummary" class="balances-summary" style="margin-top:10px;font-size:12px;color:var(--text-2);"></div>
-                    </div>
-                    <div class="sidebar-section" style="margin-top:14px;">
-                        <h4>Sincronizza con Ledger</h4>
-                        <div style="display:flex;gap:6px;margin-bottom:10px;flex-direction:column;">
-                            <select id="ledgerNickname" style="padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-1);color:var(--text-0);">
-                                <option value="">Seleziona utente...</option>
-                            </select>
-                            <div style="display:flex;gap:6px;">
-                                <button class="btn btn-accent" id="btnSyncLedgerUser" style="flex:1;">Sincronizza utente</button>
-                                <button class="btn" id="btnSyncLedgerAll">Sincronizza tutti</button>
-                            </div>
-                        </div>
-                        <div id="ledgerSyncLog" style="font-size:12px;color:var(--text-2);max-height:120px;overflow:auto;"></div>
-                    </div>
-                </div>
-            </div>
         </div>
 
         <!-- Gruppi -->
@@ -503,8 +476,39 @@
         </div>
     </div>
 
+    <!-- Vista Saldi a schermo: matrice bookmaker x telefono stile foglio di calcolo -->
+    <div id="saldiOverlay" class="saldi-overlay" hidden>
+        <div class="saldi-topbar">
+            <span class="saldi-title">💰 Saldi</span>
+            <input type="text" id="balanceSearch" class="saldi-search" placeholder="Cerca bookmaker o telefono..." />
+            <label class="saldi-check" title="Mostra solo righe e colonne con almeno un saldo">
+                <input type="checkbox" id="saldiOnlyWithBalance" /> Solo con saldo
+            </label>
+            <button class="btn" id="btnRefreshBalances" title="Aggiorna">↻ Aggiorna</button>
+            <button class="btn" id="btnBalancesCsv" title="Scarica il CSV dei saldi">CSV</button>
+            <button class="btn-icon saldi-close" id="btnCloseSaldi" title="Chiudi">✕</button>
+        </div>
+        <div class="saldi-grid-wrap" id="saldiGridWrap">
+            <div id="balancesTable" class="saldi-grid"></div>
+        </div>
+        <div class="saldi-footer">
+            <div id="balancesSummary" class="balances-summary"></div>
+            <details class="saldi-ledger">
+                <summary>Sincronizza con Ledger</summary>
+                <div class="saldi-ledger-body">
+                    <select id="ledgerNickname">
+                        <option value="">Seleziona utente...</option>
+                    </select>
+                    <button class="btn btn-accent" id="btnSyncLedgerUser">Sincronizza utente</button>
+                    <button class="btn" id="btnSyncLedgerAll">Sincronizza tutti</button>
+                </div>
+                <div id="ledgerSyncLog"></div>
+            </details>
+        </div>
+    </div>
+
     <script src="/static/jmuxer.min.js?v=87"></script>
-    <script src="/static/app.js?v=123"></script>
+    <script src="/static/app.js?v=124"></script>
     <script>
     (async () => {
         try {

@@ -3785,6 +3785,59 @@ function initMacro() {
     fetchMacros();
 }
 
+// Lista bookmaker di default: condivisa fra la griglia flyout e la
+// matrice Saldi (le righe della matrice seguono questa lista + i custom).
+const BOOKMAKER_DEFAULTS = [
+    { name: "ADMIRALBET", url: "https://www.admiralbet.it" },
+    { name: "BET365", url: "https://www.bet365.it" },
+    { name: "BETFAIR", url: "https://www.betfair.it" },
+    { name: "BETFLAG", url: "https://www.betflag.it" },
+    { name: "BETPASSION", url: "https://www.betpassion.it" },
+    { name: "BETSSON", url: "https://www.betsson.it" },
+    { name: "BETWIN360", url: "https://www.betwin360.it" },
+    { name: "BWIN", url: "https://www.bwin.it" },
+    { name: "Betpoint", url: "https://www.betpoint.it" },
+    { name: "DOMUSBET", url: "https://www.domusbet.it" },
+    { name: "EPLAY24", url: "https://www.eplay24.it" },
+    { name: "EUROBET", url: "https://www.eurobet.it" },
+    { name: "FASTBET", url: "https://www.fastbet.it" },
+    { name: "GIOCA7", url: "https://www.gioca7.it" },
+    { name: "GIOCODIGITALE", url: "https://www.giocodigitale.it" },
+    { name: "GOLDBET", url: "https://www.goldbet.it" },
+    { name: "LEOVEGAS", url: "https://www.leovegas.it" },
+    { name: "LOTTOMATICA", url: "https://www.lottomatica.it" },
+    { name: "MARATHONBET", url: "https://www.marathonbet.it" },
+    { name: "MYLOTTERY", url: "https://www.mylottery.it" },
+    { name: "NETBET", url: "https://www.netbet.it" },
+    { name: "PLANETWIN365", url: "https://www.planetwin365.it" },
+    { name: "POKERSTARS", url: "https://www.pokerstars.it" },
+    { name: "QUIGIOCO", url: "https://www.quigioco.it" },
+    { name: "SISAL", url: "https://www.sisal.it" },
+    { name: "SNAI", url: "https://www.snai.it" },
+    { name: "SPORTBET", url: "https://www.sportbet.it" },
+    { name: "SPORTIUM", url: "https://www.sportium.it" },
+    { name: "STAKE", url: "https://www.stake.com" },
+    { name: "STANLEYBET", url: "https://www.stanleybet.it" },
+    { name: "STARCASINO", url: "https://www.starcasino.it" },
+    { name: "STARVEGAS", url: "https://www.starvegas.it" },
+    { name: "STARYES", url: "https://www.staryes.it" },
+    { name: "SUNBET", url: "https://www.sunbet.it" },
+    { name: "TOTOSI", url: "https://www.totosi.it" },
+    { name: "VINCITU", url: "https://www.vincitu.it" },
+    { name: "WILLIAM HILL", url: "https://www.williamhill.it" },
+    { name: "ZONAGIOCO", url: "https://www.zonagioco.it" },
+];
+
+// Nomi dei bookmaker: default + custom da localStorage. Serve alla
+// matrice Saldi per costruire le righe nella stessa lista della sezione.
+function bookmakerNames() {
+    let custom = [];
+    try {
+        custom = JSON.parse(localStorage.getItem("griddroid_bookmakers") || "[]");
+    } catch (e) { /* ignora */ }
+    return [...BOOKMAKER_DEFAULTS, ...custom].map(b => b.name);
+}
+
 function initBookmakers() {
     const grid = document.getElementById("bookmakerGrid");
     const search = document.getElementById("bookmakerSearch");
@@ -3795,46 +3848,7 @@ function initBookmakers() {
     const btnSave = document.getElementById("btnSaveBookmaker");
     if (!grid) return;
 
-    const defaults = [
-        { name: "ADMIRALBET", url: "https://www.admiralbet.it" },
-        { name: "BET365", url: "https://www.bet365.it" },
-        { name: "BETFAIR", url: "https://www.betfair.it" },
-        { name: "BETFLAG", url: "https://www.betflag.it" },
-        { name: "BETPASSION", url: "https://www.betpassion.it" },
-        { name: "BETSSON", url: "https://www.betsson.it" },
-        { name: "BETWIN360", url: "https://www.betwin360.it" },
-        { name: "BWIN", url: "https://www.bwin.it" },
-        { name: "Betpoint", url: "https://www.betpoint.it" },
-        { name: "DOMUSBET", url: "https://www.domusbet.it" },
-        { name: "EPLAY24", url: "https://www.eplay24.it" },
-        { name: "EUROBET", url: "https://www.eurobet.it" },
-        { name: "FASTBET", url: "https://www.fastbet.it" },
-        { name: "GIOCA7", url: "https://www.gioca7.it" },
-        { name: "GIOCODIGITALE", url: "https://www.giocodigitale.it" },
-        { name: "GOLDBET", url: "https://www.goldbet.it" },
-        { name: "LEOVEGAS", url: "https://www.leovegas.it" },
-        { name: "LOTTOMATICA", url: "https://www.lottomatica.it" },
-        { name: "MARATHONBET", url: "https://www.marathonbet.it" },
-        { name: "MYLOTTERY", url: "https://www.mylottery.it" },
-        { name: "NETBET", url: "https://www.netbet.it" },
-        { name: "PLANETWIN365", url: "https://www.planetwin365.it" },
-        { name: "POKERSTARS", url: "https://www.pokerstars.it" },
-        { name: "QUIGIOCO", url: "https://www.quigioco.it" },
-        { name: "SISAL", url: "https://www.sisal.it" },
-        { name: "SNAI", url: "https://www.snai.it" },
-        { name: "SPORTBET", url: "https://www.sportbet.it" },
-        { name: "SPORTIUM", url: "https://www.sportium.it" },
-        { name: "STAKE", url: "https://www.stake.com" },
-        { name: "STANLEYBET", url: "https://www.stanleybet.it" },
-        { name: "STARCASINO", url: "https://www.starcasino.it" },
-        { name: "STARVEGAS", url: "https://www.starvegas.it" },
-        { name: "STARYES", url: "https://www.staryes.it" },
-        { name: "SUNBET", url: "https://www.sunbet.it" },
-        { name: "TOTOSI", url: "https://www.totosi.it" },
-        { name: "VINCITU", url: "https://www.vincitu.it" },
-        { name: "WILLIAM HILL", url: "https://www.williamhill.it" },
-        { name: "ZONAGIOCO", url: "https://www.zonagioco.it" },
-    ];
+    const defaults = BOOKMAKER_DEFAULTS;
 
     function loadCustom() {
         try {
@@ -4172,71 +4186,179 @@ async function fetchBalances() {
     } catch (e) { /* silenzioso: riprova al prossimo ciclo */ }
 }
 
+// Chiave normalizzata del bookmaker: "WILLIAM HILL", "williamhill" e
+// "William Hill" devono finire nella stessa riga della matrice.
+function _normBookKey(name) {
+    return (name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function _fmtEuro(v) {
+    return "€ " + v.toLocaleString("it-IT", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    });
+}
+
+function openSaldi() {
+    const ov = document.getElementById("saldiOverlay");
+    if (!ov) return;
+    ov.hidden = false;
+    fetchBalances();
+}
+
+function closeSaldi() {
+    const ov = document.getElementById("saldiOverlay");
+    if (ov) ov.hidden = true;
+}
+
 function renderBalances() {
-    const table = document.getElementById("balancesTable");
+    const wrap = document.getElementById("balancesTable");
     const summary = document.getElementById("balancesSummary");
-    if (!table) return;
-    const search = (document.getElementById("balanceSearch")?.value || "").toLowerCase();
-    const entries = Object.entries(_balancesCache)
-        .filter(([s, b]) => {
-            if (!search) return true;
-            const nome = (b.nome || s || "").toLowerCase();
-            const book = (b.bookmaker || "").toLowerCase();
-            const user = (b.username || "").toLowerCase();
-            return nome.includes(search) || book.includes(search) || user.includes(search) || s.toLowerCase().includes(search);
-        })
-        .sort((a, b) => (b[1].timestamp || "").localeCompare(a[1].timestamp || ""));
-    if (!entries.length) {
-        table.innerHTML = '<div class="balances-empty">Nessun saldo letto. Apri Chrome sui device o usa "Leggi saldi".</div>';
-        if (summary) summary.textContent = "";
-        return;
+    if (!wrap) return;
+    // Overlay chiuso: non ricostruire mille celle a ogni refresh.
+    const ov = document.getElementById("saldiOverlay");
+    if (ov && ov.hidden) return;
+
+    const q = (document.getElementById("balanceSearch")?.value || "").trim().toLowerCase();
+    const onlyFilled = document.getElementById("saldiOnlyWithBalance")?.checked;
+
+    // --- Celle: nome-riga -> serial -> {saldo, username, timestamp} ---
+    // books[book] del backend tiene l'ultimo saldo per OGNI book del
+    // telefono; il top-level e' il fallback per record pre-matrice.
+    const listNames = bookmakerNames();
+    const normToName = {};
+    listNames.forEach(n => { normToName[_normBookKey(n)] = n; });
+
+    const cells = {};
+    const extraBooks = [];
+    const put = (serial, book, rec) => {
+        const norm = _normBookKey(book);
+        if (!norm) return;
+        let rowName = normToName[norm];
+        if (!rowName) {
+            rowName = book;
+            if (!extraBooks.some(e => _normBookKey(e) === norm)) extraBooks.push(book);
+        }
+        (cells[rowName] ||= {})[serial] = rec;
+    };
+    for (const [serial, b] of Object.entries(_balancesCache)) {
+        if (b.books) {
+            for (const [book, rec] of Object.entries(b.books)) {
+                if (rec.saldo) put(serial, book, rec);
+            }
+        } else if (b.saldo && b.bookmaker) {
+            put(serial, b.bookmaker, b);
+        }
     }
 
-    const rows = entries.map(([serial, b]) => {
-        const nome = escapeHtml(b.nome || serial);
-        const book = escapeHtml(b.bookmaker || "—");
-        const user = escapeHtml(b.username || "—");
-        const saldo = b.saldo ? escapeHtml(b.saldo) : "—";
-        const ts = b.timestamp ? escapeHtml(b.timestamp) : "";
-        return `<tr>
-            <td style="padding:8px 10px;border-bottom:1px solid var(--border);">${nome}</td>
-            <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-1);">${book}</td>
-            <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-2);">${user}</td>
-            <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600;color:#22c55e;">${saldo}</td>
-            <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-2);font-size:11px;white-space:nowrap;">${ts}</td>
-        </tr>`;
+    const bookRows = [...listNames, ...extraBooks]
+        .filter((n, i, a) => a.indexOf(n) === i)
+        .sort((a, b) => a.localeCompare(b, "it"));
+    const devices = state.devices.slice();
+    const devName = d => d.display_name || d.serial;
+
+    // Ricerca: filtra i due assi in modo indipendente — se il testo
+    // matcha un book restringe le righe, se matcha un telefono le
+    // colonne; se non matcha nessuno dei due, l'asse resta intero.
+    const bookHit = q && bookRows.some(n => n.toLowerCase().includes(q));
+    const devHit = q && devices.some(d =>
+        devName(d).toLowerCase().includes(q) || d.serial.toLowerCase().includes(q));
+    let visBooks = bookHit ? bookRows.filter(n => n.toLowerCase().includes(q)) : bookRows;
+    let visDevs = devHit ? devices.filter(d =>
+        devName(d).toLowerCase().includes(q) || d.serial.toLowerCase().includes(q)) : devices;
+
+    if (onlyFilled) {
+        visBooks = visBooks.filter(n => visDevs.some(d => (cells[n] || {})[d.serial]));
+        visDevs = visDevs.filter(d => visBooks.some(n => (cells[n] || {})[d.serial]));
+    }
+
+    const now = Date.now();
+    const cellHtml = rec => {
+        if (!rec || !rec.saldo) return '<td class="saldi-cell empty"></td>';
+        const v = parseFloat(rec.saldo);
+        let stale = false;
+        if (rec.timestamp) {
+            const t = new Date(String(rec.timestamp).replace(" ", "T")).getTime();
+            stale = isNaN(t) ? false : now - t > 10 * 60 * 1000;
+        }
+        const tip = [rec.username, rec.timestamp].filter(Boolean).join(" · ");
+        const val = isNaN(v) ? escapeHtml(rec.saldo) : _fmtEuro(v);
+        return `<td class="saldi-cell${stale ? " stale" : ""}" title="${escapeHtml(tip)}">${val}</td>`;
+    };
+
+    const headCells = visDevs.map(d =>
+        `<th class="saldi-col" title="${escapeHtml(d.serial)}">${escapeHtml(devName(d))}</th>`).join("");
+    const bodyRows = visBooks.map(n => {
+        const row = cells[n] || {};
+        const tds = visDevs.map(d => cellHtml(row[d.serial])).join("");
+        let tot = 0, has = false;
+        visDevs.forEach(d => {
+            const r = row[d.serial];
+            const v = r ? parseFloat(r.saldo) : NaN;
+            if (!isNaN(v)) { tot += v; has = true; }
+        });
+        return `<tr><th class="saldi-row">${escapeHtml(n)}</th>${tds}` +
+            `<td class="saldi-cell tot">${has ? _fmtEuro(tot) : ""}</td></tr>`;
     }).join("");
 
-    table.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead>
-            <tr style="text-align:left;color:var(--text-2);font-size:11px;">
-                <th style="padding:8px 10px;border-bottom:1px solid var(--border);">Telefono</th>
-                <th style="padding:8px 10px;border-bottom:1px solid var(--border);">Bookmaker</th>
-                <th style="padding:8px 10px;border-bottom:1px solid var(--border);">Utente</th>
-                <th style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;">Saldo</th>
-                <th style="padding:8px 10px;border-bottom:1px solid var(--border);">Orario</th>
-            </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-    </table>`;
+    // Riga TOTALE: somma per colonna + totale generale
+    let grand = 0, any = false;
+    const footCells = visDevs.map(d => {
+        let tot = 0, has = false;
+        visBooks.forEach(n => {
+            const r = (cells[n] || {})[d.serial];
+            const v = r ? parseFloat(r.saldo) : NaN;
+            if (!isNaN(v)) { tot += v; has = true; }
+        });
+        if (has) { grand += tot; any = true; }
+        return `<td class="saldi-cell tot">${has ? _fmtEuro(tot) : ""}</td>`;
+    }).join("");
 
-    // Totale
-    let tot = 0, count = 0;
-    for (const [, b] of entries) {
-        if (b.saldo) { tot += parseFloat(b.saldo) || 0; count++; }
+    if (!visBooks.length || !visDevs.length) {
+        wrap.innerHTML = '<div class="balances-empty">Nessuna cella da mostrare con questi filtri.</div>';
+    } else {
+        wrap.innerHTML = `<table class="saldi-table">
+            <thead><tr>
+                <th class="saldi-corner">BOOK \\ TELEFONO</th>${headCells}
+                <th class="saldi-col tot">TOTALE</th>
+            </tr></thead>
+            <tbody>${bodyRows}</tbody>
+            <tfoot><tr>
+                <th class="saldi-row">TOTALE</th>${footCells}
+                <td class="saldi-cell tot grand">${any ? _fmtEuro(grand) : ""}</td>
+            </tr></tfoot>
+        </table>`;
     }
-    if (summary) summary.textContent = `${count} conti · Totale: ${tot.toFixed(2)}`;
+
+    if (summary) {
+        const n = Object.values(cells).reduce((acc, r) => acc + Object.keys(r).length, 0);
+        summary.textContent = `${n} celle con saldo${any ? " · Totale: " + _fmtEuro(grand) : ""}`;
+    }
 }
 
 function initBalances() {
     const table = document.getElementById("balancesTable");
     if (!table) return;
+    const dock = document.getElementById("dockSaldi");
+    const btnClose = document.getElementById("btnCloseSaldi");
+    const btnCsv = document.getElementById("btnBalancesCsv");
     const search = document.getElementById("balanceSearch");
+    const onlyFilled = document.getElementById("saldiOnlyWithBalance");
     const btnRefresh = document.getElementById("btnRefreshBalances");
+    if (dock) {
+        dock.addEventListener("click", openSaldi);
+        dock.addEventListener("keydown", e => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSaldi(); }
+        });
+    }
+    if (btnClose) btnClose.addEventListener("click", closeSaldi);
+    if (btnCsv) btnCsv.addEventListener("click", downloadBalancesCsv);
     if (search) search.addEventListener("input", renderBalances);
+    if (onlyFilled) onlyFilled.addEventListener("change", renderBalances);
     if (btnRefresh) btnRefresh.addEventListener("click", fetchBalances);
-    // Auto-refresh: ogni 10s la tabella si aggiorna coi saldi letti in
-    // background dal backend (auto-lettura CDP al login del device).
+    document.addEventListener("keydown", e => { if (e.key === "Escape") closeSaldi(); });
+    // Auto-refresh: ogni 10s la matrice si aggiorna coi saldi letti in
+    // background dal backend (lettura CDP periodica, ~30s per device).
     fetchBalances();
     _balancesTimer = setInterval(fetchBalances, 10000);
 }
