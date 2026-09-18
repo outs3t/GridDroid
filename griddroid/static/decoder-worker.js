@@ -15,7 +15,10 @@ function resetDecoder() {
 function requestKeyframe() {
     needKey = true;
     const now = performance.now();
-    if (now - lastKeyRequest < 1000) return;
+    // Ogni richiesta = reset_video = re-init di cattura+encoder sul
+    // telefono. Throttle a 2s: i keyframe restano frequenti abbastanza
+    // da riallineare, ma la CPU del device non viene martellata.
+    if (now - lastKeyRequest < 2000) return;
     lastKeyRequest = now;
     self.postMessage({ type: 'needkey' });
 }
@@ -227,12 +230,12 @@ async function handleDecode(payload) {
     // un keyframe per riallinearci. decodeQueueSize e' il contatore nativo
     // (il vecchio contatore manuale non veniva decrementato sugli errori e
     // dopo un po' scartava TUTTO: video congelato su un frame).
-    // Soglie rilassate (4/8): con 20+ stream il decoder hw va in backlog
+    // Soglie rilassate (6/10): con 20+ stream il decoder hw va in backlog
     // per picchi brevi e una richiesta keyframe costa un reset_video, cioe'
     // una re-init completa della cattura sul telefono.
     const queued = decoder.decodeQueueSize;
-    if (!isKey && queued > 4) { requestKeyframe(); return; }
-    if (isKey && queued > 8) {
+    if (!isKey && queued > 6) { requestKeyframe(); return; }
+    if (isKey && queued > 10) {
         // Molto indietro: ricrea il decoder ripartendo da questo keyframe.
         resetDecoder();
         return handleDecode(payload);

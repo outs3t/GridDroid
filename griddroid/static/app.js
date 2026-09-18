@@ -1481,13 +1481,13 @@ function startStreamWs(feedEl, serial) {
                 // Soglie rilassate: con 20+ stream il decoder hw va in
                 // backlog per picchi brevi e ogni richiesta keyframe costa
                 // un reset_video (re-init completa della cattura).
-                if (session.decoder.decodeQueueSize > 4) {
+                if (session.decoder.decodeQueueSize > 6) {
                     if (!isKey) {
-                        // Chiediamo un keyframe (throttle 1s) invece di
+                        // Chiediamo un keyframe (throttle 2s) invece di
                         // restare corrotti fino al prossimo errore.
                         session.needKey = true;
                         const now = Date.now();
-                        if (!session.lastKeyReq || now - session.lastKeyReq > 1000) {
+                        if (!session.lastKeyReq || now - session.lastKeyReq > 2000) {
                             session.lastKeyReq = now;
                             try { ws.send('k'); } catch (e) { }
                         }
@@ -1497,7 +1497,7 @@ function startStreamWs(feedEl, serial) {
                     // e riconfigura al prossimo keyframe.
                     try {
                         session.decoder.flush();
-                        if (session.decoder.decodeQueueSize > 6) {
+                        if (session.decoder.decodeQueueSize > 10) {
                             session.configured = false;
                             session.gotKey = false;
                             session.decoder.close();
