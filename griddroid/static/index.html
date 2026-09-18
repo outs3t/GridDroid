@@ -99,7 +99,7 @@
                         </div>
                     </div>
                     <div class="sidebar-section">
-                        <h4>Qualità</h4>
+                        <h4>Qualità griglia</h4>
                         <div class="input-group">
                             <label>Max FPS</label>
                             <input type="number" id="maxFps" value="15" min="1" max="60" />
@@ -111,6 +111,19 @@
                         <div class="input-group">
                             <label>Bitrate (kbps)</label>
                             <input type="number" id="bitRate" value="4000" min="50" max="20000" step="100" />
+                        </div>
+                        <h4>Qualità fullscreen</h4>
+                        <div class="input-group">
+                            <label>Max FPS (0 = come griglia)</label>
+                            <input type="number" id="focusFps" value="25" min="0" max="60" />
+                        </div>
+                        <div class="input-group">
+                            <label>Risoluzione max (0 = come griglia)</label>
+                            <input type="number" id="focusSize" value="1600" min="0" max="2800" step="40" />
+                        </div>
+                        <div class="input-group">
+                            <label>Bitrate kbps (0 = come griglia)</label>
+                            <input type="number" id="focusBitRate" value="2000" min="0" max="20000" step="100" />
                         </div>
                         <div class="input-group" style="margin-top:4px;">
                             <button class="btn btn-accent" id="btnApplyStream" style="width:100%;">Applica qualità stream</button>

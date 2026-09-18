@@ -131,12 +131,14 @@ class StreamSettings(BaseModel):
     """Parametri di streaming video."""
     # Chiavi di versioni piu' nuove/vecchie non devono impedire l'avvio.
     model_config = ConfigDict(extra="ignore")
-    # Profilo Okto (osservato nei suoi log con 26 telefoni fluidi):
-    # lato lungo 1440px (648x1440), 20fps, 1 Mbps, encoder hardware,
-    # nessun B-frame. bit_rate e' il bitrate reale passato all'encoder.
-    max_fps: int = Field(default=20, ge=1, le=60)
-    max_size: int = Field(default=1440, ge=240, le=2800)
-    bit_rate: int = Field(default=1_000_000, ge=50_000, le=20_000_000)
+    # Profilo griglia (modello Panda a due tier): i tile sono ~350px,
+    # 480p/15fps/300k bastano per monitorare e tengono l'encoder dei
+    # telefoni quasi scarico — la qualita' piena va solo al device in
+    # fullscreen (campi focus_*). bit_rate e' il bitrate reale passato
+    # all'encoder.
+    max_fps: int = Field(default=15, ge=1, le=60)
+    max_size: int = Field(default=480, ge=240, le=2800)
+    bit_rate: int = Field(default=300_000, ge=50_000, le=20_000_000)
     video_codec: str = Field(default="h264")
     # Encoder software OMX.google.h264.encoder: piu' lento ma non crasha
     # mai — e' la scelta di Panda per la stabilita' su farm dense.
@@ -147,6 +149,12 @@ class StreamSettings(BaseModel):
     jpeg_fps: int = Field(default=10, ge=1, le=30)
     jpeg_max_size: int = Field(default=720, ge=240, le=2800)  # lato lungo
     jpeg_quality: int = Field(default=6, ge=2, le=31)  # -q:v ffmpeg: 2=migliore, 31=peggiore
+    # Tier "focus" (modello Panda): il device in fullscreen riceve uno
+    # stream a qualita' piena mentre gli altri restano sul profilo
+    # griglia (leggero). 0 = come la griglia (nessun restart al focus).
+    focus_max_size: int = Field(default=1600, ge=0, le=2800)
+    focus_max_fps: int = Field(default=25, ge=0, le=60)
+    focus_bit_rate: int = Field(default=2_000_000, ge=0, le=20_000_000)
 
 
 class AppSettings(BaseSettings):

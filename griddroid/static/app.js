@@ -52,6 +52,14 @@ function connectWebSocket() {
     ws.onopen = () => {
         wsReconnectDelay = 2000;
         console.log("WebSocket connesso");
+        // Dopo una riconnessione riasserisce il tier focus: se eravamo
+        // in fullscreen il server potrebbe aver perso lo stato (restart
+        // app), e il device tornerebbe al profilo griglia.
+        if (state.fullscreenSerial) {
+            fetch(`/api/devices/${state.fullscreenSerial}/stream-focus?on=1`, {
+                method: "POST",
+            }).catch(() => { });
+        }
     };
 
     ws.onmessage = (event) => {
@@ -1947,8 +1955,13 @@ function setDeviceStreamParams(serial, { maxSize, maxFps, bitRate } = {}) {
 }
 
 function exitFullscreen() {
-    // Non c'e' piu' un /zoom da annullare (rimosso per evitare il riavvio
-    // stream): l'unzoom era un no-op se _pre_zoom non era mai stato impostato.
+    // Tier focus off: il device torna al profilo griglia (restart lato
+    // server, debounced). Solo se era davvero il device in fullscreen.
+    if (state.fullscreenSerial) {
+        fetch(`/api/devices/${state.fullscreenSerial}/stream-focus?on=0`, {
+            method: "POST",
+        }).catch(() => { });
+    }
     document.querySelectorAll(".fullscreen-cell").forEach((c) => {
         if (c._fsDrag) {
             document.removeEventListener("pointermove", c._fsDrag.onMove);
@@ -2019,10 +2032,13 @@ function toggleFullscreen(serial, cell) {
         cell.classList.add("fullscreen-cell");
         state.fullscreenSerial = serial;
 
-        // Non riavviare lo stream con /zoom: il riavvio lato server spezza
-        // il WebSocket e il video si blocca per 3-6s (cooldown riconnessione).
-        // Il feed viene scalato via CSS; l'utente puo' cambiare qualita' dal
-        // pannello destro (Applica stream) se serve piu' risoluzione.
+        // Tier focus (modello Panda): il device in fullscreen riceve lo
+        // stream a qualita' piena (focus_*), gli altri restano leggeri.
+        // Il server riavvia solo questo stream — breve blackout, poi
+        // latenza minima e risoluzione piena per lavorare sul device.
+        fetch(`/api/devices/${serial}/stream-focus?on=1`, {
+            method: "POST",
+        }).catch(() => { });
 
         // In fullscreen libera il decoder degli altri device: fermiamo i
         // loro WebSocket. Il server continua a streammare, ma al ritorno
@@ -2841,6 +2857,9 @@ async function initSettings() {
     const maxFps = document.getElementById("maxFps");
     const maxSize = document.getElementById("maxSize");
     const bitRate = document.getElementById("bitRate");
+    const focusFps = document.getElementById("focusFps");
+    const focusSize = document.getElementById("focusSize");
+    const focusBitRate = document.getElementById("focusBitRate");
 
     const chkStartWithWindows = document.getElementById("chkStartWithWindows");
     const chkStartMinimized = document.getElementById("chkStartMinimized");
@@ -2853,6 +2872,9 @@ async function initSettings() {
         if (maxFps) maxFps.value = data.stream?.max_fps ?? 15;
         if (maxSize) maxSize.value = data.stream?.max_size ?? 2400;
         if (bitRate) bitRate.value = Math.round((data.stream?.bit_rate ?? 4000000) / 1000);
+        if (focusFps) focusFps.value = data.stream?.focus_max_fps ?? 25;
+        if (focusSize) focusSize.value = data.stream?.focus_max_size ?? 1600;
+        if (focusBitRate) focusBitRate.value = Math.round((data.stream?.focus_bit_rate ?? 2000000) / 1000);
         if (chkStartWithWindows) chkStartWithWindows.checked = data.start_with_windows ?? false;
         if (chkStartMinimized) chkStartMinimized.checked = data.start_minimized ?? false;
         if (chkMinimizeToTray) chkMinimizeToTray.checked = data.minimize_to_tray ?? false;
@@ -2887,6 +2909,9 @@ async function initSettings() {
                         max_fps: parseInt(maxFps?.value) || 15,
                         max_size: parseInt(maxSize?.value) || 2400,
                         bit_rate: (parseInt(bitRate?.value) || 4000) * 1000,
+                        focus_max_fps: parseInt(focusFps?.value) || 0,
+                        focus_max_size: parseInt(focusSize?.value) || 0,
+                        focus_bit_rate: (parseInt(focusBitRate?.value) || 0) * 1000,
                     },
                 }),
             });
@@ -2899,6 +2924,9 @@ async function initSettings() {
     if (maxFps) maxFps.addEventListener("change", saveStream);
     if (maxSize) maxSize.addEventListener("change", saveStream);
     if (bitRate) bitRate.addEventListener("change", saveStream);
+    if (focusFps) focusFps.addEventListener("change", saveStream);
+    if (focusSize) focusSize.addEventListener("change", saveStream);
+    if (focusBitRate) focusBitRate.addEventListener("change", saveStream);
 
     const btnApply = document.getElementById("btnApplyStream");
     if (btnApply) {

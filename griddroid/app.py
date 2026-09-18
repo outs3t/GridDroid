@@ -353,6 +353,19 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
             "bit_rate": override_br or settings.stream.bit_rate,
         }
 
+    @app.post("/api/devices/{serial}/stream-focus")
+    async def set_stream_focus(serial: str, on: int = Query(1)):
+        """Tier focus (modello Panda): fullscreen = qualita' piena.
+
+        on=1 sposta il tier focus su questo device (e riporta quello
+        precedente al profilo griglia); on=0 lo toglie se era attivo.
+        """
+        dev = adb.get_device(serial)
+        if dev is None:
+            return JSONResponse({"ok": False, "error": "device sconosciuto"}, status_code=404)
+        await streams.set_stream_focus(serial, bool(on))
+        return {"ok": True, "focused": serial if on else None}
+
     @app.post("/api/balances/read")
     async def read_balances(request: Request):
         """Legge il saldo a schermo dei device selezionati e lo salva in CSV."""
@@ -742,7 +755,8 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         ALLOWED = {"poll_interval_s", "grid_columns", "max_concurrent_installs",
                    "start_with_windows", "start_minimized", "minimize_to_tray"}
         STREAM_KEYS = {"max_fps", "max_size", "bit_rate", "video_codec",
-                       "software_encoder"}
+                       "software_encoder",
+                       "focus_max_fps", "focus_max_size", "focus_bit_rate"}
         for key, value in data.items():
             if key in ALLOWED:
                 if key in ("poll_interval_s", "max_concurrent_installs"):
@@ -771,6 +785,12 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                         sv = "h264" if sv not in ("h264", "h265") else sv
                     elif sk == "software_encoder":
                         sv = bool(sv)
+                    elif sk == "focus_max_size":
+                        sv = max(0, min(2800, int(sv)))
+                    elif sk == "focus_max_fps":
+                        sv = max(0, min(60, int(sv)))
+                    elif sk == "focus_bit_rate":
+                        sv = max(0, min(20_000_000, int(sv)))
                     setattr(settings.stream, sk, sv)
         save_settings(settings)
         app.state.settings = settings

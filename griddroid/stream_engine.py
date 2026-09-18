@@ -1288,6 +1288,15 @@ class StreamManager:
         starts = max(1, settings.stream.max_concurrent_stream_starts)
         self._start_sem = asyncio.Semaphore(starts)
         self._device_overrides = load_device_overrides()
+        # Modello Panda: un solo device "in focus" (fullscreen) gira al
+        # tier focus_*; gli altri restano sul profilo griglia. Non
+        # persistito: e' uno stato di sessione, non un override manuale.
+        self._focused_serial: Optional[str] = None
+        self._focus_gen = 0
+        # Seriali da riavviare al prossimo apply: accumulati tra chiamate
+        # ravvicinate cosi' un toggle A→B→exit non lascia A ferma ai
+        # parametri focus (stale) quando il debounce annulla i restart.
+        self._focus_dirty: Set[str] = set()
 
     def reload_overrides(self) -> None:
         """Ricarica gli override video per device da disco (dopo un import)."""
@@ -1321,6 +1330,17 @@ class StreamManager:
         if bit_rate_override is None and "bit_rate" in ov:
             bit_rate_override = ov["bit_rate"]
 
+        # Tier focus: se questo e' il device in fullscreen i campi
+        # focus_* (>0) vincono su override manuali e profilo griglia.
+        if serial == self._focused_serial:
+            fs = self._settings.stream
+            if fs.focus_max_size:
+                max_size_override = fs.focus_max_size
+            if fs.focus_max_fps:
+                max_fps_override = fs.focus_max_fps
+            if fs.focus_bit_rate:
+                bit_rate_override = fs.focus_bit_rate
+
         if serial in self._streams:
             stream = self._streams[serial]
             if stream.alive:
@@ -1344,6 +1364,56 @@ class StreamManager:
         self._streams[serial] = stream
         await stream.start()
         return stream
+
+    async def set_stream_focus(self, serial: str, focused: bool) -> None:
+        """Sposta il tier focus su `serial` (fullscreen) o lo toglie.
+
+        Modello Panda: un solo stream a qualita' piena, gli altri su
+        profilo griglia. Il restart e' debounced: toggle ravvicinati
+        (enter/exit fullscreen in rapida sequenza) annullano il ciclo
+        precedente invece di riavviare a cascata.
+        """
+        if focused:
+            if self._focused_serial == serial:
+                return
+            old = self._focused_serial
+            self._focused_serial = serial
+            targets = [s for s in (old, serial) if s]
+        else:
+            if self._focused_serial != serial:
+                return
+            self._focused_serial = None
+            targets = [serial]
+        self._focus_dirty.update(targets)
+        self._focus_gen += 1
+        gen = self._focus_gen
+
+        async def _apply() -> None:
+            await asyncio.sleep(0.6)
+            if gen != self._focus_gen:
+                return
+            targets = list(self._focus_dirty)
+            self._focus_dirty.clear()
+            for s in targets:
+                st = self._streams.pop(s, None)
+                if st is None:
+                    # Device non in streaming: non avviarlo da qui.
+                    continue
+                try:
+                    await st.stop()
+                except Exception:
+                    pass
+                try:
+                    await self.start_stream(s)
+                    logs.info(
+                        f"Stream {'focus' if focused and s == serial else 'griglia'}: "
+                        f"riavviato ({s})",
+                        serial=s,
+                    )
+                except Exception as exc:
+                    logs.warn(f"Restart stream focus fallito: {exc}", serial=s)
+
+        asyncio.create_task(_apply())
 
     async def set_device_stream_params(
         self,
