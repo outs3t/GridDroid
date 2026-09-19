@@ -262,14 +262,23 @@ async def dump(serial: str, adb_port: int, want_saldo: str = None,
 
 
 def main() -> None:
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = []
     want_saldo = None
     site_filter = None
-    for i, a in enumerate(sys.argv):
+    i = 1
+    while i < len(sys.argv):
+        a = sys.argv[i]
         if a == "--saldo" and i + 1 < len(sys.argv):
             want_saldo = sys.argv[i + 1]
+            i += 2
         elif a == "--site" and i + 1 < len(sys.argv):
             site_filter = sys.argv[i + 1]
+            i += 2
+        elif a.startswith("--"):
+            i += 1
+        else:
+            args.append(a)
+            i += 1
     if not args:
         print(__doc__)
         sys.exit(1)
