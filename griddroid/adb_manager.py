@@ -1359,7 +1359,10 @@ class AdbManager:
   // il jackpot slot 39.974 da .slot-detail__property__item). Risalgo
   // gli antenati: basta che un contenitore parli di jackpot/vincite/
   // slot/casino.
-  const badRe = /jackpot|montepremi|winner|vincit|big\s?win|lucky|slot|casino|games-/i;
+  // 'slot' da solo NO: bwin usa classi 'slot-single'/'slot-header' per i
+  // layout slot CSS e il saldo verrebbe scartato come promo. Conta solo
+  // 'slot' in contesto macchinetta (slot-detail/machine/game/slots-).
+  const badRe = /jackpot|montepremi|winner|vincit|big\s?win|lucky|casino|games-|slot[-_]?detail|slot[-_]?machine|slot[-_]?game|slots[-_]/i;
   const isPromo = el => {
     for (let n = el; n; n = n.parentElement) {
       const idc = (n.id || '') + ' ' + (typeof n.className === 'string' ? n.className : '');
@@ -1733,8 +1736,20 @@ class AdbManager:
                         return False
                     return bool(self._bookmaker_from_package(host))
 
+                # Tab duplicate (stesso URL): la valutazione e' identica —
+                # le conto una sola volta. Con ~100 tab aperte e' questo che
+                # sforava il budget di 12s facendo tornare sempre vuoto.
+                seen_urls: set = set()
+                pages = [
+                    p for p in pages
+                    if not (p.get("url", "") in seen_urls
+                            or seen_urls.add(p.get("url", "")))
+                ]
                 pages.sort(key=lambda t: 0 if _is_book(t) else 1)
-                eval_sem = asyncio.Semaphore(6)
+                # Tetto prudenziale: con >64 tab anche in parallelo non si
+                # resta nel budget — i bookmaker sono comunque in testa.
+                pages = pages[:64]
+                eval_sem = asyncio.Semaphore(10)
 
                 async def _wake_target(target_id: str) -> None:
                     """Riattiva una tab congelata/scaricata da Chrome
@@ -1772,9 +1787,15 @@ class AdbManager:
                         except Exception:
                             return None
 
-                evals = await asyncio.gather(
-                    *(_eval_sem(p) for p in pages), return_exceptions=True
-                )
+                # Budget morbido: con decine di tab alcune sono congelate e
+                # bruciano 5s+retry ciascuna — aspetto 9s e tengo i risultati
+                # delle tab che hanno risposto invece di buttare via tutto
+                # al timeout esterno (prima tornava sempre vuoto).
+                tasks = [asyncio.ensure_future(_eval_sem(p)) for p in pages]
+                done, pending = await asyncio.wait(tasks, timeout=9.0)
+                for t in pending:
+                    t.cancel()
+                evals = [t.result() for t in done]
                 candidates = []
                 for val in evals:
                     if isinstance(val, Exception):
