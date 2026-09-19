@@ -66,6 +66,12 @@ _ADB_CMD_LOCKS: Dict[str, asyncio.Lock] = {}
 # fisicamente, e insistere disturba i transport di tutti gli altri.
 _RECONNECT_MAX_MISSES = 9
 
+# Selettori CSS del saldo per sito, calibrati a mano (calibra_saldo.py):
+# {"betsson": ".balance__amount", "bet365.it": ["sel1","sel2"]}.
+# Quando un sito e' qui dentro il lettore prova il selettore esatto PRIMA
+# delle euristiche generiche — niente falsi positivi su importi promo.
+_SITE_SELS_FILE = CONFIG_DIR / "site_selectors.json"
+
 
 def get_adb_cmd_lock(priority: str = "shell") -> asyncio.Lock:
     """Ritorna il lock ADB per la categoria data."""
@@ -335,6 +341,10 @@ class AdbManager:
         # riconosciuti dal lettore saldi senza riavvio.
         self._custom_books: Dict[str, str] = {}
         self._custom_books_mtime: float = 0.0
+        # Selettori saldo per-sito da site_selectors.json (stessa logica di
+        # reload a caldo dei bookmaker custom).
+        self._site_sels: Dict[str, List[str]] = {}
+        self._site_sels_mtime: float = 0.0
         # Stato saldi corrente: serial -> {saldo, bookmaker, username, nome, timestamp}
         # Caricato da disco all'avvio, aggiornato in background a ogni lettura.
         self._balances: Dict[str, dict] = load_balances_state()
@@ -770,6 +780,58 @@ class AdbManager:
             return
         self._custom_books = books
         self._custom_books_mtime = mtime
+
+    def _refresh_site_sels(self) -> None:
+        """Ricarica i selettori saldo per-sito quando site_selectors.json
+        cambia. Formato: chiave = dominio ('betsson' o 'betsson.it'),
+        valore = selettore CSS o lista di selettori in ordine di preferenza."""
+        try:
+            mtime = _SITE_SELS_FILE.stat().st_mtime
+        except OSError:
+            if self._site_sels:
+                self._site_sels = {}
+                self._site_sels_mtime = 0.0
+            return
+        if mtime == self._site_sels_mtime:
+            return
+        sels: Dict[str, List[str]] = {}
+        try:
+            data = json.loads(_SITE_SELS_FILE.read_text(encoding="utf-8"))
+            for key, val in data.items():
+                k = str(key).strip().lower()
+                if not k:
+                    continue
+                items = val if isinstance(val, list) else [val]
+                sels[k] = [str(s).strip() for s in items if str(s).strip()]
+        except Exception:
+            return
+        self._site_sels = sels
+        self._site_sels_mtime = mtime
+
+    def _site_selectors_for(self, host: str) -> List[str]:
+        """Selettori calibrati per l'hostname: match esatto su host (con e
+        senza www), poi sul dominio di secondo livello normalizzato, infine
+        per sottostringa (chiave piu' lunga vince — 'it.betsson' batte
+        'betsson')."""
+        self._refresh_site_sels()
+        if not self._site_sels or not host:
+            return []
+        host = host.lower()
+        no_www = host[4:] if host.startswith("www.") else host
+        for k in (host, no_www):
+            if k in self._site_sels:
+                return self._site_sels[k]
+        labels = [l for l in no_www.split(".") if l]
+        if len(labels) >= 2:
+            key = re.sub(r"[^a-z0-9]", "", labels[-2])
+            if key in self._site_sels:
+                return self._site_sels[key]
+        host_alnum = re.sub(r"[^a-z0-9]", "", no_www)
+        best = ""
+        for k in self._site_sels:
+            if len(k) > len(best) and (k in no_www or k in host_alnum):
+                best = k
+        return self._site_sels.get(best, [])
 
     def _bookmaker_from_package(self, package: str) -> str:
         low = package.lower()
@@ -1447,25 +1509,63 @@ class AdbManager:
                         ws_url,
                         open_timeout=3, close_timeout=1, max_size=2**20,
                     ) as ws:
-                        await ws.send(json.dumps({
-                            "id": 1,
-                            "method": "Runtime.evaluate",
-                            "params": {
-                                "expression": self._CDP_JS,
-                                "returnByValue": True,
-                            },
-                        }))
-                        while True:
-                            msg = json.loads(
-                                await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        async def _js(expr: str, msg_id: int):
+                            await ws.send(json.dumps({
+                                "id": msg_id,
+                                "method": "Runtime.evaluate",
+                                "params": {
+                                    "expression": expr,
+                                    "returnByValue": True,
+                                },
+                            }))
+                            while True:
+                                msg = json.loads(
+                                    await asyncio.wait_for(
+                                        ws.recv(), timeout=5.0
+                                    )
+                                )
+                                if msg.get("id") != msg_id:
+                                    continue
+                                return (
+                                    msg.get("result", {})
+                                    .get("result", {})
+                                    .get("value")
+                                )
+
+                        # Selettore calibrato per questo sito? Provalo
+                        # prima: selettore esatto = saldo vero, zero falsi
+                        # positivi. Se manca (pagina sloggata o DOM
+                        # cambiato) si cade sulle euristiche generiche.
+                        host = ""
+                        try:
+                            host = urlparse(
+                                page.get("url", "")
+                            ).hostname or ""
+                        except Exception:
+                            pass
+                        sels = self._site_selectors_for(host)
+                        if sels:
+                            hit = await _js(
+                                "(()=>{const sels="
+                                + json.dumps(sels)
+                                + ";const re=/(?:€|EUR|USD|\\$|£)\\s*[0-9]"
+                                "[0-9.,\\s]*[0-9]|[0-9][0-9.,]*[0-9]\\s*"
+                                "(?:€|EUR|USD|\\$|£)/i;"
+                                "for(const s of sels){"
+                                "const el=document.querySelector(s);"
+                                "if(!el)continue;"
+                                "const t=((el.innerText||'').trim()||"
+                                "(el.textContent||'').trim());"
+                                "const m=t&&t.match(re);"
+                                "if(m)return{saldo:m[0],site:location."
+                                "hostname,user:'',vis:document."
+                                "visibilityState,lo:false,via:s};}"
+                                "return null;})()",
+                                2,
                             )
-                            if msg.get("id") != 1:
-                                continue
-                            return (
-                                msg.get("result", {})
-                                .get("result", {})
-                                .get("value")
-                            )
+                            if hit and hit.get("saldo"):
+                                return hit
+                        return await _js(self._CDP_JS, 1)
 
                 # Valuta ogni tab e scegli la migliore: la tab attiva
                 # (visibilityState='visible') con saldo, poi attiva senza
