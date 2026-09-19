@@ -13,6 +13,7 @@ import socket
 import time
 import subprocess
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -1219,19 +1220,52 @@ class AdbManager:
     }
     return '';
   };
-  const sels = ['[class*="balance" i]','[class*="saldo" i]','[id*="balance" i]',
+  // Picker di importi (deposito/ricarica): se il genitore contiene >=3
+  // figli con solo un importo, l'elemento e' un'opzione da scegliere —
+  // '50000 €' NON e' il saldo, e' un bottone dell'importo da versare.
+  const isPicker = el => {
+    const p = el.parentElement;
+    if (!p) return false;
+    let m = 0;
+    for (const k of p.children) {
+      const kt = vis(k);
+      if (kt && kt.length < 20 && pick(kt)) m++;
+    }
+    return m >= 3;
+  };
+  // CTA di login visibile (Accedi/Registrati): pagina NON loggata —
+  // ogni importo nel DOM e' promo o widget di versamento, mai il saldo.
+  // Il match e' sul testo ESATTO del bottone: una promo "Registrati al
+  // torneo" (testo piu' lungo) non fa scattare il flag.
+  const cta = /^(?:accedi|registrati(?:\s+ora)?|entra|iscriviti|log\s?in|sign\s?in)$/i;
+  const ctaHit = el => {
+    const t = (vis(el) || el.value || '').trim();
+    return t && t.length < 25 && cta.test(t);
+  };
+  let lo = false;
+  for (const el of document.querySelectorAll('a,button,[role="button"],input,[class*="btn" i],[class*="button" i],[class*="login" i],[class*="registr" i],[class*="accedi" i]')) {
+    if (ctaHit(el)) { lo = true; break; }
+  }
+  if (!lo) for (const el of document.querySelectorAll('body *')) {
+    if (el.children.length) continue;
+    if (ctaHit(el)) { lo = true; break; }
+  }
+  const ret = v => ({saldo: v, site: location.hostname, user: findUser(), vis: document.visibilityState, lo});
+  if (lo) return ret(null);
+  const selsStrong = ['[class*="balance" i]','[class*="saldo" i]','[id*="balance" i]',
                 '[id*="saldo" i]','[class*="wallet" i]','[class*="credit" i]',
-                '[class*="amount" i]','[class*="money" i]','[class*="funds" i]',
-                '[class*="cash" i]','[class*="credito" i]','[class*="deposit" i]',
-                '[class*="importo" i]','[aria-label*="saldo" i]',
-                '[aria-label*="balance" i]','[data-testid*="balance" i]',
-                '[data-testid*="saldo" i]','[id*="wallet" i]','[id*="credit" i]'];
-  for (const s of sels) {
+                '[class*="credito" i]','[class*="funds" i]',
+                '[aria-label*="saldo" i]','[aria-label*="balance" i]',
+                '[data-testid*="balance" i]','[data-testid*="saldo" i]',
+                '[id*="wallet" i]','[id*="credit" i]'];
+  const selsWeak = ['[class*="amount" i]','[class*="money" i]',
+                '[class*="cash" i]','[class*="deposit" i]','[class*="importo" i]'];
+  for (const s of selsStrong) {
     for (const el of document.querySelectorAll(s)) {
       const t = vis(el);
       if (t && t.length < 80) {
         const v = pick(t);
-        if (v) return {saldo: v, site: location.hostname, user: findUser(), vis: document.visibilityState};
+        if (v && !isPicker(el)) return ret(v);
       }
     }
   }
@@ -1241,18 +1275,29 @@ class AdbManager:
     const t = vis(el);
     if (t && t.length < 80 && kw.test(t)) {
       const v = pick(t);
-      if (v) return {saldo: v, site: location.hostname, user: findUser(), vis: document.visibilityState};
+      if (v) return ret(v);
     }
   }
-  for (const el of leaves) {
-    if (el.children.length) continue;
-    const t = vis(el);
-    if (t && t.length < 40) {
-      const v = pick(t);
-      if (v) return {saldo: v, site: location.hostname, user: findUser(), vis: document.visibilityState};
+  if (!lo) {
+    for (const s of selsWeak) {
+      for (const el of document.querySelectorAll(s)) {
+        const t = vis(el);
+        if (t && t.length < 80) {
+          const v = pick(t);
+          if (v && !isPicker(el)) return ret(v);
+        }
+      }
+    }
+    for (const el of leaves) {
+      if (el.children.length) continue;
+      const t = vis(el);
+      if (t && t.length < 40) {
+        const v = pick(t);
+        if (v && !isPicker(el)) return ret(v);
+      }
     }
   }
-  return {saldo: null, site: location.hostname, user: findUser(), vis: document.visibilityState};
+  return ret(null);
 })()
 """
 
@@ -1367,11 +1412,31 @@ class AdbManager:
                 # Valuta ogni tab e scegli la migliore: la tab attiva
                 # (visibilityState='visible') con saldo, poi attiva senza
                 # saldo, poi la prima con saldo, poi la prima valida.
-                candidates = []
-                for page in pages:
+                # Con decine di tab aperte la valutazione in serie sfora
+                # il budget complessivo e la lettura cadeva SEMPRE:
+                # valutiamo in parallelo (ogni pagina ha gia' i suoi
+                # timeout WS), dando priorita' alle tab su domini di
+                # bookmaker noti — sono loro a contenere i saldi.
+                def _is_book(t: dict) -> bool:
                     try:
-                        val = await _eval_page(page)
+                        host = urlparse(t.get("url", "")).hostname or ""
                     except Exception:
+                        return False
+                    return bool(self._bookmaker_from_package(host))
+
+                pages.sort(key=lambda t: 0 if _is_book(t) else 1)
+                eval_sem = asyncio.Semaphore(6)
+
+                async def _eval_sem(page: dict):
+                    async with eval_sem:
+                        return await _eval_page(page)
+
+                evals = await asyncio.gather(
+                    *(_eval_sem(p) for p in pages), return_exceptions=True
+                )
+                candidates = []
+                for val in evals:
+                    if isinstance(val, Exception):
                         continue
                     if not isinstance(val, dict) or not val.get("site"):
                         continue
@@ -1396,7 +1461,11 @@ class AdbManager:
                         "_vis": val.get("vis") == "visible",
                         # Pagina non loggata: l'importo nel DOM e' promo
                         # (es. '2.000€ bonus'), non il saldo reale.
-                        "_logged_out": bool(_LOGGED_OUT_RE.search(user)),
+                        # 'lo' = CTA Accedi/Registrati visibile nel DOM:
+                        # scarta la pagina solo se non ha un saldo valido
+                        # (una promo 'Registrati' puo' convivere col saldo).
+                        "_logged_out": bool(_LOGGED_OUT_RE.search(user))
+                        or (val.get("lo") and not saldo),
                     })
                 if not candidates:
                     return empty
@@ -1429,7 +1498,7 @@ class AdbManager:
                 best["books"] = books
                 return best
 
-            result = await asyncio.wait_for(_cdp(), timeout=10.0)
+            result = await asyncio.wait_for(_cdp(), timeout=12.0)
             if result.get("saldo"):
                 logs.info(
                     f"Saldo via CDP/DOM: {result['saldo']} ({result['bookmaker']})",
