@@ -4637,8 +4637,8 @@ function _saldiDelta(rec) {
     return "";
 }
 
-// serial -> [{book, rec}] — i conti letti su quel device, in ordine di
-// valore decrescente (i saldi a zero restano in coda).
+// serial -> [{book, rec}] — i conti letti su quel device, in ordine
+// alfabetico per nome bookmaker.
 function _deviceBooks() {
     const out = {};
     for (const [serial, b] of Object.entries(_balancesCache)) {
@@ -4651,8 +4651,7 @@ function _deviceBooks() {
         if (!rows.length && b.saldo) {
             rows.push({ book: b.bookmaker || "ALTRO", rec: b });
         }
-        rows.sort((x, y) =>
-            (parseFloat(y.rec.saldo) || 0) - (parseFloat(x.rec.saldo) || 0));
+        rows.sort((x, y) => x.book.localeCompare(y.book, "it"));
         out[serial] = rows;
     }
     return out;
