@@ -440,10 +440,15 @@ class DeviceStream:
         # Scala il lato lungo a jpeg_max_size, mantenendo il rapporto e
         # dimensioni pari (richieste da mjpeg). Le virgole dentro if()
         # vanno escapate per il parser dei filtri ffmpeg.
+        # out_range=full: i video dei device sono YUV limited-range e
+        # l'encoder mjpeg li rifiuta ("Non full-range YUV is
+        # non-standard") — senza conversione ffmpeg esce subito e i
+        # tile restano neri.
         vf = (
             f"fps={s.jpeg_fps},"
             f"scale=if(gt(iw\\,ih)\\,min(iw\\,{size})\\,-2)"
             f":if(gt(iw\\,ih)\\,-2\\,min(ih\\,{size}))"
+            f":out_range=full"
         )
         cmd = [
             ffmpeg, "-hide_banner", "-loglevel", "error",
@@ -452,7 +457,9 @@ class DeviceStream:
             # Se la GPU non supporta il formato, ffmpeg torna a software
             # da solo — hwaccel auto non fallisce mai.
             "-hwaccel", "auto",
-            "-fflags", "nobuffer", "-flags", "low_delay",
+            # NIENTE "-fflags nobuffer": con questo build di ffmpeg il
+            # demuxer h264 raw produce zero frame — transcoder muto.
+            "-flags", "low_delay",
             "-probesize", "32", "-analyzeduration", "0",
             "-f", "h264", "-i", "pipe:0",
             "-vf", vf,
