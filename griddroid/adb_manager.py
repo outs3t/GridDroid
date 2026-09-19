@@ -1355,9 +1355,11 @@ class AdbManager:
   };
   // Jackpot/montepremi/vincite recenti: importi grandi che NON sono il
   // saldo (betpoint leggeva 'Jackpot Arancione 264.382' come saldo —
-  // la classe jackpotAmount matcha [class*=amount]). Risalgo gli
-  // antenati: basta che un contenitore parli di jackpot/vincite.
-  const badRe = /jackpot|montepremi|winner|vincit|big\s?win|lucky/i;
+  // la classe jackpotAmount matcha [class*=amount]; betwin360 leggeva
+  // il jackpot slot 39.974 da .slot-detail__property__item). Risalgo
+  // gli antenati: basta che un contenitore parli di jackpot/vincite/
+  // slot/casino.
+  const badRe = /jackpot|montepremi|winner|vincit|big\s?win|lucky|slot|casino|games-/i;
   const isPromo = el => {
     for (let n = el; n; n = n.parentElement) {
       const idc = (n.id || '') + ' ' + (typeof n.className === 'string' ? n.className : '');
