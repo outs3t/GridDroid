@@ -268,6 +268,19 @@ function renderGrid() {
 
             let card;
             if (!cell) {
+                // Device in fullscreen: la sua cella vive in <body>, fuori
+                // dalla griglia — non creare un duplicato. La aggiorniamo
+                // comunque cosi' stream, riconnessioni WS e overlay
+                // continuano a funzionare mentre e' a schermo intero.
+                const fsCell = state.fullscreenSerial === dev.serial
+                    && document.querySelector(
+                        `.device-cell.fullscreen-cell[data-serial="${dev.serial}"]`
+                    );
+                if (fsCell) {
+                    updateDeviceCell(fsCell, dev);
+                    pos++; // la card-shell conserva il suo slot in griglia
+                    return;
+                }
                 cell = createDeviceCell(dev);
                 card = wrapDeviceCard(cell, dev);
                 awObserveCell(cell);
@@ -303,6 +316,13 @@ function renderGrid() {
             awUnobserveCell(cell);
             card?.remove();
         }
+    });
+
+    // Guscio vuoto (solo nome) lasciato da una vecchia fullscreen: una
+    // .device-card senza .device-cell va rimossa — la shell del device
+    // in fullscreen (.fs-shell) invece conserva lo slot in griglia.
+    grid.querySelectorAll(".device-card:not(.fs-shell)").forEach((card) => {
+        if (!card.querySelector(".device-cell")) card.remove();
     });
 
     renderGroups();
@@ -827,7 +847,12 @@ function runContextCommand(cmd, serials) {
 }
 
 function updateDeviceCell(cell, dev) {
-    const card = cell.parentElement;
+    // In fullscreen la cella vive in <body>: il parent non e' la card e
+    // body.querySelector(".device-name") matcherebbe l'etichetta di un
+    // altro device. I lookup su card si fanno solo dentro una vera card.
+    const card = cell.parentElement?.classList.contains("device-card")
+        ? cell.parentElement
+        : null;
 
     // Nome
     const nameEl = card?.querySelector(".device-name");
@@ -862,6 +887,11 @@ function updateDeviceCell(cell, dev) {
                 tagsEl.innerHTML += `<span class="device-tag">+${tags.length - 5}</span>`;
             }
         }
+    }
+
+    // Etichetta laterale del fullscreen (il nome non sta nella cella)
+    if (cell._fsLeftLabel) {
+        cell._fsLeftLabel.textContent = dev.display_name || dev.serial;
     }
 
     // Classi celle
@@ -1679,7 +1709,12 @@ function stopStreamWs(feedEl) {
     feedEl._awPaused = false;
     const serial = feedEl.dataset.wsActive;
     const session = serial && streamSessions[serial];
-    if (session) {
+    // La sessione registrata puo' appartenere a un'altra cella dello
+    // stesso serial (es. duplicato creato mentre il device era in
+    // fullscreen): chiuderla lascerebbe quella cella con wsActive
+    // valorizzato ma stream morto e senza riconnessione. Si chiude solo
+    // la sessione che appartiene davvero a questo feed.
+    if (session && session.feedEl === feedEl) {
         try {
             // Chiudere un WS ancora in CONNECTING genera un warning in console
             if (session.ws.readyState === WebSocket.CONNECTING) {
@@ -2071,7 +2106,15 @@ function exitFullscreen() {
             const feed = c.querySelector(".device-feed");
             if (feed) stopStreamWs(feed);
             c.remove();
+            // La card-shell svuotata (senza cella) va rimossa: il device
+            // e' gia' rappresentato dalla cella esistente.
+            if (c._fsParent && !c._fsParent.querySelector(".device-cell")) {
+                c._fsParent.remove();
+            }
         } else if (c._fsParent && document.contains(c._fsParent)) {
+            // Ripristina la card-shell nascosta all'ingresso del fullscreen
+            c._fsParent.classList.remove("fs-shell");
+            c._fsParent.style.display = "";
             c._fsParent.insertBefore(c, c._fsNext && c._fsNext.parentNode === c._fsParent ? c._fsNext : null);
         } else {
             document.getElementById("deviceGrid")?.appendChild(c);
@@ -2088,6 +2131,14 @@ function exitFullscreen() {
     document.querySelectorAll(".fs-right-panel").forEach((el) => el.remove());
     state.fullscreenSerial = null;
     // Non rinegoziare la risoluzione automaticamente: evita riavvio stream.
+    // Gli altri feed erano stati fermati all'ingresso per liberare il
+    // decoder: azzero il cooldown di retry e forzo un renderGrid cosi' i
+    // tile visibili ripartono subito (non al prossimo update di stato,
+    // che puo' arrivare anche fra ~10s).
+    document.querySelectorAll(".device-feed").forEach((f) => {
+        if (!f.dataset.wsActive) f.dataset.wsRetryAt = "";
+    });
+    renderGrid();
 }
 
 function toggleFullscreen(serial, cell) {
@@ -2108,6 +2159,13 @@ function toggleFullscreen(serial, cell) {
         document.body.appendChild(cell);
         cell.classList.add("fullscreen-cell");
         state.fullscreenSerial = serial;
+        // La card resterebbe in griglia come guscio vuoto (solo il
+        // nome): la marchiamo e la nascondiamo — renderGrid non crea
+        // un duplicato del device mentre e' in fullscreen.
+        if (cell._fsParent) {
+            cell._fsParent.classList.add("fs-shell");
+            cell._fsParent.style.display = "none";
+        }
 
         // Tier focus (modello Panda): il device in fullscreen riceve lo
         // stream a qualita' piena (focus_*), gli altri restano leggeri.
