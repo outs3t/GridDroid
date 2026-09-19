@@ -835,17 +835,22 @@ function updateDeviceCell(cell, dev) {
         statusLabel.className = `device-status-label status-${dev.status}`;
     }
 
-    // Gruppi / tag
+    // Gruppi / tag: innerHTML riscritto solo se i tag sono cambiati —
+    // prima lo faceva a OGNI update di stato (1/s per cella, reflow
+    // della griglia continuo con 26 device).
     const tagsEl = card?.querySelector(".device-tags");
     if (tagsEl) {
         const tags = dev.tags || [];
-        tagsEl.dataset.tags = tags.join(",");
-        tagsEl.innerHTML = tags
-            .slice(0, 5)
-            .map((t) => `<span class="device-tag">${escapeHtml(t)}</span>`)
-            .join("");
-        if (tags.length > 5) {
-            tagsEl.innerHTML += `<span class="device-tag">+${tags.length - 5}</span>`;
+        const joined = tags.join(",");
+        if (tagsEl.dataset.tags !== joined) {
+            tagsEl.dataset.tags = joined;
+            tagsEl.innerHTML = tags
+                .slice(0, 5)
+                .map((t) => `<span class="device-tag">${escapeHtml(t)}</span>`)
+                .join("");
+            if (tags.length > 5) {
+                tagsEl.innerHTML += `<span class="device-tag">+${tags.length - 5}</span>`;
+            }
         }
     }
 
