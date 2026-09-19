@@ -4088,6 +4088,24 @@ async function loadCustomBookmakers() {
     return _customBookmakers;
 }
 
+// Operazione incrementale sul server (add/del): applica la modifica alla
+// lista su disco senza rispedire la lista completa — cosi' due tab aperte
+// o una pagina con stato vecchio non cancellano i siti aggiunti altrove.
+async function bookmakerOp(op, item) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const res = await fetch("/api/bookmakers", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ [op]: item }),
+            });
+            if (res.ok) return true;
+        } catch (e) { /* riprova sotto */ }
+        await new Promise((r) => setTimeout(r, 1500));
+    }
+    return false;
+}
+
 async function saveCustomBookmakers(list) {
     _customBookmakers = list;
     // Un tentativo + un retry: prima gli errori di rete venivano ingoiati
@@ -4129,10 +4147,9 @@ function initBookmakers() {
     // e poi la griglia si ridisegna coi siti salvati.
     let custom = _customBookmakers.slice();
     let all = [...defaults, ...custom];
-    function saveCustom(list) {
-        custom = list;
+    function syncCustom() {
+        _customBookmakers = [...custom];
         all = [...defaults, ...custom];
-        saveCustomBookmakers(custom);
     }
     loadCustomBookmakers().then(() => {
         // MERGE, non sovrascrivere: un sito aggiunto mentre il GET era
@@ -4177,10 +4194,14 @@ function initBookmakers() {
             });
             const del = row.querySelector(".bookmaker-delete");
             if (del) {
-                del.addEventListener("click", () => {
+                del.addEventListener("click", async () => {
+                    const ok = await bookmakerOp("del", { name: b.name, url: b.url });
+                    if (!ok) {
+                        toast("Rimozione non riuscita — riprova", "warn");
+                        return;
+                    }
                     custom = custom.filter((c) => !(c.name === b.name && c.url === b.url));
-                    saveCustom(custom);
-                    all = [...defaults, ...custom];
+                    syncCustom();
                     applySearch();
                     toast("Sito rimosso", "success");
                 });
@@ -4206,7 +4227,7 @@ function initBookmakers() {
     }
 
     if (btnSave && inputName && inputUrl) {
-        btnSave.addEventListener("click", () => {
+        btnSave.addEventListener("click", async () => {
             const name = (inputName.value || "").trim();
             let url = (inputUrl.value || "").trim();
             if (!name || !url) {
@@ -4215,18 +4236,22 @@ function initBookmakers() {
             }
             if (!/^https?:\/\//i.test(url)) url = "https://" + url;
             const newB = { name, url };
-            if (!custom.some((c) => c.name === name && c.url === url)) {
-                custom.push(newB);
-                saveCustom(custom);
-                all = [...defaults, ...custom];
-                applySearch();
-                inputName.value = "";
-                inputUrl.value = "";
-                if (addForm) addForm.style.display = "none";
-                toast("Sito aggiunto", "success");
-            } else {
+            if (custom.some((c) => c.name === name && c.url === url)) {
                 toast("Sito già presente", "warn");
+                return;
             }
+            const ok = await bookmakerOp("add", newB);
+            if (!ok) {
+                toast("Salvataggio siti non riuscito — riprova", "warn");
+                return;
+            }
+            custom.push(newB);
+            syncCustom();
+            applySearch();
+            inputName.value = "";
+            inputUrl.value = "";
+            if (addForm) addForm.style.display = "none";
+            toast("Sito aggiunto", "success");
         });
     }
 

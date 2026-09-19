@@ -517,21 +517,48 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
 
     @app.post("/api/bookmakers")
     async def post_bookmakers(request: Request):
-        """Salva la lista completa dei bookmaker custom (sovrascrive)."""
-        from .config import save_bookmakers
+        """Bookmaker custom. Due forme:
+
+        - {"add": {name,url}} / {"del": {name,url}}: operazioni
+          incrementali applicate alla lista su disco — due tab/pagine
+          aperte con stato diverso non si sovrascrivono piu' a vicenda
+          (il vecchio POST della lista completa era last-writer-wins e
+          faceva 'sparire' i siti aggiunti da un'altra pagina).
+        - {"custom": [...]}: rimpiazzo completo (migrazione/import).
+        """
+        from .config import load_bookmakers, save_bookmakers
 
         body = await request.json()
-        raw = body.get("custom")
-        if not isinstance(raw, list):
-            raise HTTPException(status_code=400, detail="custom deve essere una lista")
-        custom = []
-        for item in raw[:200]:
+
+        def _norm(item):
             if not isinstance(item, dict):
-                continue
+                return None
             name = str(item.get("name") or "").strip()[:80]
             url = str(item.get("url") or "").strip()[:300]
-            if name and url:
-                custom.append({"name": name, "url": url})
+            return {"name": name, "url": url} if name and url else None
+
+        add = _norm(body.get("add"))
+        rem = _norm(body.get("del"))
+        if add or rem:
+            custom = load_bookmakers()
+            if add and not any(
+                b.get("name") == add["name"] and b.get("url") == add["url"]
+                for b in custom
+            ):
+                custom.append(add)
+            if rem:
+                custom = [
+                    b for b in custom
+                    if not (
+                        b.get("name") == rem["name"]
+                        and b.get("url") == rem["url"]
+                    )
+                ]
+        else:
+            raw = body.get("custom")
+            if not isinstance(raw, list):
+                raise HTTPException(status_code=400, detail="custom deve essere una lista")
+            custom = [c for c in (_norm(i) for i in raw[:200]) if c]
         try:
             save_bookmakers(custom)
         except Exception as exc:
