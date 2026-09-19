@@ -924,7 +924,19 @@ function awSchedulePause(cell, serial) {
         if (state.visibleSerials.has(serial) || state.fullscreenSerial === serial) return;
         const feed = cell.querySelector('.device-feed');
         if (feed && feed.dataset.wsActive === serial) {
-            stopStreamWs(feed);
+            // H264/JPEG: il WS RESTA APERTO — si smette solo di decodificare
+            // e disegnare. Prima stopStreamWs chiudeva la sessione: al
+            // ritorno in vista il resubscribe trovava il GOP a meta' e
+            // chiedeva un keyframe => reset_video = re-init di cattura +
+            // encoder sul telefono. Con gli scroll della griglia erano
+            // ~12 reset/min su 26 device. Ora il rientro e' immediato e
+            // gratis: il prossimo frame viene disegnato e basta.
+            if (state.videoMode === 'mse') {
+                // MSE non puo' sospendere: il SourceBuffer si riempirebbe.
+                stopStreamWs(feed);
+            } else {
+                feed._awPaused = true;
+            }
             const ph = cell.querySelector('.device-feed-placeholder');
             if (ph) {
                 const icon = ph.querySelector('.icon');
@@ -962,10 +974,12 @@ function initAutoWatch() {
                 state.visibleSerials.add(serial);
                 if (_awTimers[serial]) { clearTimeout(_awTimers[serial]); delete _awTimers[serial]; }
                 if (!state.autoWatch) continue;
-                // Cella appena diventata visibile: avvia subito lo stream
-                // rispettando il cooldown wsRetryAt come updateDeviceCell.
+                // Cella appena diventata visibile: se il WS era rimasto
+                // aperto in pausa (_awPaused) basta riattivare il disegno —
+                // ripresa immediata, nessun resubscribe, nessun keyframe.
                 const dev = state.devices.find((d) => d.serial === serial);
                 const feed = cell.querySelector('.device-feed');
+                if (feed) feed._awPaused = false;
                 if (dev && dev.streaming && feed && feed.dataset.wsActive !== serial) {
                     const retryAt = parseInt(feed.dataset.wsRetryAt, 10) || 0;
                     if (Date.now() > retryAt) startStreamWs(feed, serial);
@@ -1326,6 +1340,13 @@ function createMseRemuxer(videoEl, onReady, onError) {
 const _frameBuffers = new Map();
 
 function scheduleCanvasDraw(feedEl, serial, source, width, height) {
+    // Cella in pausa AutoWatch (fuori vista): il worker continua a
+    // decodificare per non spezzare la catena dei delta, ma il disegno
+    // viene saltato — il frame va comunque chiuso.
+    if (feedEl._awPaused) {
+        try { source.close(); } catch (e) {}
+        return;
+    }
     // Frame precedente non ancora disegnato: va chiuso subito, altrimenti
     // il VideoFrame resta aperto e blocca il pool del decoder hw.
     const prev = _frameBuffers.get(serial);
@@ -1356,6 +1377,7 @@ function scheduleCanvasDraw(feedEl, serial, source, width, height) {
 
 function startStreamWs(feedEl, serial) {
     stopStreamWs(feedEl);
+    feedEl._awPaused = false;
 
     const useWorker = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined" && typeof Worker !== "undefined";
     const useWebCodecs = feedEl.tagName === "CANVAS" && typeof VideoDecoder !== "undefined" && typeof Worker === "undefined";
@@ -1440,6 +1462,10 @@ function startStreamWs(feedEl, serial) {
 
         // Flag 0x02: frame JPEG dal transcoder server-side
         if (data[0] === 2) {
+            // In pausa AutoWatch: i JPEG sono autoconsistenti, si possono
+            // scartare interamente — zero CPU di decodifica e la ripresa
+            // resta immediata perche' il WS resta aperto.
+            if (feedEl._awPaused) return;
             createImageBitmap(new Blob([data.subarray(1)], { type: 'image/jpeg' }))
                 .then((bm) => scheduleCanvasDraw(feedEl, serial, bm, bm.width, bm.height))
                 .catch((err) => console.error(`[JPEG] ${serial}:`, err));
@@ -1635,6 +1661,7 @@ function restartAllFeeds() {
 }
 
 function stopStreamWs(feedEl) {
+    feedEl._awPaused = false;
     const serial = feedEl.dataset.wsActive;
     const session = serial && streamSessions[serial];
     if (session) {
