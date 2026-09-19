@@ -4024,13 +4024,20 @@ async function loadCustomBookmakers() {
 
 async function saveCustomBookmakers(list) {
     _customBookmakers = list;
-    try {
-        await fetch("/api/bookmakers", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ custom: list }),
-        });
-    } catch (e) { /* il prossimo salvataggio riprova */ }
+    // Un tentativo + un retry: prima gli errori di rete venivano ingoiati
+    // in silenzio e il sito 'spariva' al riavvio senza alcun avviso.
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const res = await fetch("/api/bookmakers", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ custom: list }),
+            });
+            if (res.ok) return;
+        } catch (e) { /* riprova sotto */ }
+        await new Promise((r) => setTimeout(r, 1500));
+    }
+    toast("Salvataggio siti non riuscito — riprova", "warn");
 }
 
 // Nomi dei bookmaker: default + custom dal server. Serve alla
@@ -4062,7 +4069,16 @@ function initBookmakers() {
         saveCustomBookmakers(custom);
     }
     loadCustomBookmakers().then(() => {
-        custom = _customBookmakers.slice();
+        // MERGE, non sovrascrivere: un sito aggiunto mentre il GET era
+        // ancora in volo verrebbe cancellato dalla risposta — e al
+        // salvataggio successivo sparirebbe anche dal file sul server.
+        // Era il motivo per cui i bookmaker custom 'sparivano'.
+        const known = new Set(custom.map((b) => b.url));
+        const extra = _customBookmakers.filter((b) => b && b.url && !known.has(b.url));
+        if (extra.length) {
+            custom = [...custom, ...extra];
+            saveCustomBookmakers(custom);
+        }
         all = [...defaults, ...custom];
         applySearch();
     });

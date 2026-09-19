@@ -272,7 +272,13 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def index():
         index_file = static_dir / "index.html"
-        return index_file.read_text(encoding="utf-8")
+        # no-cache: il browser deve sempre ri-chiedere index.html, altrimenti
+        # la cache euristica serve un app.js?v= vecchio per giorni e le
+        # nuove versioni non arrivano mai al client.
+        return HTMLResponse(
+            index_file.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-cache"},
+        )
 
     # ------------------------------------------------------------------
     # REST API – Dispositivi

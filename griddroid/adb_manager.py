@@ -44,6 +44,8 @@ from .config import (
     save_device_order,
     load_balances_state,
     save_balances_state,
+    load_bookmakers,
+    BOOKMAKERS_FILE,
 )
 from .device import (
     DeviceInfo,
@@ -328,6 +330,11 @@ class AdbManager:
         self._keys_loaded: set = set()
         # Contatore poll consecutivi in cui un device non appare in adb devices
         self._missing: Dict[str, int] = {}
+        # Bookmaker custom da bookmakers.json (dominio -> nome): ricaricati
+        # quando il file cambia, cosi' i siti aggiunti dall'utente sono
+        # riconosciuti dal lettore saldi senza riavvio.
+        self._custom_books: Dict[str, str] = {}
+        self._custom_books_mtime: float = 0.0
         # Stato saldi corrente: serial -> {saldo, bookmaker, username, nome, timestamp}
         # Caricato da disco all'avvio, aggiornato in background a ogni lettura.
         self._balances: Dict[str, dict] = load_balances_state()
@@ -725,11 +732,62 @@ class AdbManager:
         except Exception:
             return ""
 
+    def _refresh_custom_books(self) -> None:
+        """Ricarica i bookmaker custom da bookmakers.json quando il file
+        cambia. Chiave = dominio di secondo livello dell'URL
+        (https://www.daznbet.it -> 'daznbet'), cosi' il match per
+        sottostringa funziona su hostname e package Android."""
+        try:
+            mtime = BOOKMAKERS_FILE.stat().st_mtime
+        except OSError:
+            if self._custom_books:
+                self._custom_books = {}
+                self._custom_books_mtime = 0.0
+            return
+        if mtime == self._custom_books_mtime:
+            return
+        books: Dict[str, str] = {}
+        try:
+            for b in load_bookmakers():
+                name = str(b.get("name") or "").strip()
+                url = str(b.get("url") or "").strip()
+                if not name or not url:
+                    continue
+                host = (
+                    urlparse(url if "://" in url else "https://" + url)
+                    .hostname or ""
+                ).lower()
+                labels = [l for l in host.split(".") if l and l != "www"]
+                if labels:
+                    key = labels[-2] if len(labels) >= 2 else labels[0]
+                    # Solo alfanumerico: i package Android non contengono
+                    # trattini ('miosito-prova' -> 'miositoprova'), cosi'
+                    # il match funziona su hostname e package insieme.
+                    key = re.sub(r"[^a-z0-9]", "", key)
+                    if key:
+                        books[key] = name
+        except Exception:
+            return
+        self._custom_books = books
+        self._custom_books_mtime = mtime
+
     def _bookmaker_from_package(self, package: str) -> str:
         low = package.lower()
         for key, name in self._BOOKMAKERS.items():
             if key in low:
                 return name
+        # Bookmaker custom inseriti dall'utente: devono essere riconosciuti
+        # come gli hardcoded, altrimenti il saldo su quei siti non viene
+        # mai attribuito (mancia 'il saldo non lo legge sul mio book').
+        self._refresh_custom_books()
+        if self._custom_books:
+            # Variante alfanumerica per coprire domini con trattini:
+            # 'www.miosito-prova.it' -> 'wwwmiositoprovait' contiene la
+            # chiave normalizzata 'miositoprova'.
+            low_alnum = re.sub(r"[^a-z0-9]", "", low)
+            for key, name in self._custom_books.items():
+                if key in low or key in low_alnum:
+                    return name
         return ""
 
     # ------------------------------------------------------------------
