@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-<link rel="stylesheet" href="/static/style.css?v=61">
+<link rel="stylesheet" href="/static/style.css?v=62">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -500,6 +500,10 @@
         <div class="saldi-topbar">
             <span class="saldi-title">💰 Saldi</span>
             <input type="text" id="balanceSearch" class="saldi-search" placeholder="Cerca bookmaker o telefono..." />
+            <div class="saldi-view-toggle" role="tablist">
+                <button class="saldi-view-btn active" id="saldiViewCards" data-view="cards" title="Una scheda per telefono coi suoi conti">Schede</button>
+                <button class="saldi-view-btn" id="saldiViewMatrix" data-view="matrix" title="Matrice bookmaker x telefono">Matrice</button>
+            </div>
             <label class="saldi-check" title="Mostra solo righe e colonne con almeno un saldo">
                 <input type="checkbox" id="saldiOnlyWithBalance" /> Solo con saldo
             </label>
@@ -509,7 +513,8 @@
             <button class="btn-icon saldi-close" id="btnCloseSaldi" title="Chiudi">✕</button>
         </div>
         <div class="saldi-grid-wrap" id="saldiGridWrap">
-            <div id="balancesTable" class="saldi-grid"></div>
+            <div id="saldiCards" class="saldi-cards"></div>
+            <div id="balancesTable" class="saldi-grid" hidden></div>
         </div>
         <div class="saldi-footer">
             <div id="balancesSummary" class="balances-summary"></div>
@@ -528,7 +533,7 @@
     </div>
 
     <script src="/static/jmuxer.min.js?v=87"></script>
-    <script src="/static/app.js?v=131"></script>
+    <script src="/static/app.js?v=132"></script>
     <script>
     (async () => {
         try {

@@ -4611,14 +4611,130 @@ function closeSaldi() {
     if (ov) ov.hidden = true;
 }
 
-function renderBalances() {
-    const wrap = document.getElementById("balancesTable");
-    const summary = document.getElementById("balancesSummary");
-    if (!wrap) return;
-    // Overlay chiuso: non ricostruire mille celle a ogni refresh.
-    const ov = document.getElementById("saldiOverlay");
-    if (ov && ov.hidden) return;
+// Vista corrente della pagina saldi: 'cards' (una scheda per telefono) o
+// 'matrix' (foglio bookmaker x telefono). Persistita in localStorage.
+let _saldiView = localStorage.getItem("saldiView") || "cards";
 
+function _saldiAge(rec, now) {
+    let stale = false, ageTxt = "";
+    if (rec && rec.timestamp) {
+        const t = new Date(String(rec.timestamp).replace(" ", "T")).getTime();
+        if (!isNaN(t)) {
+            const mins = Math.floor((now - t) / 60000);
+            stale = mins > 10;
+            ageTxt = mins < 1 ? "ora" : mins < 60 ? `${mins}m fa` : `${Math.floor(mins / 60)}h fa`;
+        }
+    }
+    return { stale, ageTxt };
+}
+
+function _saldiDelta(rec) {
+    if (typeof rec?.diff === "number" && rec.diff !== 0) {
+        const up = rec.diff > 0;
+        return `<span class="saldi-delta ${up ? "up" : "down"}">` +
+            `${up ? "▲" : "▼"} ${_fmtEuro(Math.abs(rec.diff))}</span>`;
+    }
+    return "";
+}
+
+// serial -> [{book, rec}] — i conti letti su quel device, in ordine di
+// valore decrescente (i saldi a zero restano in coda).
+function _deviceBooks() {
+    const out = {};
+    for (const [serial, b] of Object.entries(_balancesCache)) {
+        const rows = [];
+        if (b.books) {
+            for (const [book, rec] of Object.entries(b.books)) {
+                if (rec.saldo) rows.push({ book, rec });
+            }
+        }
+        if (!rows.length && b.saldo) {
+            rows.push({ book: b.bookmaker || "ALTRO", rec: b });
+        }
+        rows.sort((x, y) =>
+            (parseFloat(y.rec.saldo) || 0) - (parseFloat(x.rec.saldo) || 0));
+        out[serial] = rows;
+    }
+    return out;
+}
+
+// Vista schede: una card per telefono coi suoi conti — e' il modello
+// mentale giusto (persona -> i suoi account), non un foglio Excel con
+// centinaia di celle vuote.
+function _renderSaldiCards(wrap) {
+    const q = (document.getElementById("balanceSearch")?.value || "").trim().toLowerCase();
+    const onlyFilled = document.getElementById("saldiOnlyWithBalance")?.checked;
+    const now = Date.now();
+    const devBooks = _deviceBooks();
+    const devices = state.devices.slice();
+    const devName = d => d.display_name || d.serial;
+
+    // Ordina le card per totale decrescente: in cima chi ha piu' fondi.
+    const totals = {};
+    for (const d of devices) {
+        totals[d.serial] = (devBooks[d.serial] || []).reduce(
+            (acc, r) => acc + (parseFloat(r.rec.saldo) || 0), 0);
+    }
+    devices.sort((a, b) => (totals[b.serial] || 0) - (totals[a.serial] || 0));
+
+    const cards = [];
+    for (const d of devices) {
+        const rows = devBooks[d.serial] || [];
+        // Ricerca: matcha il nome/seriale del device -> card intera;
+        // matcha un book -> card con solo le righe di quel book.
+        const devMatch = !q || devName(d).toLowerCase().includes(q)
+            || d.serial.toLowerCase().includes(q);
+        const bookMatch = q && rows.some(r => r.book.toLowerCase().includes(q));
+        if (q && !devMatch && !bookMatch) continue;
+        const visRows = (q && bookMatch && !devMatch)
+            ? rows.filter(r => r.book.toLowerCase().includes(q))
+            : rows;
+        if (onlyFilled && !visRows.length) continue;
+
+        let tot = 0, newest = null, allStale = rows.length > 0;
+        for (const r of rows) {
+            const v = parseFloat(r.rec.saldo);
+            if (!isNaN(v)) tot += v;
+            const { stale } = _saldiAge(r.rec, now);
+            if (!stale) allStale = false;
+            const t = r.rec.timestamp;
+            if (t && (!newest || t > newest)) newest = t;
+        }
+        const age = newest ? _saldiAge({ timestamp: newest }, now) : null;
+
+        const rowsHtml = visRows.length ? visRows.map(r => {
+            const v = parseFloat(r.rec.saldo);
+            const { stale, ageTxt } = _saldiAge(r.rec, now);
+            const tip = [r.rec.username, r.rec.timestamp].filter(Boolean).join(" · ");
+            const val = isNaN(v) ? escapeHtml(r.rec.saldo) : _fmtEuro(v);
+            const zero = !isNaN(v) && v === 0;
+            return `<div class="saldi-card-row${stale ? " stale" : ""}${zero ? " zero" : ""}" ` +
+                `title="${escapeHtml(tip)}">` +
+                `<span class="saldi-card-book">${escapeHtml(r.book)}</span>` +
+                `<span class="saldi-card-val">${val}` +
+                `${_saldiDelta(r.rec)}` +
+                (ageTxt ? `<span class="saldi-age">${ageTxt}</span>` : "") +
+                `</span></div>`;
+        }).join("") : '<div class="saldi-card-empty">Nessun saldo letto</div>';
+
+        cards.push(`<div class="saldi-card${allStale ? " stale" : ""}">` +
+            `<div class="saldi-card-head">` +
+            `<span class="saldi-card-name" title="${escapeHtml(d.serial)}">${escapeHtml(devName(d))}</span>` +
+            `<span class="saldi-card-total">${rows.length ? _fmtEuro(tot) : "—"}</span>` +
+            `</div>` +
+            `<div class="saldi-card-rows">${rowsHtml}</div>` +
+            `<div class="saldi-card-foot">` +
+            `<span>${rows.length} conti</span>` +
+            (age?.ageTxt ? `<span class="${age.stale ? "saldi-age-warn" : ""}">agg. ${age.ageTxt}</span>` : "") +
+            `</div></div>`);
+    }
+
+    wrap.innerHTML = cards.length
+        ? cards.join("")
+        : '<div class="balances-empty">Nessuna scheda da mostrare con questi filtri.</div>';
+}
+
+function _renderSaldiMatrix(wrap) {
     const q = (document.getElementById("balanceSearch")?.value || "").trim().toLowerCase();
     const onlyFilled = document.getElementById("saldiOnlyWithBalance")?.checked;
 
@@ -4646,27 +4762,12 @@ function renderBalances() {
     const cellHtml = rec => {
         if (!rec || !rec.saldo) return '<td class="saldi-cell empty"></td>';
         const v = parseFloat(rec.saldo);
-        let stale = false, ageTxt = "";
-        if (rec.timestamp) {
-            const t = new Date(String(rec.timestamp).replace(" ", "T")).getTime();
-            if (!isNaN(t)) {
-                const mins = Math.floor((now - t) / 60000);
-                stale = mins > 10;
-                ageTxt = mins < 1 ? "ora" : mins < 60 ? `${mins}m fa` : `${Math.floor(mins / 60)}h fa`;
-            }
-        }
+        const { stale, ageTxt } = _saldiAge(rec, now);
         const tip = [rec.username, rec.timestamp].filter(Boolean).join(" · ");
         const val = isNaN(v) ? escapeHtml(rec.saldo) : _fmtEuro(v);
         const user = rec.username
             ? `<span class="saldi-user">${escapeHtml(rec.username)}</span>` : "";
-        // Delta rispetto all'ultima variazione vista dal backend:
-        // freccia su/giu' colorata, solo se il saldo si e' mosso.
-        let delta = "";
-        if (typeof rec.diff === "number" && rec.diff !== 0) {
-            const up = rec.diff > 0;
-            delta = `<span class="saldi-delta ${up ? "up" : "down"}">` +
-                `${up ? "▲" : "▼"} ${_fmtEuro(Math.abs(rec.diff))}</span>`;
-        }
+        const delta = _saldiDelta(rec);
         const age = ageTxt ? `<span class="saldi-age">${ageTxt}</span>` : "";
         return `<td class="saldi-cell${stale ? " stale" : ""}" title="${escapeHtml(tip)}">` +
             `<span class="saldi-val">${val}</span>${user}${delta}${age}</td>`;
@@ -4715,8 +4816,37 @@ function renderBalances() {
             </tr></tfoot>
         </table>`;
     }
+    return grand;
+}
+
+function renderBalances() {
+    const cards = document.getElementById("saldiCards");
+    const matrix = document.getElementById("balancesTable");
+    const summary = document.getElementById("balancesSummary");
+    if (!cards || !matrix) return;
+    // Overlay chiuso: non ricostruire mille celle a ogni refresh.
+    const ov = document.getElementById("saldiOverlay");
+    if (ov && ov.hidden) return;
+
+    const isCards = _saldiView === "cards";
+    cards.hidden = !isCards;
+    matrix.hidden = isCards;
+    let grand = 0;
+    if (isCards) {
+        _renderSaldiCards(cards);
+        // Totale generale per il footer (stessa sorgente della matrice).
+        for (const rows of Object.values(_deviceBooks())) {
+            for (const r of rows) {
+                const v = parseFloat(r.rec.saldo);
+                if (!isNaN(v)) grand += v;
+            }
+        }
+    } else {
+        grand = _renderSaldiMatrix(matrix) || 0;
+    }
 
     if (summary) {
+        const { cells } = _balancesCells();
         const n = Object.values(cells).reduce((acc, r) => acc + Object.keys(r).length, 0);
         const devCount = new Set(
             Object.values(cells).flatMap(r => Object.keys(r))
@@ -4728,7 +4858,7 @@ function renderBalances() {
             `${devCount} telefoni`,
             `${Object.keys(cells).length} book`,
         ];
-        if (any) parts.push(`Totale: ${_fmtEuro(grand)}`);
+        if (grand) parts.push(`Totale: ${_fmtEuro(grand)}`);
         if (latest) parts.push(`Ultima lettura: ${latest.slice(11, 16)}`);
         summary.textContent = parts.join(" · ");
     }
@@ -4753,6 +4883,21 @@ function initBalances() {
     }
     const btnMatrixCsv = document.getElementById("btnMatrixCsv");
     if (btnMatrixCsv) btnMatrixCsv.addEventListener("click", downloadMatrixCsv);
+    // Toggle vista schede/matrice — la scelta resta salvata.
+    document.querySelectorAll(".saldi-view-btn").forEach(btn => {
+        if (btn.dataset.view === _saldiView) {
+            btn.classList.add("active");
+        } else {
+            btn.classList.remove("active");
+        }
+        btn.addEventListener("click", () => {
+            _saldiView = btn.dataset.view;
+            localStorage.setItem("saldiView", _saldiView);
+            document.querySelectorAll(".saldi-view-btn").forEach(b =>
+                b.classList.toggle("active", b === btn));
+            renderBalances();
+        });
+    });
     if (btnClose) btnClose.addEventListener("click", closeSaldi);
     if (btnCsv) btnCsv.addEventListener("click", downloadBalancesCsv);
     if (search) search.addEventListener("input", renderBalances);
