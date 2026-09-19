@@ -1126,7 +1126,7 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         return app.state.update_state
 
     @app.post("/api/update/apply")
-    async def update_apply():
+    async def update_apply(request: Request):
         if app.state.update_state.get("status") != "ready":
             return JSONResponse({"error": "download non pronto"}, status_code=409)
         installer = Path(app.state.update_state["installer"])
@@ -1152,7 +1152,13 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         except Exception:
             pass
 
-        updater.schedule_install(installer, silent_args, restart_path, os.getpid())
+        # Porta reale del server (puo' differire da settings.port se era
+        # occupata): il bat la usa per verificare che il riavvio sia
+        # riuscito e rilanciare l'exe se il processo muore o si blocca.
+        port = request.url.port or 0
+        updater.schedule_install(
+            installer, silent_args, restart_path, os.getpid(), port
+        )
 
         async def _shutdown():
             await asyncio.sleep(1.0)

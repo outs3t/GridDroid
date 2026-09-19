@@ -167,12 +167,57 @@ def _make_windows_bat(
     silent_args: List[str],
     exe_path: Optional[str] = None,
     old_pid: Optional[int] = None,
+    port: int = 0,
 ) -> Path:
     """Crea uno script .bat che chiude GridDroid, esegue l'installer e lo riavvia."""
     bat = Path(tempfile.gettempdir()) / "griddroid_update.bat"
     args = " ".join(silent_args)
-    restart = f'start "" "{exe_path}"\n' if exe_path and exe_path != str(installer) else ""
     kill_pid = f"taskkill /F /T /PID {old_pid} 2>nul\n" if old_pid else ""
+    # Riavvio con verifica: l'exe onefile PyInstaller scompatta pythonXY.dll
+    # in %TEMP%\_MEIxxxx; se la cartella sparisce (cleanup di un'altra app
+    # onefile, antivirus, estrazione interrotta) il processo muore o resta
+    # appeso al dialog 'Failed to load Python DLL'. Senza controllo l'app
+    # restava semplicemente chiusa: qui si riprova finche' il server non
+    # risponde sulla porta (o la presenza del processo, se la porta manca).
+    restart = ""
+    if exe_path and exe_path != str(installer):
+        # 'rem' nei commenti del bat: sono righe ignorate dal cmd.
+        if port:
+            # Server su = exe sano. Processo vivo ma porta muta per ~12s =
+            # dialog d'errore appeso (es. pythonXY.dll mancante): si riprova.
+            ready = (
+                "powershell -NoProfile -Command \"try{$c=New-Object "
+                f"Net.Sockets.TcpClient;$c.Connect('127.0.0.1',{port});$c.Close();"
+                'exit 0}catch{exit 1}" >nul 2>&1\n'
+                "if errorlevel 1 goto probe_wait\n"
+                "goto app_ok\n"
+            )
+        else:
+            # Porta ignota (es. source): ci si accontenta del processo vivo.
+            ready = "goto app_ok\n"
+        restart = (
+            "set TRIES=0\n"
+            ":relaunch\n"
+            f'start "" "{exe_path}"\n'
+            "set /a TRIES+=1\n"
+            "set PROBES=0\n"
+            ":probe\n"
+            "ping -n 3 127.0.0.1 >nul\n"
+            'tasklist /FI "IMAGENAME eq GridDroid.exe" 2>nul | find /I "GridDroid.exe" >nul\n'
+            "if errorlevel 1 goto probe_dead\n"
+            f"{ready}"
+            ":probe_wait\n"
+            "set /a PROBES+=1\n"
+            "if %PROBES% LSS 6 goto probe\n"
+            ":probe_dead\n"
+            "if %TRIES% GEQ 3 goto last_launch\n"
+            "taskkill /F /IM GridDroid.exe >nul 2>&1\n"
+            "ping -n 2 127.0.0.1 >nul\n"
+            "goto relaunch\n"
+            ":last_launch\n"
+            f'start "" "{exe_path}"\n'
+            ":app_ok\n"
+        )
     # Senza silent_args il file scaricato e' l'exe portatile: va copiato
     # sopra il vecchio exe, non eseguito (altrimenti gira da temp e basta).
     if exe_path and not silent_args and exe_path != str(installer):
@@ -220,11 +265,14 @@ def schedule_install(
     silent_args: List[str] = (),
     restart_path: Optional[str] = None,
     old_pid: Optional[int] = None,
+    port: int = 0,
 ) -> bool:
     """Avvia il processo updater esterno e lo stacca dal padre."""
     system = platform.system()
     if system == "Windows":
-        script = _make_windows_bat(installer, silent_args, restart_path, old_pid)
+        script = _make_windows_bat(
+            installer, silent_args, restart_path, old_pid, port
+        )
         # Wrapper VBScript: WScript.Shell.Run con window style 0 esegue il bat
         # completamente invisibile (niente finestra console durante l'update).
         vbs = Path(tempfile.gettempdir()) / "griddroid_update.vbs"
