@@ -32,7 +32,7 @@ const state = {
     // browser, 'mse' = <video> con remuxer fMP4.
     videoMode: ["h264", "mse", "jpeg"].includes(localStorage.getItem("griddroid.videoMode"))
         ? localStorage.getItem("griddroid.videoMode")
-        : "jpeg",
+        : "h264",
 };
 
 // =====================================================================
