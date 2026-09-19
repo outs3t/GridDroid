@@ -1353,6 +1353,18 @@ class AdbManager:
     }
     return m >= 3;
   };
+  // Jackpot/montepremi/vincite recenti: importi grandi che NON sono il
+  // saldo (betpoint leggeva 'Jackpot Arancione 264.382' come saldo —
+  // la classe jackpotAmount matcha [class*=amount]). Risalgo gli
+  // antenati: basta che un contenitore parli di jackpot/vincite.
+  const badRe = /jackpot|montepremi|winner|vincit|big\s?win|lucky/i;
+  const isPromo = el => {
+    for (let n = el; n; n = n.parentElement) {
+      const idc = (n.id || '') + ' ' + (typeof n.className === 'string' ? n.className : '');
+      if (badRe.test(idc)) return true;
+    }
+    return false;
+  };
   // CTA di login visibile (Accedi/Registrati): pagina NON loggata —
   // ogni importo nel DOM e' promo o widget di versamento, mai il saldo.
   // Il match e' sul testo ESATTO del bottone: una promo "Registrati al
@@ -1385,7 +1397,7 @@ class AdbManager:
       const t = vis(el);
       if (t && t.length < 80) {
         const v = pick(t);
-        if (v && !isPicker(el)) return ret(v);
+        if (v && !isPicker(el) && !isPromo(el)) return ret(v);
       }
     }
   }
@@ -1395,7 +1407,7 @@ class AdbManager:
     const t = vis(el);
     if (t && t.length < 80 && kw.test(t)) {
       const v = pick(t);
-      if (v) return ret(v);
+      if (v && !isPromo(el)) return ret(v);
     }
   }
   if (!lo) {
@@ -1404,7 +1416,7 @@ class AdbManager:
         const t = vis(el);
         if (t && t.length < 80) {
           const v = pick(t);
-          if (v && !isPicker(el)) return ret(v);
+          if (v && !isPicker(el) && !isPromo(el)) return ret(v);
         }
       }
     }
@@ -1413,7 +1425,7 @@ class AdbManager:
       const t = vis(el);
       if (t && t.length < 40) {
         const v = pick(t);
-        if (v && !isPicker(el)) return ret(v);
+        if (v && !isPicker(el) && !isPromo(el)) return ret(v);
       }
     }
   }
@@ -1590,9 +1602,58 @@ class AdbManager:
                 pages.sort(key=lambda t: 0 if _is_book(t) else 1)
                 eval_sem = asyncio.Semaphore(6)
 
+                async def _wake_target(target_id: str) -> None:
+                    """Riattiva una tab congelata/scaricata da Chrome
+                    (comune con molte tab aperte: il WS della pagina si
+                    connette ma Runtime.evaluate non risponde mai).
+                    Target.activateTarget va sul WS browser-level di
+                    /json/version — sul device e' come toccare la tab."""
+                    if not target_id:
+                        return
+                    vr, vw = await asyncio.wait_for(
+                        asyncio.open_connection("127.0.0.1", port), timeout=2.0
+                    )
+                    try:
+                        vw.write(
+                            f"GET /json/version HTTP/1.1\r\nHost: {host}\r\n"
+                            f"Connection: close\r\n\r\n".encode()
+                        )
+                        await vw.drain()
+                        vraw = await asyncio.wait_for(vr.read(65536), timeout=2.0)
+                    finally:
+                        vw.close()
+                    vb = vraw.split(b"\r\n\r\n", 1)
+                    if len(vb) < 2:
+                        return
+                    vinfo = json.loads(vb[1].decode("utf-8", errors="replace"))
+                    bws = vinfo.get("webSocketDebuggerUrl")
+                    if not bws:
+                        return
+                    bws = re.sub(r"^ws://[^/]+", f"ws://127.0.0.1:{port}", bws)
+                    async with websockets.connect(
+                        bws, open_timeout=2, close_timeout=1
+                    ) as b:
+                        await b.send(json.dumps({
+                            "id": 1, "method": "Target.activateTarget",
+                            "params": {"targetId": target_id},
+                        }))
+                        await asyncio.wait_for(b.recv(), timeout=2.0)
+
                 async def _eval_sem(page: dict):
                     async with eval_sem:
-                        return await _eval_page(page)
+                        try:
+                            return await _eval_page(page)
+                        except Exception:
+                            pass
+                        # Tab congelata: riattivo e riprovo una volta —
+                        # prima queste pagine fallivano in silenzio e il
+                        # saldo di quel sito non si leggeva mai.
+                        try:
+                            await _wake_target(page.get("id", ""))
+                            await asyncio.sleep(0.8)
+                            return await _eval_page(page)
+                        except Exception:
+                            return None
 
                 evals = await asyncio.gather(
                     *(_eval_sem(p) for p in pages), return_exceptions=True
