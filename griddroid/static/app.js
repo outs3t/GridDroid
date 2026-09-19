@@ -501,9 +501,17 @@ function wrapDeviceCard(cell, dev) {
     card.appendChild(label);
     card.appendChild(cell);
 
-    // Tasto destro → menu contestuale (gruppi, segnare giocati)
+    // Tasto destro sul device = tasto Indietro del telefono (come
+    // scrcpy): va a focus + selezionati con la stessa regola dei tap.
+    // Shift+tasto destro = menu contestuale GridDroid.
     card.addEventListener("contextmenu", (e) => {
-        showDeviceContextMenu(e, dev.serial);
+        if (e.shiftKey) {
+            showDeviceContextMenu(e, dev.serial);
+            return;
+        }
+        e.preventDefault();
+        wsSend({ action: "focus", serial: dev.serial });
+        wsSend({ action: "keyevent", keycode: 4 }); // KEYCODE_BACK
     });
 
     // Hover = focus immediato (stile Panda): il telefono sotto il mouse
