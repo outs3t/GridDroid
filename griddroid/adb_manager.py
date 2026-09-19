@@ -1507,10 +1507,135 @@ class AdbManager:
                     and t.get("url", "").startswith("http")
                     and t.get("webSocketDebuggerUrl")
                 ]
+
+                async def _browser_ws_url() -> str:
+                    """WS browser-level da /json/version (Target.* vive qui)."""
+                    vr, vw = await asyncio.wait_for(
+                        asyncio.open_connection("127.0.0.1", port), timeout=2.0
+                    )
+                    try:
+                        vw.write(
+                            f"GET /json/version HTTP/1.1\r\nHost: {host}\r\n"
+                            f"Connection: close\r\n\r\n".encode()
+                        )
+                        await vw.drain()
+                        vraw = await asyncio.wait_for(
+                            vr.read(65536), timeout=2.0
+                        )
+                    finally:
+                        vw.close()
+                    vb = vraw.split(b"\r\n\r\n", 1)
+                    if len(vb) < 2:
+                        return ""
+                    vinfo = json.loads(vb[1].decode("utf-8", errors="replace"))
+                    bws = vinfo.get("webSocketDebuggerUrl") or ""
+                    return re.sub(
+                        r"^ws://[^/]+", f"ws://127.0.0.1:{port}", bws
+                    )
+
+                # Chrome su Android a volte NON espone una tab in /json (es.
+                # aperta da deep-link): la trovo con Target.getTargets sul
+                # WS browser-level — su TONIODECRI betpassion era cosi'.
+                browser_ws = ""
+                try:
+                    browser_ws = await _browser_ws_url()
+                except Exception:
+                    pass
+                if browser_ws:
+                    try:
+                        async with websockets.connect(
+                            browser_ws, open_timeout=2, close_timeout=1,
+                            max_size=2**20,
+                        ) as b:
+                            await b.send(json.dumps({
+                                "id": 1, "method": "Target.getTargets",
+                            }))
+                            while True:
+                                bm = json.loads(
+                                    await asyncio.wait_for(
+                                        b.recv(), timeout=3.0
+                                    )
+                                )
+                                if bm.get("id") != 1:
+                                    continue
+                                tinfos = bm.get("result", {}).get(
+                                    "targetInfos", []
+                                )
+                                break
+                            known = {t.get("id") for t in targets}
+                            for ti in tinfos:
+                                if (
+                                    ti.get("type") == "page"
+                                    and ti.get("url", "").startswith("http")
+                                    and ti.get("targetId") not in known
+                                ):
+                                    pages.append({
+                                        "id": ti["targetId"],
+                                        "url": ti["url"],
+                                        "_via_browser": True,
+                                    })
+                    except Exception:
+                        pass
                 if not pages:
                     return empty
 
+                async def _eval_saldo(page: dict, _js):
+                    """Corpo comune di lettura: selettori calibrati per il
+                    sito, poi euristiche generiche."""
+                    # Selettore calibrato per questo sito? Provalo
+                    # prima: selettore esatto = saldo vero, zero falsi
+                    # positivi. Se manca (pagina sloggata o DOM
+                    # cambiato) si cade sulle euristiche generiche.
+                    host = ""
+                    try:
+                        host = urlparse(
+                            page.get("url", "")
+                        ).hostname or ""
+                    except Exception:
+                        pass
+                    sels = self._site_selectors_for(host)
+                    if sels:
+                        hit = await _js(
+                            "(()=>{const sels="
+                            + json.dumps(sels)
+                            + ";const re=/(?:€|EUR|USD|\\$|£)\\s*[0-9]"
+                            "[0-9.,\\s]*[0-9]|[0-9][0-9.,]*[0-9]\\s*"
+                            "(?:€|EUR|USD|\\$|£)/i;"
+                            # Il simbolo € puo' essere un glifo custom
+                            # del font (bet365: carattere PUA, non
+                            # matcha il regex) — con un selettore
+                            # calibrato basta un numero decimale.
+                            + "const re2=/[0-9]+[.,][0-9]{1,2}/;"
+                            # Starcasino renderizza il saldo dentro
+                            # shadow DOM (Stencil .hydrated): il
+                            # querySelector normale non ci arriva —
+                            # riprovo la query in ogni shadow root.
+                            + "const q=(r,s)=>{try{const e=r."
+                            "querySelector(s);if(e)return e;"
+                            "for(const n of r.querySelectorAll('*'))"
+                            "{if(n.shadowRoot){const f=q(n.shadowRoot,s);"
+                            "if(f)return f;}}return null}catch(_){return null}};"
+                            "for(const s of sels){"
+                            "const el=q(document,s);"
+                            "if(!el)continue;"
+                            "const t=((el.innerText||'').trim()||"
+                            "(el.textContent||'').trim());"
+                            "const m=t&&(t.match(re)||t.match(re2));"
+                            "if(m)return{saldo:m[0],site:location."
+                            "hostname,user:'',vis:document."
+                            "visibilityState,lo:false,via:s};}"
+                            "return null;})()",
+                            2,
+                        )
+                        if hit and hit.get("saldo"):
+                            return hit
+                    return await _js(self._CDP_JS, 1)
+
                 async def _eval_page(page: dict):
+                    # Tab che manca da /json: valuto via WS browser-level
+                    # (attach + sessionId).
+                    if page.get("_via_browser"):
+                        return await _eval_via_browser(page)
                     # webSocketDebuggerUrl replica l'host della richiesta:
                     # lo forziamo comunque alla porta del forward — se Chrome
                     # risponde con localhost:9222 o un host suo, il ws
@@ -1546,54 +1671,52 @@ class AdbManager:
                                     .get("value")
                                 )
 
-                        # Selettore calibrato per questo sito? Provalo
-                        # prima: selettore esatto = saldo vero, zero falsi
-                        # positivi. Se manca (pagina sloggata o DOM
-                        # cambiato) si cade sulle euristiche generiche.
-                        host = ""
-                        try:
-                            host = urlparse(
-                                page.get("url", "")
-                            ).hostname or ""
-                        except Exception:
-                            pass
-                        sels = self._site_selectors_for(host)
-                        if sels:
-                            hit = await _js(
-                                "(()=>{const sels="
-                                + json.dumps(sels)
-                                + ";const re=/(?:€|EUR|USD|\\$|£)\\s*[0-9]"
-                                "[0-9.,\\s]*[0-9]|[0-9][0-9.,]*[0-9]\\s*"
-                                "(?:€|EUR|USD|\\$|£)/i;"
-                                # Il simbolo € puo' essere un glifo custom
-                                # del font (bet365: carattere PUA, non
-                                # matcha il regex) — con un selettore
-                                # calibrato basta un numero decimale.
-                                + "const re2=/[0-9]+[.,][0-9]{1,2}/;"
-                                # Starcasino renderizza il saldo dentro
-                                # shadow DOM (Stencil .hydrated): il
-                                # querySelector normale non ci arriva —
-                                # riprovo la query in ogni shadow root.
-                                + "const q=(r,s)=>{try{const e=r."
-                                "querySelector(s);if(e)return e;"
-                                "for(const n of r.querySelectorAll('*'))"
-                                "{if(n.shadowRoot){const f=q(n.shadowRoot,s);"
-                                "if(f)return f;}}return null}catch(_){return null}};"
-                                "for(const s of sels){"
-                                "const el=q(document,s);"
-                                "if(!el)continue;"
-                                "const t=((el.innerText||'').trim()||"
-                                "(el.textContent||'').trim());"
-                                "const m=t&&(t.match(re)||t.match(re2));"
-                                "if(m)return{saldo:m[0],site:location."
-                                "hostname,user:'',vis:document."
-                                "visibilityState,lo:false,via:s};}"
-                                "return null;})()",
-                                2,
+                        return await _eval_saldo(page, _js)
+
+                async def _eval_via_browser(page: dict):
+                    """Valuta una tab non presente in /json: niente WS per-
+                    pagina — attach flatten sul WS browser e Runtime.evaluate
+                    col sessionId."""
+                    _mid = [0]
+                    sess = None
+
+                    async def _send(method: str, params: dict, sid=None):
+                        _mid[0] += 1
+                        msg = {"id": _mid[0], "method": method,
+                               "params": params}
+                        if sid:
+                            msg["sessionId"] = sid
+                        await b.send(json.dumps(msg))
+                        while True:
+                            m = json.loads(
+                                await asyncio.wait_for(
+                                    b.recv(), timeout=5.0
+                                )
                             )
-                            if hit and hit.get("saldo"):
-                                return hit
-                        return await _js(self._CDP_JS, 1)
+                            if m.get("id") == _mid[0]:
+                                return m
+
+                    async with websockets.connect(
+                        browser_ws,
+                        open_timeout=3, close_timeout=1, max_size=2**20,
+                    ) as b:
+                        r = await _send("Target.attachToTarget", {
+                            "targetId": page["id"], "flatten": True,
+                        })
+                        sess = r["result"]["sessionId"]
+
+                        async def _js(expr: str, _msg_id: int):
+                            m = await _send("Runtime.evaluate", {
+                                "expression": expr,
+                                "returnByValue": True,
+                            }, sess)
+                            return (
+                                m.get("result", {})
+                                .get("result", {})
+                                .get("value")
+                            )
+
+                        return await _eval_saldo(page, _js)
 
                 # Valuta ogni tab e scegli la migliore: la tab attiva
                 # (visibilityState='visible') con saldo, poi attiva senza
@@ -1621,26 +1744,9 @@ class AdbManager:
                     /json/version — sul device e' come toccare la tab."""
                     if not target_id:
                         return
-                    vr, vw = await asyncio.wait_for(
-                        asyncio.open_connection("127.0.0.1", port), timeout=2.0
-                    )
-                    try:
-                        vw.write(
-                            f"GET /json/version HTTP/1.1\r\nHost: {host}\r\n"
-                            f"Connection: close\r\n\r\n".encode()
-                        )
-                        await vw.drain()
-                        vraw = await asyncio.wait_for(vr.read(65536), timeout=2.0)
-                    finally:
-                        vw.close()
-                    vb = vraw.split(b"\r\n\r\n", 1)
-                    if len(vb) < 2:
-                        return
-                    vinfo = json.loads(vb[1].decode("utf-8", errors="replace"))
-                    bws = vinfo.get("webSocketDebuggerUrl")
+                    bws = await _browser_ws_url()
                     if not bws:
                         return
-                    bws = re.sub(r"^ws://[^/]+", f"ws://127.0.0.1:{port}", bws)
                     async with websockets.connect(
                         bws, open_timeout=2, close_timeout=1
                     ) as b:
