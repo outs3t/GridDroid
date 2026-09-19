@@ -1751,38 +1751,9 @@ class AdbManager:
                 pages = pages[:64]
                 eval_sem = asyncio.Semaphore(10)
 
-                async def _wake_target(target_id: str) -> None:
-                    """Riattiva una tab congelata/scaricata da Chrome
-                    (comune con molte tab aperte: il WS della pagina si
-                    connette ma Runtime.evaluate non risponde mai).
-                    Target.activateTarget va sul WS browser-level di
-                    /json/version — sul device e' come toccare la tab."""
-                    if not target_id:
-                        return
-                    bws = await _browser_ws_url()
-                    if not bws:
-                        return
-                    async with websockets.connect(
-                        bws, open_timeout=2, close_timeout=1
-                    ) as b:
-                        await b.send(json.dumps({
-                            "id": 1, "method": "Target.activateTarget",
-                            "params": {"targetId": target_id},
-                        }))
-                        await asyncio.wait_for(b.recv(), timeout=2.0)
-
                 async def _eval_sem(page: dict):
                     async with eval_sem:
                         try:
-                            return await _eval_page(page)
-                        except Exception:
-                            pass
-                        # Tab congelata: riattivo e riprovo una volta —
-                        # prima queste pagine fallivano in silenzio e il
-                        # saldo di quel sito non si leggeva mai.
-                        try:
-                            await _wake_target(page.get("id", ""))
-                            await asyncio.sleep(0.8)
                             return await _eval_page(page)
                         except Exception:
                             return None
