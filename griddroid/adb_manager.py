@@ -1888,6 +1888,33 @@ class AdbManager:
                     )
             await asyncio.sleep(delay)
 
+    async def _adb_server_pid(self) -> Optional[str]:
+        """PID del processo in ascolto sulla 5037, None se non trovato.
+
+        Se il PID cambia dopo un calo di massa dei device, il server e'
+        stato davvero riavviato (un altro adb.exe con versione diversa).
+        Se resta uguale i device cadono per cause fisiche: hub USB che
+        ri-enumera quando si collega un telefono, alimentazione
+        insufficiente, cavo difettoso.
+        """
+        try:
+            rc, out, _ = await run_proc(
+                ["netstat", "-ano", "-p", "tcp"], timeout=5.0
+            )
+        except Exception:
+            return None
+        if rc or not out:
+            return None
+        for line in out.decode("utf-8", "replace").splitlines():
+            parts = line.split()
+            if (
+                len(parts) >= 5
+                and parts[1].endswith(":5037")
+                and parts[3].upper() == "LISTENING"
+            ):
+                return parts[-1]
+        return None
+
     def _upsert_device(
         self,
         serial: str,
@@ -2150,31 +2177,61 @@ class AdbManager:
                 return_exceptions=True,
             )
 
-        # Calo improvviso: tipico di un altro adb.exe (Panda, scrcpy,
-        # altro GridDroid) che uccide il server per versione diversa.
+        # Calo improvviso: due cause possibili. (a) un altro adb.exe
+        # (Panda, scrcpy, altro GridDroid) che uccide il server per versione
+        # diversa — il PID in ascolto sulla 5037 CAMBIA; (b) evento fisico
+        # USB: hub che ri-enumera quando si collega un telefono, calo di
+        # alimentazione, cavo — il server non muore, il PID resta uguale.
+        # Senza distinguerle accusavamo sempre (a) e passavamo al binario
+        # altrui anche quando il problema era l'hardware.
         prev = getattr(self, "_last_seen_count", 0)
+        prev_serials = getattr(self, "_last_seen_serials", set())
+        if getattr(self, "_server_pid", None) is None:
+            self._server_pid = await self._adb_server_pid()
         # Se qualche porta non ha risposto il conteggio e' incompleto:
         # non e' un calo reale, salta il check (e lo switch di binario).
         if not ports_failed and prev - len(seen_serials) >= 3:
-            logs.warn(
-                f"Calo improvviso device ({prev} -> {len(seen_serials)}): "
-                "possibile conflitto con un altro adb.exe che riavvia il server",
-                throttle_s=60,
-            )
-            # Se un altro adb.exe e' attivo (es. Panda partito dopo di noi),
-            # passiamo al suo binario: stesso server 5037, niente piu' kill
-            # incrociati che fanno sparire i device a intermittenza.
-            # Solo se e' effettivamente lanciabile da noi: se l'altra app ne
-            # mantiene un lock esclusivo, adottarlo produrrebbe un flood di
-            # [WinError 5] Accesso negato a ogni comando.
-            other = _find_running_adb(exclude=self._adb)
-            if other and _adb_executable_works(other):
-                logs.info(
-                    f"Rilevato adb di terzi attivo: passo a {other} "
-                    "(condivide lo stesso server, fine del flapping)"
+            server_pid = await self._adb_server_pid()
+            if (
+                server_pid
+                and self._server_pid
+                and server_pid != self._server_pid
+            ):
+                logs.warn(
+                    f"Calo improvviso device ({prev} -> {len(seen_serials)}): "
+                    "server adb riavviato — conflitto con un altro adb.exe",
+                    throttle_s=60,
                 )
-                self._adb = other
+                # Se un altro adb.exe e' attivo (es. Panda partito dopo di
+                # noi), passiamo al suo binario: stesso server 5037, niente
+                # piu' kill incrociati che fanno sparire i device a
+                # intermittenza. Solo se e' effettivamente lanciabile da noi:
+                # se l'altra app ne mantiene un lock esclusivo, adottarlo
+                # produrrebbe un flood di [WinError 5] Accesso negato a ogni
+                # comando.
+                other = _find_running_adb(exclude=self._adb)
+                if other and _adb_executable_works(other):
+                    logs.info(
+                        f"Rilevato adb di terzi attivo: passo a {other} "
+                        "(condivide lo stesso server, fine del flapping)"
+                    )
+                    self._adb = other
+            else:
+                dropped = sorted(prev_serials - seen_serials)
+                logs.warn(
+                    f"Calo improvviso device ({prev} -> {len(seen_serials)}): "
+                    f"cadono insieme {', '.join(dropped[:5])}"
+                    f"{'...' if len(dropped) > 5 else ''}. Il server adb non "
+                    "e' stato riavviato: questi device condividono quasi "
+                    "sicuramente lo stesso hub USB — ri-enumerazione o "
+                    "alimentazione insufficiente. Se hai appena collegato un "
+                    "telefono vicino a loro, e' quella la causa",
+                    throttle_s=60,
+                )
+            if server_pid:
+                self._server_pid = server_pid
         self._last_seen_count = len(seen_serials)
+        self._last_seen_serials = set(seen_serials)
 
         # Breakdown per stato: aiuta a capire perche' mancano device
         # (es. 30 collegati ma ADB ne elenca 13, di cui 2 unauthorized).
