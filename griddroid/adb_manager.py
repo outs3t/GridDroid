@@ -1570,8 +1570,17 @@ class AdbManager:
                                 # matcha il regex) — con un selettore
                                 # calibrato basta un numero decimale.
                                 + "const re2=/[0-9]+[.,][0-9]{1,2}/;"
+                                # Starcasino renderizza il saldo dentro
+                                # shadow DOM (Stencil .hydrated): il
+                                # querySelector normale non ci arriva —
+                                # riprovo la query in ogni shadow root.
+                                + "const q=(r,s)=>{try{const e=r."
+                                "querySelector(s);if(e)return e;"
+                                "for(const n of r.querySelectorAll('*'))"
+                                "{if(n.shadowRoot){const f=q(n.shadowRoot,s);"
+                                "if(f)return f;}}return null}catch(_){return null}};"
                                 "for(const s of sels){"
-                                "const el=document.querySelector(s);"
+                                "const el=q(document,s);"
                                 "if(!el)continue;"
                                 "const t=((el.innerText||'').trim()||"
                                 "(el.textContent||'').trim());"
