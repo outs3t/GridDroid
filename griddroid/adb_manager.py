@@ -166,6 +166,91 @@ def adb_server_args(serial: str) -> List[str]:
     return []
 
 
+# ------------------------------------------------------------------
+# Server adb di terzi (Panda/QuickForward sulla 5038)
+# ------------------------------------------------------------------
+# Il loro binario ha una versione diversa dalla nostra, e un client adb
+# che trova un server di versione diversa LO UCCIDE ("adb server is out
+# of date, killing...") e ne auto-avvia uno proprio sulla stessa porta.
+# Il clone contende i device USB al server vero: riavvii a catena e
+# device che rimbalzano online/offline/unauthorized a raffica — la
+# "guerra" osservata nei log con Panda attivo.
+# Regola: le porte extra si interrogano SOLO via socket grezzo col
+# protocollo smart-host (il check di versione vive nel client, non nel
+# server), e i comandi ai device che vivono li' SOLO col binario del
+# proprietario — stessa versione del suo server, nessun kill possibile.
+_FOREIGN_ADB_CANDIDATES = (
+    r"C:\Program Files (x86)\panda_android\tools\adb.exe",
+    r"C:\Program Files\panda_android\tools\adb.exe",
+)
+_FOREIGN_ADB_CACHE: Tuple[float, str] = (0.0, "")
+
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("connessione chiusa dal server adb")
+        buf += chunk
+    return buf
+
+
+def _adb_host_query(port: int, request: str, timeout: float = 3.0) -> Optional[str]:
+    """Query smart-host via socket grezzo ('host:devices', 'host:devices-l').
+
+    Protocollo adb server: 4 cifre esadecimali di lunghezza + comando, poi
+    'OKAY' + 4 cifre + payload. None se il server non risponde OKAY.
+    """
+    payload = request.encode()
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+        s.settimeout(timeout)
+        s.sendall(f"{len(payload):04x}".encode() + payload)
+        if _recv_exact(s, 4) != b"OKAY":
+            return None
+        try:
+            total = int(_recv_exact(s, 4), 16)
+        except ValueError:
+            return None
+        return _recv_exact(s, total).decode("utf-8", errors="replace")
+
+
+def _foreign_adb_path(own_adb: str = "") -> str:
+    """Binario adb del server di terzi (es. Panda), '' se non trovato.
+
+    Prima gli adb.exe gia' in esecuzione (il server 5038 di Panda e' esso
+    stesso un adb.exe), poi i percorsi noti dei tool di terzi.
+    """
+    global _FOREIGN_ADB_CACHE
+    now = time.monotonic()
+    ts, cached = _FOREIGN_ADB_CACHE
+    if now - ts < 60.0:
+        return cached
+    found = _find_running_adb(exclude=own_adb)
+    if not found or not _adb_executable_works(found):
+        found = ""
+        for cand in _FOREIGN_ADB_CANDIDATES:
+            if Path(cand).exists() and _adb_executable_works(cand):
+                found = cand
+                break
+    _FOREIGN_ADB_CACHE = (now, found)
+    return found
+
+
+def adb_binary_for_serial(serial: str, default: str) -> str:
+    """Binario adb da lanciare per un seriale: quello del server che lo enumera.
+
+    Per i device sul server di terzi serve il LORO binario: il nostro
+    client di versione diversa ucciderebbe il loro server a ogni comando.
+    Ritorna '' se il seriale e' esterno ma il binario proprietario non
+    e' stato trovato — meglio nessun comando che un kill-server.
+    """
+    port = _SERIAL_PORT.get(serial, 5037)
+    if port == 5037:
+        return default
+    return _foreign_adb_path(default)
+
+
 # Testi che indicano una pagina NON loggata: l'importo nel DOM e' promo
 # ('2.000€ di bonus'), non il saldo reale — quelle pagine si scartano.
 _LOGGED_OUT_RE = re.compile(
@@ -1569,10 +1654,18 @@ class AdbManager:
             eff_port = port
             if eff_port is None and serial:
                 eff_port = _SERIAL_PORT.get(serial, 5037)
-            # Solo se il server extra e' gia' in ascolto: `-P` su una porta
-            # libera auto-avvia un daemon clone che ruba i device al 5037.
-            if eff_port and eff_port != 5037 and _adb_port_listening(eff_port):
-                cmd += ["-P", str(eff_port)]
+            if eff_port and eff_port != 5037:
+                # Porta di un server di terzi: il NOSTRO client di versione
+                # diversa ucciderebbe il loro server a ogni comando e
+                # auto-avvierebbe un clone che ruba i device USB. Solo il
+                # binario proprietario puo' parlare con quel server; se non
+                # lo troviamo il comando fallisce invece di fare danni.
+                if not _adb_port_listening(eff_port):
+                    return -1, "", f"server adb :{eff_port} non in ascolto"
+                foreign = _foreign_adb_path(self._adb)
+                if not foreign:
+                    return -1, "", f"binario adb del server :{eff_port} non trovato"
+                cmd = [foreign, "-P", str(eff_port)]
             if serial:
                 cmd += ["-s", serial]
             cmd += list(args)
@@ -1786,6 +1879,42 @@ class AdbManager:
             # `adb -P <porta> devices` auto-avvia un daemon se la porta e'
             # libera, e quel clone contenderebbe i device USB al 5037.
             if port != 5037 and not _adb_port_listening(port):
+                continue
+            if port != 5037:
+                # Porta esterna (Panda/QuickForward): SOLO socket grezzo col
+                # protocollo smart-host. Il binario adb farebbe il check di
+                # versione, ucciderebbe il loro server e auto-avvierebbe un
+                # clone nostro sulla porta — la guerra di riavvii che faceva
+                # rimbalzare i device. Nessun subprocess, nessun lock.
+                out = None
+                for req in ("host:devices-l", "host:devices"):
+                    try:
+                        out = await asyncio.to_thread(
+                            _adb_host_query, port, req
+                        )
+                    except Exception:
+                        out = None
+                    if out is not None:
+                        break
+                if out is None:
+                    ports_failed.add(port)
+                    continue
+                any_port_ok = True
+                for match in _DEVICE_RE.finditer(out):
+                    serial = match.group("serial")
+                    if serial == "List" or not _is_valid_serial(serial):
+                        continue
+                    if serial not in seen_serials:
+                        seen_serials.add(serial)
+                        self._upsert_device(
+                            serial,
+                            match.group("state"),
+                            model=match.group("model") or "",
+                            product=match.group("product") or "",
+                            usb=match.group("usb") or "",
+                            tid=match.group("tid") or "",
+                            port=port,
+                        )
                 continue
             poll_ok = False
             # Ogni tentativo e' un comando adb sotto lock globale: farne 5

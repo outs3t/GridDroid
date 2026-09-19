@@ -21,7 +21,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Q
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .adb_manager import AdbManager, adb_server_args
+from .adb_manager import AdbManager, adb_binary_for_serial, adb_server_args
 from .bulk_actions import BulkActionRunner
 from .config import (
     AppSettings, CONFIG_DIR, load_settings, save_settings,
@@ -1501,9 +1501,14 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                     s = settings.stream
                     port_args = adb_server_args(serial)
                     adb_port = int(port_args[1]) if port_args else 5037
+                    adb_bin = adb_binary_for_serial(serial, settings.adb_path)
+                    if not adb_bin:
+                        raise RuntimeError(
+                            "binario adb del server esterno non trovato"
+                        )
                     await native.start(
                         serial,
-                        adb_path=settings.adb_path,
+                        adb_path=adb_bin,
                         adb_port=adb_port,
                         max_size=s.max_size,
                         max_fps=s.max_fps,

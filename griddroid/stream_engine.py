@@ -13,7 +13,12 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from .adb_manager import get_adb_cmd_lock, adb_server_args, run_proc
+from .adb_manager import (
+    adb_binary_for_serial,
+    adb_server_args,
+    get_adb_cmd_lock,
+    run_proc,
+)
 from .config import AppSettings, load_device_overrides, save_device_overrides
 from .control_channel import ControlChannel
 from .device import SCREEN_OFF_REQUESTED
@@ -686,7 +691,11 @@ class DeviceStream:
                 pass
 
     async def _is_device_online(self) -> bool:
-        adb = self._settings.adb_path or "adb"
+        adb = adb_binary_for_serial(
+            self.serial, self._settings.adb_path or "adb"
+        )
+        if not adb:
+            return False
         async with get_adb_cmd_lock():
             try:
                 # Timeout corto: un device appeso non deve tenere il lock
@@ -701,7 +710,16 @@ class DeviceStream:
                 return False
 
     async def _run_scrcpy_server(self, server_jar: str) -> None:
-        adb = self._settings.adb_path or "adb"
+        adb = adb_binary_for_serial(
+            self.serial, self._settings.adb_path or "adb"
+        )
+        if not adb:
+            logs.warn(
+                "Device su server adb esterno: binario proprietario non "
+                "trovato, stream impossibile",
+                serial=self.serial,
+            )
+            return
         s = self._settings.stream
 
         await self._detect_native_resolution()
@@ -1067,6 +1085,8 @@ class DeviceStream:
     # ------------------------------------------------------------------
 
     async def _adb_exec(self, adb: str, *args: str, timeout: float = 30.0) -> str:
+        if not adb:
+            raise RuntimeError("binario adb esterno non trovato")
         async with get_adb_cmd_lock():
             try:
                 rc, stdout, stderr = await run_proc(
@@ -1164,7 +1184,9 @@ class DeviceStream:
     async def _remove_forward(self) -> None:
         if not self._tcp_port:
             return
-        adb = self._settings.adb_path or "adb"
+        adb = adb_binary_for_serial(
+            self.serial, self._settings.adb_path or "adb"
+        )
         try:
             await self._adb_exec(adb, "forward", "--remove", f"tcp:{self._tcp_port}")
         except Exception:
@@ -1270,7 +1292,9 @@ class DeviceStream:
         if cached:
             self._native_width, self._native_height = cached
             return
-        adb = self._settings.adb_path or "adb"
+        adb = adb_binary_for_serial(
+            self.serial, self._settings.adb_path or "adb"
+        )
         try:
             text = await self._adb_exec(adb, "shell", "wm", "size")
             for line in text.strip().splitlines():

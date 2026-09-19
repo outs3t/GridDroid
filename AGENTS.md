@@ -39,9 +39,14 @@ quando un fix deve arrivare agli utenti via updater.
 - **Nessun resubscribe a cuor leggero**: ogni subscribe mid-GOP chiede
   un keyframe → reset_video. AutoWatch NON chiude il WS allo scroll-out
   (pausa solo decode/draw), MSE fa eccezione (chiude, SourceBuffer).
-- **Multi-server ADB**: mai `adb -P <porta>` su porta senza server in
-  ascolto — auto-avvia un daemon clone che ruba i device (Panda/5038).
-  `_adb_port_listening` prima di interrogare porte extra.
+- **Multi-server ADB**: mai `adb -P <porta>` col NOSTRO binario su porte
+  di terzi — il check di versione del client uccide il server altrui
+  ("out of date, killing") e auto-avvia un clone che ruba i device USB:
+  guerra di riavvii con Panda. Enumerazione porte extra SOLO via socket
+  grezzo `_adb_host_query` (host:devices-l, nessun check versione);
+  comandi ai device esteri SOLO col binario del proprietario
+  (`adb_binary_for_serial`, `_foreign_adb_path`). `adb_command` rifiuta
+  le porte esterne senza binario noto invece di uccidere il server.
 - **Letture saldi**: solo CDP (chrome_devtools_remote via forward
   persistente `_cdp_fwd`), jitter per device + `Semaphore(2)` globale.
   MAI `uiautomator dump` in automatico (congela la UI dei telefoni).
