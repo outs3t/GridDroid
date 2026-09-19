@@ -1551,12 +1551,17 @@ class AdbManager:
                                 + ";const re=/(?:€|EUR|USD|\\$|£)\\s*[0-9]"
                                 "[0-9.,\\s]*[0-9]|[0-9][0-9.,]*[0-9]\\s*"
                                 "(?:€|EUR|USD|\\$|£)/i;"
+                                # Il simbolo € puo' essere un glifo custom
+                                # del font (bet365: carattere PUA, non
+                                # matcha il regex) — con un selettore
+                                # calibrato basta un numero decimale.
+                                + "const re2=/[0-9]+[.,][0-9]{1,2}/;"
                                 "for(const s of sels){"
                                 "const el=document.querySelector(s);"
                                 "if(!el)continue;"
                                 "const t=((el.innerText||'').trim()||"
                                 "(el.textContent||'').trim());"
-                                "const m=t&&t.match(re);"
+                                "const m=t&&(t.match(re)||t.match(re2));"
                                 "if(m)return{saldo:m[0],site:location."
                                 "hostname,user:'',vis:document."
                                 "visibilityState,lo:false,via:s};}"
