@@ -2287,6 +2287,16 @@ class AdbManager:
         # caso di device messo in standby dal fallback senza stream.
         await self._display_power(serial, True)
         await self.shell(serial, "input keyevent KEYCODE_WAKEUP")
+        # Il keyevent puo' perdersi se il device e' occupato: verifica
+        # l'esito e ritenta una volta invece di dichiarare successo al
+        # buio (era il 'sblocco che va una volta su 10').
+        await asyncio.sleep(0.4)
+        if await self._is_screen_on(serial) is False:
+            await self._display_power(serial, True)
+            await self.shell(serial, "input keyevent KEYCODE_WAKEUP")
+            await asyncio.sleep(0.4)
+            if await self._is_screen_on(serial) is False:
+                logs.warn("Accensione schermo non riuscita", serial=serial)
         if serial in self._devices:
             self._devices[serial].screen_on = True
         logs.info("Schermo acceso", serial=serial)

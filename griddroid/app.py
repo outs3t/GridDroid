@@ -1533,6 +1533,9 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         elif action == "screen_on":
             await adb.screen_on(serial)
 
+        elif action == "unlock_screen":
+            await input_relay.unlock_screen(serial)
+
         elif action == "screen_off":
             await adb.screen_off(serial)
 

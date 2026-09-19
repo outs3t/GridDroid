@@ -94,11 +94,16 @@ class InputRelay:
             s for s, d in self._adb.devices.items()
             if d.status == DeviceStatus.ONLINE and d.selected
         ]
-        if selected and self._focused_serial in selected:
-            return selected
-
+        # Il device sotto il mouse (focus) riceve sempre l'input; se ci
+        # sono selezionati ricevono lo STESSO input — la selezione e' il
+        # gruppo broadcast, come in Panda. Prima il click su un device
+        # non selezionato ignorava gli altri: sembrava funzionare 'a
+        # caso' perche' il broadcast scattava solo toccando un device
+        # che era esso stesso nella selezione.
         if self._focused_serial:
-            return [self._focused_serial]
+            if self._focused_serial in selected:
+                return selected
+            return [self._focused_serial] + selected
         return selected
 
     def _control_for(self, serial: str):
@@ -358,6 +363,51 @@ class InputRelay:
 
     async def recent_apps(self) -> None:
         await self.keyevent(187)
+
+    async def unlock_screen(self, serial: str) -> None:
+        """Sblocco schermo: wakeup + swipe dal basso per il tastierino PIN.
+
+        Prima era KEYCODE_MENU (82): apre il PIN solo su poche ROM e solo
+        a schermo acceso — ecco il 'funziona una volta su 10'. Lo swipe
+        verso l'alto e' invece il gesto universale del lockscreen.
+        """
+        # Accende davvero il pannello (display power + KEYCODE_WAKEUP):
+        # a schermo spento ogni swipe cade nel vuoto.
+        await self._adb.screen_on(serial)
+        await asyncio.sleep(0.4)
+
+        stream = self._streams.get_stream(serial) if self._streams else None
+        ctrl = self._control_for(serial)
+        if ctrl and stream and stream.native_size[0] > 0:
+            w, h = stream.native_size
+            try:
+                await self._native_swipe(
+                    ctrl, w // 2, int(h * 0.75), w // 2, int(h * 0.30),
+                    250, w, h,
+                )
+                return
+            except Exception as exc:
+                logs.warn(f"Swipe sblocco nativo fallito: {exc}", serial=serial)
+
+        # Fallback senza canale nativo: risoluzione reale + input swipe.
+        out = ""
+        try:
+            out = await self._adb.shell(
+                serial, "wm size",
+                timeout=3.0, lock_timeout=1.0, priority="input",
+            )
+        except Exception:
+            pass
+        m = re.search(r"(\d+)x(\d+)", out or "")
+        w, h = (int(m.group(1)), int(m.group(2))) if m else (1080, 2400)
+        try:
+            await self._adb.shell(
+                serial,
+                f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.30)} 250",
+                timeout=3.0, lock_timeout=1.0, priority="input",
+            )
+        except Exception as exc:
+            logs.warn(f"Swipe sblocco fallito: {exc}", serial=serial)
 
     # ------------------------------------------------------------------
     # Macro recorder fisico (getevent -> input tap)

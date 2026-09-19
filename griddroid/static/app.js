@@ -787,8 +787,10 @@ function runContextCommand(cmd, serials) {
     serials.forEach((serial) => {
         switch (cmd) {
             case "unlock":
-                // KEYCODE_MENU: su molte ROM mostra direttamente il tastierino PIN
-                wsSend({ action: "keyevent", serial, keycode: 82 });
+                // Wakeup + swipe dal basso: il gesto universale che apre
+                // il tastierino PIN (KEYCODE_MENU funzionava solo su
+                // poche ROM e solo a schermo acceso).
+                wsSend({ action: "unlock_screen", serial });
                 break;
             case "lock":
                 wsSend({ action: "keyevent", serial, keycode: 26 });
