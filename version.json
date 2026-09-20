@@ -5,8 +5,8 @@
 
                                   ]
               },
-    "version":  "0.1.158",
-    "build_time":  "2026-09-20T00:58:54Z",
+    "version":  "0.1.159",
+    "build_time":  "2026-09-20T07:46:32Z",
     "windows":  {
                     "download_url":  "https://outs3t.github.io/GridDroid/GridDroid_Setup.exe",
                     "portable_url":  "https://outs3t.github.io/GridDroid/GridDroid.exe",
