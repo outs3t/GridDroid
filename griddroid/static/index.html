@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-<link rel="stylesheet" href="/static/style.css?v=65">
+<link rel="stylesheet" href="/static/style.css?v=66">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -504,6 +504,11 @@
                 <button class="saldi-view-btn active" id="saldiViewCards" data-view="cards" title="Una scheda per telefono coi suoi conti">Schede</button>
                 <button class="saldi-view-btn" id="saldiViewMatrix" data-view="matrix" title="Matrice bookmaker x telefono">Matrice</button>
             </div>
+            <select id="saldiSort" class="saldi-sort" title="Ordinamento di bookmaker e telefoni">
+                <option value="az">A → Z</option>
+                <option value="tot">Per totale</option>
+                <option value="recent">Per ultima lettura</option>
+            </select>
             <label class="saldi-check" title="Mostra solo righe e colonne con almeno un saldo">
                 <input type="checkbox" id="saldiOnlyWithBalance" /> Solo con saldo
             </label>
@@ -533,7 +538,7 @@
     </div>
 
     <script src="/static/jmuxer.min.js?v=87"></script>
-    <script src="/static/app.js?v=137"></script>
+    <script src="/static/app.js?v=138"></script>
     <script>
     (async () => {
         try {

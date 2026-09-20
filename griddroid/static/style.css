@@ -2379,6 +2379,17 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
     background: var(--bg-2);
     color: var(--text-0);
 }
+.saldi-sort {
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--text-1);
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+}
+.saldi-sort:hover { border-color: var(--border-hover); }
+.saldi-sort:focus { outline: none; border-color: var(--border-focus); }
 .saldi-check {
     display: flex;
     align-items: center;

@@ -4619,6 +4619,9 @@ function closeSaldi() {
 // Vista corrente della pagina saldi: 'cards' (una scheda per telefono) o
 // 'matrix' (foglio bookmaker x telefono). Persistita in localStorage.
 let _saldiView = localStorage.getItem("saldiView") || "cards";
+// Ordinamento saldi scelto dall'utente (default alfabetico): vale per
+// righe book, colonne/colonne device e card.
+let _saldiSort = localStorage.getItem("saldiSort") || "az";
 
 function _saldiAge(rec, now) {
     let stale = false, ageTxt = "";
@@ -4672,7 +4675,12 @@ function _deviceBooks() {
         if (!rows.length && b.saldo) {
             rows.push({ book: b.bookmaker || "ALTRO", rec: b });
         }
-        rows.sort((x, y) => x.book.localeCompare(y.book, "it"));
+        rows.sort((x, y) =>
+            _saldiSort === "tot"
+                ? (parseFloat(y.rec.saldo) || 0) - (parseFloat(x.rec.saldo) || 0)
+                : _saldiSort === "recent"
+                    ? String(y.rec.timestamp || "").localeCompare(String(x.rec.timestamp || ""))
+                    : x.book.localeCompare(y.book, "it"));
         out[serial] = rows;
     }
     return out;
@@ -4689,13 +4697,23 @@ function _renderSaldiCards(wrap) {
     const devices = state.devices.slice();
     const devName = d => d.display_name || d.serial;
 
-    // Ordina le card per totale decrescente: in cima chi ha piu' fondi.
+    // Ordinamento card scelto dall'utente: alfabetico (default),
+    // per totale decrescente o per ultima lettura.
     const totals = {};
+    const lastTs = {};
     for (const d of devices) {
-        totals[d.serial] = (devBooks[d.serial] || []).reduce(
+        const devRows = devBooks[d.serial] || [];
+        totals[d.serial] = devRows.reduce(
             (acc, r) => acc + (parseFloat(r.rec.saldo) || 0), 0);
+        lastTs[d.serial] = devRows.reduce(
+            (m, r) => (r.rec.timestamp || "") > m ? r.rec.timestamp : m, "");
     }
-    devices.sort((a, b) => (totals[b.serial] || 0) - (totals[a.serial] || 0));
+    devices.sort((a, b) =>
+        _saldiSort === "tot"
+            ? (totals[b.serial] || 0) - (totals[a.serial] || 0)
+            : _saldiSort === "recent"
+                ? lastTs[b.serial].localeCompare(lastTs[a.serial])
+                : devName(a).localeCompare(devName(b), "it"));
 
     const cards = [];
     for (const d of devices) {
@@ -4779,6 +4797,25 @@ function _renderSaldiMatrix(wrap) {
     if (onlyFilled) {
         visBooks = visBooks.filter(n => visDevs.some(d => (cells[n] || {})[d.serial]));
         visDevs = visDevs.filter(d => visBooks.some(n => (cells[n] || {})[d.serial]));
+    }
+
+    // Ordinamento scelto dall'utente (default alfabetico): righe book e
+    // colonne telefono seguono la stessa regola.
+    const cellSaldo = (n, d) => parseFloat(((cells[n] || {})[d.serial] || {}).saldo) || 0;
+    const cellTs = (n, d) => ((cells[n] || {})[d.serial] || {}).timestamp || "";
+    const rowTotal = n => visDevs.reduce((acc, d) => acc + cellSaldo(n, d), 0);
+    const colTotal = d => visBooks.reduce((acc, n) => acc + cellSaldo(n, d), 0);
+    const rowLatest = n => visDevs.reduce((m, d) => cellTs(n, d) > m ? cellTs(n, d) : m, "");
+    const colLatest = d => visBooks.reduce((m, n) => cellTs(n, d) > m ? cellTs(n, d) : m, "");
+    if (_saldiSort === "tot") {
+        visBooks.sort((a, b) => rowTotal(b) - rowTotal(a));
+        visDevs.sort((a, b) => colTotal(b) - colTotal(a));
+    } else if (_saldiSort === "recent") {
+        visBooks.sort((a, b) => rowLatest(b).localeCompare(rowLatest(a)));
+        visDevs.sort((a, b) => colLatest(b).localeCompare(colLatest(a)));
+    } else {
+        visBooks.sort((a, b) => a.localeCompare(b, "it"));
+        visDevs.sort((a, b) => devName(a).localeCompare(devName(b), "it"));
     }
 
     const now = Date.now();
@@ -4990,6 +5027,16 @@ function initBalances() {
             renderBalances();
         });
     });
+    // Ordinamento schede/matrice — anche questa scelta resta salvata.
+    const sortSel = document.getElementById("saldiSort");
+    if (sortSel) {
+        sortSel.value = _saldiSort;
+        sortSel.addEventListener("change", () => {
+            _saldiSort = sortSel.value;
+            localStorage.setItem("saldiSort", _saldiSort);
+            renderBalances();
+        });
+    }
     if (btnClose) btnClose.addEventListener("click", closeSaldi);
     if (btnCsv) btnCsv.addEventListener("click", downloadBalancesCsv);
     if (search) search.addEventListener("input", renderBalances);
