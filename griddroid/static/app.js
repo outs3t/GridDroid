@@ -4185,7 +4185,7 @@ function initBookmakers() {
                 ? `<button class="bookmaker-delete" title="Elimina" data-name="${escapeHtml(b.name)}" data-url="${escapeHtml(b.url)}">×</button>`
                 : "";
             row.innerHTML = `
-                <span class="bookmaker-name">${escapeHtml(b.name)}</span>
+                <span class="bookmaker-name">${_bookIconHtml(b.name)}${escapeHtml(b.name)}</span>
                 <div class="bookmaker-actions">
                     <button class="bookmaker-copy" title="Copia URL" data-url="${escapeHtml(b.url)}">⧉</button>
                     ${deleteBtn}
@@ -4633,6 +4633,31 @@ function _saldiAge(rec, now) {
     return { stale, ageTxt };
 }
 
+// Nome bookmaker -> hostname del sito (da default + custom): serve per
+// la favicon accanto al nome nelle card e nella matrice.
+function _bookHost(name) {
+    const norm = _normBookKey(name);
+    for (const b of [...BOOKMAKER_DEFAULTS, ..._customBookmakers]) {
+        if (_normBookKey(b.name) === norm) {
+            try { return new URL(b.url).hostname.replace(/^www\./, ""); }
+            catch { return ""; }
+        }
+    }
+    return "";
+}
+
+// Icona del sito: favicon Google; se non carica (offline/sito senza
+// icona) resta la lettera iniziale su sfondo scuro sotto l'img.
+function _bookIconHtml(name) {
+    const letter = escapeHtml(((name || "?").trim().charAt(0) || "?").toUpperCase());
+    const host = _bookHost(name);
+    const img = host
+        ? `<img src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64" ` +
+          `alt="" loading="lazy" onerror="this.remove()">`
+        : "";
+    return `<span class="saldi-fav">${img}${letter}</span>`;
+}
+
 // serial -> [{book, rec}] — i conti letti su quel device, in ordine
 // alfabetico per nome bookmaker.
 function _deviceBooks() {
@@ -4703,10 +4728,11 @@ function _renderSaldiCards(wrap) {
             const tip = [r.rec.username, r.rec.timestamp].filter(Boolean).join(" · ");
             const val = isNaN(v) ? escapeHtml(r.rec.saldo) : _fmtEuro(v);
             const zero = !isNaN(v) && v === 0;
-            return `<div class="saldi-card-row${stale ? " stale" : ""}${zero ? " zero" : ""}" ` +
+            const hit = q && r.book.toLowerCase().includes(q);
+            return `<div class="saldi-card-row${stale ? " stale" : ""}${zero ? " zero" : ""}${hit ? " hit" : ""}" ` +
                 `data-serial="${escapeHtml(d.serial)}" data-book="${escapeHtml(r.book)}" ` +
                 `title="${escapeHtml(tip)}">` +
-                `<span class="saldi-card-book">${escapeHtml(r.book)}</span>` +
+                `<span class="saldi-card-book">${_bookIconHtml(r.book)}${escapeHtml(r.book)}</span>` +
                 `<span class="saldi-card-val editable" data-saldo="${escapeHtml(r.rec.saldo)}" ` +
                 `title="Click per correggere il saldo a mano">` +
                 `<span class="saldi-num">${val}</span>` +
@@ -4769,8 +4795,11 @@ function _renderSaldiMatrix(wrap) {
             `<span class="saldi-val">${val}</span>${user}${age}</td>`;
     };
 
-    const headCells = visDevs.map(d =>
-        `<th class="saldi-col" title="${escapeHtml(d.serial)}">${escapeHtml(devName(d))}</th>`).join("");
+    const headCells = visDevs.map(d => {
+        const hit = devHit && devName(d).toLowerCase().includes(q);
+        return `<th class="saldi-col${hit ? " hit" : ""}" ` +
+            `title="${escapeHtml(d.serial)}">${escapeHtml(devName(d))}</th>`;
+    }).join("");
     const bodyRows = visBooks.map(n => {
         const row = cells[n] || {};
         const tds = visDevs.map(d => cellHtml(row[d.serial])).join("");
@@ -4780,7 +4809,9 @@ function _renderSaldiMatrix(wrap) {
             const v = r ? parseFloat(r.saldo) : NaN;
             if (!isNaN(v)) { tot += v; has = true; }
         });
-        return `<tr><th class="saldi-row">${escapeHtml(n)}</th>${tds}` +
+        const hit = bookHit && n.toLowerCase().includes(q);
+        return `<tr${hit ? ' class="hit"' : ""}><th class="saldi-row">` +
+            `${_bookIconHtml(n)}${escapeHtml(n)}</th>${tds}` +
             `<td class="saldi-cell tot">${has ? _fmtEuro(tot) : ""}</td></tr>`;
     }).join("");
 
@@ -4811,6 +4842,9 @@ function _renderSaldiMatrix(wrap) {
                 <td class="saldi-cell tot grand">${any ? _fmtEuro(grand) : ""}</td>
             </tr></tfoot>
         </table>`;
+        // Con ricerca attiva porta il risultato in primo piano.
+        const firstHit = q && wrap.querySelector(".hit");
+        if (firstHit) firstHit.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
     return grand;
 }

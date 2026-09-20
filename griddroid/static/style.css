@@ -2588,7 +2588,44 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
 }
+/* Favicon del sito: img sopra, lettera di riserva sotto */
+.saldi-fav {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    flex: none;
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--bg-3);
+    color: var(--text-1);
+    font-size: 9px;
+    font-weight: 700;
+}
+.saldi-fav img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #fff;
+}
+.saldi-row .saldi-fav { vertical-align: -3px; margin-right: 5px; }
+.bookmaker-name .saldi-fav { vertical-align: -3px; margin-right: 5px; }
+/* Risultato della ricerca saldi */
+.saldi-card-row.hit { background: rgba(212, 175, 53, 0.10); }
+.saldi-table tr.hit .saldi-row {
+    color: var(--accent);
+    background: rgba(212, 175, 53, 0.08);
+}
+.saldi-table th.saldi-col.hit { color: var(--accent); }
 .saldi-card-val {
     color: var(--text-0);
     font-weight: 600;

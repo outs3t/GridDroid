@@ -367,6 +367,9 @@ class AdbManager:
         # Timestamp ultima auto-lettura per device (throttle: non ripetere
         # prima di 60s per non saturare adb)
         self._last_balance_read: Dict[str, float] = {}
+        # serial -> ultima lettura aveva una tab Chrome visibile su un
+        # book: device in uso dall'utente, mantiene la cadenza piena.
+        self._bal_visible: Dict[str, bool] = {}
         # Cache saldi: serial -> {data, timestamp}; TTL 300s
         self._balance_cache: Dict[str, dict] = {}
         self._balance_cache_ttl: float = 300.0
@@ -586,6 +589,7 @@ class AdbManager:
         self._missing.pop(serial, None)
         self._last_reconnect.pop(serial, None)
         self._last_balance_read.pop(serial, None)
+        self._bal_visible.pop(serial, None)
         self._balance_cache.pop(serial, None)
         _SERIAL_PORT.pop(serial, None)
         save_known(self._known)
@@ -889,7 +893,12 @@ class AdbManager:
         # letture restano allineate dopo ogni raffica e la congestione si
         # ripete a cadenza fissa. hash() del seriale e' stabile in processo.
         jitter = (hash(serial) % 10) * 0.5
-        if now - self._last_balance_read.get(serial, 0.0) < 30.0 + jitter:
+        # Priorita' a chi lavora: se l'ultima lettura vedeva una tab
+        # visibile su un book il device resta a 30s; i device lasciati
+        # su altre app/schermo spento scendono a ~75s, cosi' il
+        # semaforo e i forward servono prima i telefoni in uso.
+        period = 30.0 if self._bal_visible.get(serial, True) else 75.0
+        if now - self._last_balance_read.get(serial, 0.0) < period + jitter:
             return
         # Una task per device alla volta
         existing = self._balance_tasks.get(serial)
@@ -917,6 +926,13 @@ class AdbManager:
         quelli di OGNI tab su un bookmaker noto (un telefono con piu'
         book aperti aggiorna tutta la sua riga della matrice).
         Ritorna quanti record sono stati scritti."""
+        self._bal_visible[serial] = bool(cdp.get("_visible"))
+        prev = self._balances.get(serial) or {}
+        prev_sig = (prev.get("saldo"), prev.get("bookmaker"))
+        prev_books = {
+            k: (v or {}).get("saldo")
+            for k, v in (prev.get("books") or {}).items()
+        }
         written = 0
         if cdp.get("saldo"):
             self.record_balance(
@@ -936,12 +952,21 @@ class AdbManager:
             )
             written += 1
         if written:
-            logs.info(
-                f"Saldo auto: {cdp.get('saldo') or '-'} "
-                f"({cdp.get('bookmaker', '?')}) +{written - 1} book",
-                serial=serial,
-                throttle_s=30,
-            )
+            cur = self._balances.get(serial) or {}
+            cur_books = {
+                k: (v or {}).get("saldo")
+                for k, v in (cur.get("books") or {}).items()
+            }
+            # Log solo se e' cambiato qualcosa (saldo primario o un book):
+            # riletture identiche non devono riempire il pannello.
+            if prev_sig != (cur.get("saldo"), cur.get("bookmaker")) or \
+                    prev_books != cur_books:
+                logs.info(
+                    f"Saldo aggiornato: {cur.get('saldo') or '-'} "
+                    f"({cur.get('bookmaker', '?')}) +{written - 1} book",
+                    serial=serial,
+                    throttle_s=10,
+                )
         return written
 
     async def read_account_info(
@@ -1813,10 +1838,15 @@ class AdbManager:
                     })
                 if not candidates:
                     return empty
+                # Tab visibile su un sito noto (anche solo la pagina di
+                # login): l'utente ci sta lavorando — lo segnaliamo per
+                # tenere la cadenza di lettura piena su quel device.
+                vis_seen = any(c["_vis"] for c in candidates)
                 # Le pagine non loggate non possono mostrare un saldo reale:
                 # fuori dalla scelta e dai saldi per-book.
                 valid = [c for c in candidates if not c["_logged_out"]]
                 if not valid:
+                    empty["_visible"] = vis_seen
                     return empty
                 best = (
                     next((c for c in valid if c["_vis"] and c["saldo"]), None)
@@ -1826,6 +1856,7 @@ class AdbManager:
                 )
                 best.pop("_vis", None)
                 best.pop("_logged_out", None)
+                best["_visible"] = vis_seen
                 # Ogni tab su un bookmaker noto aggiorna la sua cella della
                 # matrice: non solo la tab visibile. Senza doppioni per book.
                 books = []
@@ -1843,7 +1874,13 @@ class AdbManager:
                 return best
 
             result = await asyncio.wait_for(_cdp(), timeout=12.0)
-            if result.get("saldo"):
+            # Nel log solo i cambiamenti: la rilettura identica dello
+            # stesso saldo ogni 30s e' rumore che nasconde i valori nuovi.
+            prev = self._balances.get(serial) or {}
+            if result.get("saldo") and (
+                result["saldo"] != prev.get("saldo")
+                or result.get("bookmaker", "") != prev.get("bookmaker", "")
+            ):
                 logs.info(
                     f"Saldo via CDP/DOM: {result['saldo']} ({result['bookmaker']})",
                     serial=serial,
