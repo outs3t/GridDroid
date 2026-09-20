@@ -479,6 +479,74 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         """Progresso della lettura saldi in corso (per la barra in UI)."""
         return dict(_balance_progress)
 
+    @app.post("/api/balances/manual")
+    async def manual_balance(request: Request):
+        """Correzione manuale di un saldo dalla pagina Saldi.
+
+        Body: {serial, bookmaker, saldo}. Il valore e' normalizzato come
+        le letture CDP ('1.234,56' -> '1234.56'), salvato nello stato e
+        accodato allo storico CSV; il ledger viene rigenerato dallo
+        stato completo cosi' l'export riflette subito la correzione.
+        """
+        from .config import (
+            append_balances, write_ledger_csv,
+        )
+        from .adb_manager import AdbManager
+
+        body = await request.json()
+        serial = str(body.get("serial") or "").strip()
+        bookmaker = str(body.get("bookmaker") or "").strip()[:80]
+        raw = str(body.get("saldo") or "").strip()
+        if not serial:
+            return JSONResponse({"ok": False, "error": "serial mancante"}, status_code=400)
+        saldo = AdbManager._normalize_amount(raw)
+        if not saldo:
+            return JSONResponse({"ok": False, "error": f"importo non valido: {raw}"}, status_code=400)
+
+        ts = datetime.now().isoformat(timespec="seconds")
+        prev = adb.balances.get(serial) or {}
+        username = ""
+        if bookmaker and (prev.get("books") or {}).get(bookmaker):
+            username = prev["books"][bookmaker].get("username", "")
+        elif not bookmaker:
+            username = prev.get("username", "")
+        nome = prev.get("nome") or serial
+
+        try:
+            adb.record_balance(
+                serial, saldo, bookmaker=bookmaker,
+                username=username, nome=nome, timestamp=ts,
+            )
+            append_balances([{
+                "timestamp": ts, "serial": serial, "nome": nome,
+                "bookmaker": bookmaker, "username": username, "saldo": saldo,
+            }])
+            # Ledger rigenerato dallo stato intero: la correzione entra
+            # subito nell'export senza aspettare la prossima lettura.
+            rows = []
+            for s, e in adb.balances.items():
+                n = e.get("nome") or s
+                books = e.get("books") or {}
+                if books:
+                    for bk, rec in books.items():
+                        if rec.get("saldo"):
+                            rows.append({"serial": s, "nome": n, "bookmaker": bk,
+                                         "saldo": rec["saldo"]})
+                elif e.get("saldo"):
+                    rows.append({"serial": s, "nome": n,
+                                 "bookmaker": e.get("bookmaker", ""),
+                                 "saldo": e["saldo"]})
+            write_ledger_csv(rows)
+        except Exception as exc:
+            logs.warn(f"Correzione manuale saldo fallita: {exc}", throttle_s=30)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+        logs.info(
+            f"Saldo corretto a mano: {saldo} ({bookmaker or 'principale'})",
+            serial=serial,
+        )
+        return {"ok": True, "saldo": saldo, "timestamp": ts}
+
     @app.get("/api/balances/csv")
     async def download_balances():
         """Scarica il CSV in formato ledger (nickname,bookmaker,saldo)."""

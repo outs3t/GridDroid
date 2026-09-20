@@ -4708,9 +4708,12 @@ function _renderSaldiCards(wrap) {
             const val = isNaN(v) ? escapeHtml(r.rec.saldo) : _fmtEuro(v);
             const zero = !isNaN(v) && v === 0;
             return `<div class="saldi-card-row${stale ? " stale" : ""}${zero ? " zero" : ""}" ` +
+                `data-serial="${escapeHtml(d.serial)}" data-book="${escapeHtml(r.book)}" ` +
                 `title="${escapeHtml(tip)}">` +
                 `<span class="saldi-card-book">${escapeHtml(r.book)}</span>` +
-                `<span class="saldi-card-val">${val}` +
+                `<span class="saldi-card-val editable" data-saldo="${escapeHtml(r.rec.saldo)}" ` +
+                `title="Click per correggere il saldo a mano">` +
+                `<span class="saldi-num">${val}</span>` +
                 `${_saldiDelta(r.rec)}` +
                 (ageTxt ? `<span class="saldi-age">${ageTxt}</span>` : "") +
                 `</span></div>`;
@@ -4863,6 +4866,60 @@ function renderBalances() {
     }
 }
 
+// Correzione manuale: click sul valore di una riga -> input inline.
+// Invio/blur salva via POST /api/balances/manual, Esc annulla.
+function _saldiEditStart(valEl) {
+    const row = valEl.closest(".saldi-card-row");
+    const serial = row?.dataset.serial, book = row?.dataset.book;
+    if (!serial || !book || valEl.querySelector("input")) return;
+    const numEl = valEl.querySelector(".saldi-num");
+    if (!numEl) return;
+    const raw = valEl.dataset.saldo || "";
+    const input = document.createElement("input");
+    input.className = "saldi-edit";
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.value = raw;
+    numEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const cancel = () => { if (!done) { done = true; renderBalances(); } };
+    input.addEventListener("keydown", e => {
+        if (e.key === "Escape") { e.preventDefault(); cancel(); }
+        if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    });
+    input.addEventListener("click", e => e.stopPropagation());
+    input.addEventListener("blur", async () => {
+        if (done) return;
+        done = true;
+        const v = input.value.trim();
+        if (!v || v === raw) { renderBalances(); return; }
+        try {
+            const res = await fetch("/api/balances/manual", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ serial, bookmaker: book, saldo: v }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                toast(data.error || "Correzione non riuscita", "error");
+            } else {
+                const rec = ((_balancesCache[serial] || {}).books || {})[book];
+                if (rec) {
+                    rec.saldo = data.saldo;
+                    rec.timestamp = data.timestamp;
+                    rec.diff = null;
+                }
+                toast(`Saldo ${book} corretto: € ${data.saldo}`, "ok");
+            }
+        } catch {
+            toast("Correzione non riuscita", "error");
+        }
+        renderBalances();
+    });
+}
+
 function initBalances() {
     const table = document.getElementById("balancesTable");
     if (!table) return;
@@ -4901,6 +4958,14 @@ function initBalances() {
     if (btnCsv) btnCsv.addEventListener("click", downloadBalancesCsv);
     if (search) search.addEventListener("input", renderBalances);
     if (onlyFilled) onlyFilled.addEventListener("change", renderBalances);
+    // Correzione manuale: click sul valore dentro una card.
+    const cardsEl = document.getElementById("saldiCards");
+    if (cardsEl) {
+        cardsEl.addEventListener("click", e => {
+            const valEl = e.target.closest(".saldi-card-val.editable");
+            if (valEl) _saldiEditStart(valEl);
+        });
+    }
     if (btnRefresh) btnRefresh.addEventListener("click", fetchBalances);
     document.addEventListener("keydown", e => { if (e.key === "Escape") closeSaldi(); });
     // Auto-refresh: ogni 10s la matrice si aggiorna coi saldi letti in
