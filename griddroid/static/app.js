@@ -3914,6 +3914,48 @@ async function openBookmaker(url, name) {
     }
 }
 
+// App apribili sui device dal dock "App": lista fissa, estendibile.
+// 'pkgs' = candidati package name (varianti regionali della stessa
+// app): il comando shell lancia il primo installato sul device.
+const APPS = [
+    {
+        name: "PokerStars",
+        icon: "♠",
+        pkgs: [
+            "com.pyrsoftware.pokerstars.eu",
+            "com.pyrsoftware.pokerstars.net",
+            "com.pokerstars.it.poker",
+        ],
+    },
+    {
+        name: "PayPal",
+        icon: "🅿",
+        pkgs: ["com.paypal.android.p2pmobile"],
+    },
+];
+
+function initApps() {
+    const list = document.getElementById("appsList");
+    if (!list) return;
+    list.innerHTML = "";
+    for (const app of APPS) {
+        const btn = document.createElement("button");
+        btn.className = "app-launch-btn";
+        btn.innerHTML =
+            `<span class="app-launch-icon">${app.icon}</span>` +
+            `<span>${escapeHtml(app.name)}</span>`;
+        btn.addEventListener("click", () => {
+            // pm path sul package: se non esiste passa al candidato
+            // successivo; monkey lancia l'activity di default.
+            const chain = app.pkgs.join(" ");
+            const cmd = `for p in ${chain}; do pm path $p >/dev/null 2>&1 && ` +
+                `{ monkey -p $p -c android.intent.category.LAUNCHER 1; break; }; done`;
+            sendInputCommand(cmd, `App ${app.name}`);
+        });
+        list.appendChild(btn);
+    }
+}
+
 function initMacro() {
     const btnRecord = document.getElementById("btnMacroRecord");
     const btnStop = document.getElementById("btnMacroStop");
@@ -5727,6 +5769,7 @@ document.addEventListener("DOMContentLoaded", () => {
         initZoomControls();
         initMacro();
         initBookmakers();
+        initApps();
         initBalances();
         initLedgerSync();
         initSettings();

@@ -60,7 +60,7 @@
     --dur-slow: 0.40s;
 
     --sidebar-w: 360px;
-    --dock-w: 56px;
+    --dock-w: 76px;
     --header-h: 48px;
     --logbar-h: 32px;
 }
@@ -339,7 +339,7 @@ body::before {
     flex: 1;
     overflow-y: auto;
     padding: 16px;
-    padding-right: 72px;
+    padding-right: 92px;
     background-color: #090a0c;
     background-image:
         linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
@@ -1988,8 +1988,8 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
 
 .dock-item {
     position: relative;
-    width: 44px;
-    min-height: 44px;
+    width: 60px;
+    min-height: 54px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -2018,15 +2018,15 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
 }
 
 .dock-icon {
-    font-size: 18px;
+    font-size: 20px;
     line-height: 1;
     filter: drop-shadow(0 1px 1px rgba(0,0,0,0.4));
 }
 
 .dock-label {
-    font-size: 8px;
+    font-size: 10px;
     font-weight: 600;
-    margin-top: 2px;
+    margin-top: 3px;
     text-transform: uppercase;
     letter-spacing: 0.02em;
 }
@@ -2344,10 +2344,37 @@ textarea { resize: vertical; min-height: 70px; font-family: 'Consolas', monospac
 }
 
 @media (max-width: 900px) {
-    .right-dock { width: 48px; }
+    :root { --dock-w: 48px; }
     .flyout { width: 280px; right: var(--dock-w); }
     .grid-container { padding-right: 64px; }
 }
+
+/* Dock App: lista di app lanciabili sui device */
+.apps-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.app-launch-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-2);
+    color: var(--text-0);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--dur-fast) var(--ease);
+    text-align: left;
+}
+.app-launch-btn:hover {
+    border-color: var(--accent);
+    background: var(--bg-3);
+}
+.app-launch-icon { font-size: 16px; }
 
 /* ===== SALDI: vista a schermo, matrice book x telefono ===== */
 .saldi-overlay {

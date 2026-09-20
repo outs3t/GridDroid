@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GridDroid &mdash; Farm Manager</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-<link rel="stylesheet" href="/static/style.css?v=66">
+<link rel="stylesheet" href="/static/style.css?v=67">
     <style>
         .update-modal { position: fixed; inset: 0; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
         .update-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.75); }
@@ -61,7 +61,6 @@
             <button class="btn btn-accent has-badge" id="btnShowAll" title="Mostra di nuovo tutti i dispositivi" style="display:none">
                 Mostra tutti <span class="badge" id="showAllBadge">0</span>
             </button>
-            <button class="btn" id="btnReadBalances" title="Leggi il saldo a schermo di ogni device e salva in CSV">Leggi saldi</button>
             <button class="btn btn-accent" id="btnSaldi" title="Apri la matrice dei saldi: bookmaker x telefono">📊 Saldi</button>
             <button class="btn" id="btnCheckUpdate" title="Controlla aggiornamenti">⬇ Aggiorna</button>
             <div class="zoom-controls">
@@ -312,10 +311,19 @@
             </div>
         </div>
 
-        <!-- Saldi: apre la vista a schermo (matrice), non un flyout -->
-        <div class="dock-item" id="dockSaldi" tabindex="0" role="button" title="Saldi">
-            <span class="dock-icon">💰</span>
-            <span class="dock-label">Saldi</span>
+        <!-- App: lancia un'app sui device selezionati -->
+        <div class="dock-item" data-target="flyoutApps" tabindex="0" role="button" title="App">
+            <span class="dock-icon">📱</span>
+            <span class="dock-label">App</span>
+            <div class="flyout" id="flyoutApps">
+                <div class="flyout-header"><span>Apri app</span><button class="btn-icon flyout-close" type="button" title="Chiudi">✕</button></div>
+                <div class="flyout-body">
+                    <div class="sidebar-section active">
+                        <h4>Apri sui device selezionati</h4>
+                        <div id="appsList" class="apps-list"></div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Gruppi -->
@@ -538,7 +546,7 @@
     </div>
 
     <script src="/static/jmuxer.min.js?v=87"></script>
-    <script src="/static/app.js?v=138"></script>
+    <script src="/static/app.js?v=139"></script>
     <script>
     (async () => {
         try {

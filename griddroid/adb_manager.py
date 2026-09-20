@@ -983,7 +983,8 @@ class AdbManager:
             self._record_cdp(serial, cdp)
         except Exception as exc:
             self._bal_backoff[serial] = time.time() + 60.0
-            logs.warn(f"Auto-lettura saldo fallita: {exc}", serial=serial, throttle_s=60)
+            msg = str(exc) or type(exc).__name__
+            logs.warn(f"Auto-lettura saldo fallita: {msg}", serial=serial, throttle_s=300)
 
     def _record_cdp(self, serial: str, cdp: dict) -> int:
         """Persiste il risultato CDP: il saldo della tab migliore piu'
@@ -1581,13 +1582,33 @@ class AdbManager:
                 f"Connection: close\r\n\r\n".encode()
             )
             await writer.drain()
-            raw = await asyncio.wait_for(reader.read(65536), timeout=3.0)
+            # /json con decine di tab supera i 64KB: leggo fino a chiusura
+            # o fine Content-Length, tetto 2MB — una sola read() arrivava
+            # troncata e json.loads falliva con 'Unterminated string'.
+            raw = b""
+            total = time.monotonic() + 5.0
+            while len(raw) < 2 * 1024 * 1024 and time.monotonic() < total:
+                try:
+                    chunk = await asyncio.wait_for(reader.read(65536), timeout=2.0)
+                except asyncio.TimeoutError:
+                    break
+                if not chunk:
+                    break
+                raw += chunk
+                hdr, sep, body = raw.partition(b"\r\n\r\n")
+                if sep:
+                    m = re.search(rb"(?i)content-length:\s*(\d+)", hdr)
+                    if m and len(body) >= int(m.group(1)):
+                        break
         finally:
             writer.close()
         body = raw.split(b"\r\n\r\n", 1)
         if len(body) < 2:
             return port, []
-        targets = json.loads(body[1].decode("utf-8", errors="replace"))
+        try:
+            targets = json.loads(body[1].decode("utf-8", errors="replace"))
+        except Exception:
+            return port, []
         # TUTTE le pagine web reali (skip chrome:// e about:blank):
         # con piu' tab aperte il primo target non e' quello visibile
         # — leggere la tab sbagliata attribuiva saldi al book di
