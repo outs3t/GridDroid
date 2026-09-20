@@ -370,6 +370,15 @@ class AdbManager:
         # serial -> ultima lettura aveva una tab Chrome visibile su un
         # book: device in uso dall'utente, mantiene la cadenza piena.
         self._bal_visible: Dict[str, bool] = {}
+        # serial -> frozenset (url, titolo) delle tab Chrome all'ultimo
+        # scan leggero: la lettura DOM vera parte solo se la firma
+        # cambia (navigazione/login) o se il dato e' vecchio.
+        self._bal_pages_sig: Dict[str, frozenset] = {}
+        # serial -> ts: ultima lettura DOM vera (eval JS nelle pagine).
+        self._last_balance_eval: Dict[str, float] = {}
+        # serial -> ts fino a cui saltare gli scan (Chrome spento /
+        # forward morto): evita una raffica di adb forward inutili.
+        self._bal_backoff: Dict[str, float] = {}
         # Cache saldi: serial -> {data, timestamp}; TTL 300s
         self._balance_cache: Dict[str, dict] = {}
         self._balance_cache_ttl: float = 300.0
@@ -590,6 +599,9 @@ class AdbManager:
         self._last_reconnect.pop(serial, None)
         self._last_balance_read.pop(serial, None)
         self._bal_visible.pop(serial, None)
+        self._bal_pages_sig.pop(serial, None)
+        self._bal_backoff.pop(serial, None)
+        self._last_balance_eval.pop(serial, None)
         self._balance_cache.pop(serial, None)
         _SERIAL_PORT.pop(serial, None)
         save_known(self._known)
@@ -880,8 +892,10 @@ class AdbManager:
         saldo non viene letto in automatico — l'utente puo' sempre
         forzarlo col bottone 'Leggi saldi' (che usa anche uiautomator).
 
-        Throttle 60s per device: non ripete la lettura se e' appena stata
-        fatta, per non saturare adb con forward ripetuti.
+        Scan leggero ogni ~22s per device: dentro la task si fa solo
+        il GET /json (lista tab, costo quasi nullo) e l'eval DOM parte
+        solo se le tab sono cambiate — navigazione/login rilevato e
+        il saldo viene riletto subito — o se il dato e' scaduto.
         """
         if not self._running:
             return
@@ -889,16 +903,15 @@ class AdbManager:
         if not dev or dev.status != DeviceStatus.ONLINE:
             return
         now = time.time()
+        # Chrome spento o forward morto: pausa piu' lunga, niente spam
+        # di adb forward su device che non hanno pagine da leggere.
+        if now < self._bal_backoff.get(serial, 0.0):
+            return
         # Jitter deterministico per device (0-4.5s): senza fase propria le
         # letture restano allineate dopo ogni raffica e la congestione si
         # ripete a cadenza fissa. hash() del seriale e' stabile in processo.
         jitter = (hash(serial) % 10) * 0.5
-        # Priorita' a chi lavora: se l'ultima lettura vedeva una tab
-        # visibile su un book il device resta a 30s; i device lasciati
-        # su altre app/schermo spento scendono a ~75s, cosi' il
-        # semaforo e i forward servono prima i telefoni in uso.
-        period = 30.0 if self._bal_visible.get(serial, True) else 75.0
-        if now - self._last_balance_read.get(serial, 0.0) < period + jitter:
+        if now - self._last_balance_read.get(serial, 0.0) < 22.0 + jitter:
             return
         # Una task per device alla volta
         existing = self._balance_tasks.get(serial)
@@ -909,16 +922,67 @@ class AdbManager:
             self._auto_read_balance(serial)
         )
 
-    async def _auto_read_balance(self, serial: str) -> None:
-        """Lettura saldo background: CDP-only, non blocca il device."""
+    async def _cdp_reset_fwd(self, serial: str, port: int) -> None:
+        """Forward CDP morto: dimenticalo e rimuovilo dal device."""
+        self._cdp_fwd.pop(serial, None)
         try:
-            # Solo CDP: niente uiautomator (congela la UI). Se Chrome non
-            # c'e', il saldo non si aggiorna in automatico — ma il telefono
-            # resta usabile dall'utente, che e' il requisito.
+            await self.adb_command(
+                "forward", "--remove", f"tcp:{port}",
+                serial=serial, timeout=5.0,
+            )
+        except Exception:
+            pass
+
+    async def _auto_read_balance(self, serial: str) -> None:
+        """Lettura saldo background: CDP-only, non blocca il device.
+
+        Due fasi: (1) scan leggero = GET /json sul forward persistente,
+        solo la lista tab — nessun JS viene eseguito nelle pagine;
+        (2) lettura vera = eval DOM per tab, fatta SOLO se la firma
+        delle tab e' cambiata (l'utente ha navigato/fatto login ->
+        il saldo si aggiorna subito) o se il dato e' scaduto.
+        """
+        port = 0
+        try:
             async with self._balance_sem:
-                cdp = await self._saldo_via_cdp(serial)
+                try:
+                    port, pages = await self._cdp_pages(serial)
+                except Exception:
+                    port = self._cdp_fwd.get(serial, 0)
+                    if port:
+                        await self._cdp_reset_fwd(serial, port)
+                    raise
+                if not port:
+                    # Chrome non in esecuzione: backoff lungo, altrimenti
+                    # ogni 22s rifaremmo un adb forward inutile.
+                    self._bal_backoff[serial] = time.time() + 90.0
+                    self._bal_visible[serial] = False
+                    self._bal_pages_sig.pop(serial, None)
+                    return
+                # Firma tab: url + titolo. Il login cambia sempre una
+                # delle due (redirect alla dashboard o titolo nuovo) ->
+                # "changed" = si fionda sulla lettura vera subito.
+                sig = frozenset(
+                    (t.get("url", ""), t.get("title", "")) for t in pages
+                )
+                changed = sig != self._bal_pages_sig.get(serial)
+                self._bal_pages_sig[serial] = sig
+                # Scadenza lettura vera: 45s se l'utente sta su un book
+                # (tab visibile vista all'ultima lettura), 150s altrove.
+                full_period = (
+                    45.0 if self._bal_visible.get(serial) else 150.0
+                )
+                stale = (
+                    time.time() - self._last_balance_eval.get(serial, 0.0)
+                    > full_period
+                )
+                if not changed and not stale:
+                    return
+                self._last_balance_eval[serial] = time.time()
+                cdp = await self._saldo_via_cdp(serial, port=port, pages=pages)
             self._record_cdp(serial, cdp)
         except Exception as exc:
+            self._bal_backoff[serial] = time.time() + 60.0
             logs.warn(f"Auto-lettura saldo fallita: {exc}", serial=serial, throttle_s=60)
 
     def _record_cdp(self, serial: str, cdp: dict) -> int:
@@ -1474,78 +1538,94 @@ class AdbManager:
 })()
 """
 
-    async def _saldo_via_cdp(self, serial: str) -> dict:
+    async def _cdp_pages(self, serial: str) -> Tuple[int, list]:
+        """Forward CDP persistente + GET /json: (porta, pagine http reali).
+
+        Scan leggero: una HTTP su localhost, nessun eval JS nelle
+        pagine. Ritorna (0, []) se Chrome non e' in esecuzione o il
+        forward non si crea.
+        """
+        port = self._cdp_fwd.get(serial, 0)
+        if not port:
+            for _ in range(20):
+                candidate = random.randint(39300, 39900)
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.2)
+                    if s.connect_ex(("127.0.0.1", candidate)) != 0:
+                        port = candidate
+                        break
+            if not port:
+                return 0, []
+
+            rc, _, _ = await self.adb_command(
+                "forward", f"tcp:{port}",
+                "localabstract:chrome_devtools_remote",
+                serial=serial, timeout=10.0,
+            )
+            if rc != 0:
+                return 0, []
+            self._cdp_fwd[serial] = port
+
+        # Lista target: HTTP minimale su localhost (niente requests).
+        # IMPORTANTE: Host DEVE includere la porta — Chrome valida
+        # l'header e con 'Host: 127.0.0.1' nudo chiude la connessione
+        # senza rispondere (0 byte). Inoltre webSocketDebuggerUrl
+        # eredita host:porta dall'Host inviato.
+        host = f"127.0.0.1:{port}"
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", port), timeout=3.0
+        )
+        try:
+            writer.write(
+                f"GET /json HTTP/1.1\r\nHost: {host}\r\n"
+                f"Connection: close\r\n\r\n".encode()
+            )
+            await writer.drain()
+            raw = await asyncio.wait_for(reader.read(65536), timeout=3.0)
+        finally:
+            writer.close()
+        body = raw.split(b"\r\n\r\n", 1)
+        if len(body) < 2:
+            return port, []
+        targets = json.loads(body[1].decode("utf-8", errors="replace"))
+        # TUTTE le pagine web reali (skip chrome:// e about:blank):
+        # con piu' tab aperte il primo target non e' quello visibile
+        # — leggere la tab sbagliata attribuiva saldi al book di
+        # un'altra pagina. Si valuta ogni tab e si preferisce
+        # quella con visibilityState 'visible' (tab attiva).
+        pages = [
+            t for t in targets
+            if t.get("type") == "page"
+            and t.get("url", "").startswith("http")
+            and t.get("webSocketDebuggerUrl")
+        ]
+        return port, pages
+
+    async def _saldo_via_cdp(
+        self, serial: str, port: int = 0, pages: Optional[list] = None
+    ) -> dict:
         """Saldo dal DOM di Chrome via DevTools Protocol su adb forward.
 
         Chrome espone un socket abstract 'chrome_devtools_remote': con
         'adb forward' lo mappiamo su TCP locale, leggiamo i target da
         /json e valutiamo JS nella pagina attiva. Se Chrome non e' in
         esecuzione il socket non esiste e tutto fallisce in <1s.
+        port/pages gia' pronti arrivano dallo scan leggero (_cdp_pages).
         """
         empty = {"saldo": None, "bookmaker": "", "username": ""}
-        port = 0
         try:
             import websockets  # dipendenza gia' in requirements
         except Exception:
             return empty
         try:
-            # Riusa il forward persistente se esiste; altrimenti creane uno
-            # su una porta locale libera e tienilo per le prossime letture.
-            port = self._cdp_fwd.get(serial, 0)
+            if not port or pages is None:
+                port, pages = await self._cdp_pages(serial)
             if not port:
-                for _ in range(20):
-                    candidate = random.randint(39300, 39900)
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        s.settimeout(0.2)
-                        if s.connect_ex(("127.0.0.1", candidate)) != 0:
-                            port = candidate
-                            break
-                if not port:
-                    return empty
-
-                rc, _, _ = await self.adb_command(
-                    "forward", f"tcp:{port}",
-                    "localabstract:chrome_devtools_remote",
-                    serial=serial, timeout=10.0,
-                )
-                if rc != 0:
-                    return empty
-                self._cdp_fwd[serial] = port
+                return empty
 
             async def _cdp() -> dict:
-                # Lista target: HTTP minimale su localhost (niente requests).
-                # IMPORTANTE: Host DEVE includere la porta — Chrome valida
-                # l'header e con 'Host: 127.0.0.1' nudo chiude la connessione
-                # senza rispondere (0 byte). Inoltre webSocketDebuggerUrl
-                # eredita host:porta dall'Host inviato.
+                # pages gia' caricate: da qui in poi solo eval JS.
                 host = f"127.0.0.1:{port}"
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection("127.0.0.1", port), timeout=3.0
-                )
-                try:
-                    writer.write(
-                        f"GET /json HTTP/1.1\r\nHost: {host}\r\n"
-                        f"Connection: close\r\n\r\n".encode()
-                    )
-                    await writer.drain()
-                    raw = await asyncio.wait_for(reader.read(65536), timeout=3.0)
-                finally:
-                    writer.close()
-                body = raw.split(b"\r\n\r\n", 1)
-                if len(body) < 2:
-                    return empty
-                targets = json.loads(body[1].decode("utf-8", errors="replace"))
-                # TUTTE le pagine web reali (skip chrome:// e about:blank):
-                # con piu' tab aperte il primo target non e' quello visibile
-                # — leggere la tab sbagliata attribuiva saldi al book di
-                # un'altra pagina. Si valuta ogni tab e si preferisce
-                # quella con visibilityState 'visible' (tab attiva).
-                pages = [
-                    t for t in targets
-                    if t.get("type") == "page"
-                    and t.get("url", "").startswith("http")
-                    and t.get("webSocketDebuggerUrl")
-                ]
 
                 async def _browser_ws_url() -> str:
                     """WS browser-level da /json/version (Target.* vive qui)."""
@@ -1601,7 +1681,7 @@ class AdbManager:
                                     "targetInfos", []
                                 )
                                 break
-                            known = {t.get("id") for t in targets}
+                            known = {t.get("id") for t in pages}
                             for ti in tinfos:
                                 if (
                                     ti.get("type") == "page"
@@ -1891,14 +1971,7 @@ class AdbManager:
             # dimentica il forward persistente e rimuovilo — alla prossima
             # lettura ne viene creato uno pulito.
             if port:
-                self._cdp_fwd.pop(serial, None)
-                try:
-                    await self.adb_command(
-                        "forward", "--remove", f"tcp:{port}",
-                        serial=serial, timeout=5.0,
-                    )
-                except Exception:
-                    pass
+                await self._cdp_reset_fwd(serial, port)
             return empty
 
     # ------------------------------------------------------------------
