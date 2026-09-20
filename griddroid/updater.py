@@ -269,6 +269,16 @@ def schedule_install(
 ) -> bool:
     """Avvia il processo updater esterno e lo stacca dal padre."""
     system = platform.system()
+    # Ambiente pulito dalle variabili del bootloader PyInstaller: il figlio
+    # onefile eredita _PYI_APPLICATION_HOME_DIR / _PYI_PARENT_PROCESS_LEVEL
+    # (e _MEIPASS2 nelle versioni vecchie). Se le passiamo al bat, il nuovo
+    # GridDroid.exe lanciato da 'start' si crede il figlio gia' scompattato
+    # e cerca python3xx.dll nella _MEI del processo appena ucciso ->
+    # 'Failed to load Python DLL'. Aperto a mano (env pulito) funzionava.
+    env = {
+        k: v for k, v in os.environ.items()
+        if not k.startswith("_PYI_") and k != "_MEIPASS2"
+    }
     if system == "Windows":
         script = _make_windows_bat(
             installer, silent_args, restart_path, old_pid, port
@@ -285,6 +295,7 @@ def schedule_install(
             ["wscript.exe", str(vbs)],
             creationflags=0x08000000,  # CREATE_NO_WINDOW
             close_fds=True,
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -296,6 +307,7 @@ def schedule_install(
             ["nohup", str(script)],
             start_new_session=True,
             close_fds=True,
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
