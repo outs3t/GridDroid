@@ -3932,6 +3932,27 @@ const APPS = [
         icon: "🅿",
         pkgs: ["com.paypal.android.p2pmobile"],
     },
+    {
+        name: "WhatsApp",
+        icon: "💬",
+        pkgs: [
+            "com.whatsapp",
+            "com.whatsapp.w4b",
+        ],
+    },
+    {
+        name: "Telegram",
+        icon: "✈",
+        pkgs: [
+            "org.telegram.messenger",
+            "org.telegram.messenger.web",
+        ],
+    },
+    {
+        name: "Gmail",
+        icon: "✉",
+        pkgs: ["com.google.android.gm"],
+    },
 ];
 
 function initApps() {
