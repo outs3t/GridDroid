@@ -4858,7 +4858,7 @@ function renderBalances() {
     const ov = document.getElementById("saldiOverlay");
     if (ov && ov.hidden) return;
     // Editing in corso: un re-render cancellerebbe l'input mentre si scrive.
-    if (document.querySelector("#saldiCards .saldi-edit")) return;
+    if (document.querySelector("#saldiCards .saldi-edit:not([data-done])")) return;
 
     const isCards = _saldiView === "cards";
     cards.hidden = !isCards;
@@ -4914,7 +4914,12 @@ function _saldiEditStart(valEl) {
     input.focus();
     input.select();
     let done = false;
-    const cancel = () => { if (!done) { done = true; renderBalances(); } };
+    // data-done: editing concluso -> il guard di renderBalances non deve
+    // piu' proteggere questo input, altrimenti resta appeso per sempre.
+    const release = () => { input.dataset.done = "1"; };
+    const cancel = () => {
+        if (!done) { done = true; release(); renderBalances(); }
+    };
     input.addEventListener("keydown", e => {
         if (e.key === "Escape") { e.preventDefault(); cancel(); }
         if (e.key === "Enter") { e.preventDefault(); input.blur(); }
@@ -4923,6 +4928,7 @@ function _saldiEditStart(valEl) {
     input.addEventListener("blur", async () => {
         if (done) return;
         done = true;
+        release();
         const v = input.value.trim();
         if (!v || v === raw) { renderBalances(); return; }
         try {
