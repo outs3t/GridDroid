@@ -77,7 +77,11 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
+    # Scompattazione onefile in una dir dedicata invece di %TEMP%: il
+    # cleanup delle dir _MEI* di altre app PyInstaller (o cleaner di
+    # sistema) non puo' piu' cancellare pythonXY.dll mentre il processo
+    # figlio la carica -> niente piu' 'Failed to load Python DLL'.
+    runtime_tmpdir=r'%LOCALAPPDATA%\GridDroid\runtime',
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
