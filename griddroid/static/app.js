@@ -68,6 +68,11 @@ function connectWebSocket() {
             const msg = JSON.parse(event.data);
             if (msg.type === "devices") {
                 updateDevicesState(msg);
+            } else if (msg.type === "balances") {
+                // Push saldi dal server: arriva anche a finestra non
+                // attiva, a differenza del polling col timer strozzato.
+                _balancesCache = msg.data || {};
+                renderBalances();
             } else if (msg.type === "log") {
                 appendLog(msg.data);
             }
@@ -4628,15 +4633,6 @@ function _saldiAge(rec, now) {
     return { stale, ageTxt };
 }
 
-function _saldiDelta(rec) {
-    if (typeof rec?.diff === "number" && rec.diff !== 0) {
-        const up = rec.diff > 0;
-        return `<span class="saldi-delta ${up ? "up" : "down"}">` +
-            `${up ? "▲" : "▼"} ${_fmtEuro(Math.abs(rec.diff))}</span>`;
-    }
-    return "";
-}
-
 // serial -> [{book, rec}] — i conti letti su quel device, in ordine
 // alfabetico per nome bookmaker.
 function _deviceBooks() {
@@ -4714,7 +4710,6 @@ function _renderSaldiCards(wrap) {
                 `<span class="saldi-card-val editable" data-saldo="${escapeHtml(r.rec.saldo)}" ` +
                 `title="Click per correggere il saldo a mano">` +
                 `<span class="saldi-num">${val}</span>` +
-                `${_saldiDelta(r.rec)}` +
                 (ageTxt ? `<span class="saldi-age">${ageTxt}</span>` : "") +
                 `</span></div>`;
         }).join("") : '<div class="saldi-card-empty">Nessun saldo letto</div>';
@@ -4769,10 +4764,9 @@ function _renderSaldiMatrix(wrap) {
         const val = isNaN(v) ? escapeHtml(rec.saldo) : _fmtEuro(v);
         const user = rec.username
             ? `<span class="saldi-user">${escapeHtml(rec.username)}</span>` : "";
-        const delta = _saldiDelta(rec);
         const age = ageTxt ? `<span class="saldi-age">${ageTxt}</span>` : "";
         return `<td class="saldi-cell${stale ? " stale" : ""}" title="${escapeHtml(tip)}">` +
-            `<span class="saldi-val">${val}</span>${user}${delta}${age}</td>`;
+            `<span class="saldi-val">${val}</span>${user}${age}</td>`;
     };
 
     const headCells = visDevs.map(d =>
@@ -4829,6 +4823,8 @@ function renderBalances() {
     // Overlay chiuso: non ricostruire mille celle a ogni refresh.
     const ov = document.getElementById("saldiOverlay");
     if (ov && ov.hidden) return;
+    // Editing in corso: un re-render cancellerebbe l'input mentre si scrive.
+    if (document.querySelector("#saldiCards .saldi-edit")) return;
 
     const isCards = _saldiView === "cards";
     cards.hidden = !isCards;
@@ -4968,6 +4964,11 @@ function initBalances() {
     }
     if (btnRefresh) btnRefresh.addEventListener("click", fetchBalances);
     document.addEventListener("keydown", e => { if (e.key === "Escape") closeSaldi(); });
+    // Finestra che torna in primo piano: refresh subito (i timer sono
+    // strozzati mentre era in background, il push WS copre il resto).
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) fetchBalances();
+    });
     // Auto-refresh: ogni 10s la matrice si aggiorna coi saldi letti in
     // background dal backend (lettura CDP periodica, ~30s per device).
     fetchBalances();

@@ -1348,7 +1348,10 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
         log_queue = logs.subscribe()
         try:
             # Task per inviare aggiornamenti periodici
+            last_bal_ver = -1
+
             async def send_updates():
+                nonlocal last_bal_ver
                 while True:
                     try:
                         devices = list(adb.devices.values())
@@ -1359,6 +1362,15 @@ def create_app(settings: Optional[AppSettings] = None) -> FastAPI:
                             "focused": input_relay.focused_serial,
                         }
                         await ws.send_json(msg)
+                        # Saldi pushati solo quando cambiano: i timer del
+                        # browser vengono strozzati a finestra non attiva,
+                        # i messaggi WS invece arrivano sempre -> la pagina
+                        # Saldi si aggiorna davvero in tempo reale.
+                        if adb.balances_version != last_bal_ver:
+                            last_bal_ver = adb.balances_version
+                            await ws.send_json(
+                                {"type": "balances", "data": adb.balances}
+                            )
                     except Exception:
                         # Socket chiuso: termina il task invece di loggare all'infinito
                         return

@@ -348,6 +348,9 @@ class AdbManager:
         # Stato saldi corrente: serial -> {saldo, bookmaker, username, nome, timestamp}
         # Caricato da disco all'avvio, aggiornato in background a ogni lettura.
         self._balances: Dict[str, dict] = load_balances_state()
+        # Bumpato a ogni scrittura: il WS /ws lo confronta e pusha i saldi
+        # al frontend solo quando qualcosa e' davvero cambiato.
+        self._balances_version: int = 0
         # Task di auto-lettura saldi in background per device (serial -> task)
         self._balance_tasks: Dict[str, asyncio.Task] = {}
         # Semaforo globale sulle letture CDP: ogni lettura fa 2 spawn adb
@@ -436,6 +439,11 @@ class AdbManager:
         """Stato saldi corrente: serial -> {saldo, bookmaker, username, nome, timestamp}."""
         return self._balances
 
+    @property
+    def balances_version(self) -> int:
+        """Contatore incrementato a ogni modifica dei saldi."""
+        return self._balances_version
+
     def record_balance(
         self,
         serial: str,
@@ -486,6 +494,7 @@ class AdbManager:
                 "timestamp": ts,
                 "diff": diff,
             }
+        self._balances_version += 1
         save_balances_state(self._balances)
 
     def set_played(self, serial: str, played: bool = True) -> None:
@@ -549,6 +558,7 @@ class AdbManager:
         save_tags(self._tags)
         save_played(sorted(self._played_serials))
         save_skipped(sorted(self._skipped_serials))
+        self._balances_version += 1
         save_balances_state(self._balances)
         logs.warn(f"Rimossi seriali non validi: {sorted(bad)}")
 
@@ -585,6 +595,7 @@ class AdbManager:
         save_tags(self._tags)
         save_played(sorted(self._played_serials))
         save_skipped(sorted(self._skipped_serials))
+        self._balances_version += 1
         save_balances_state(self._balances)
         if existed:
             logs.info("Dispositivo eliminato", serial=serial)
