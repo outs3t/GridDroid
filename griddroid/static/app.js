@@ -4440,6 +4440,12 @@ function renderGroups() {
     if (!list) return;
     const groups = getAllGroups();
     const stored = new Set(loadStoredGroups());
+    const query = (
+        document.getElementById("groupSearch")?.value || ""
+    ).trim().toLowerCase();
+    const shown = query
+        ? groups.filter((g) => g.toLowerCase().includes(query))
+        : groups;
     const counts = state.devices.reduce((acc, d) => {
         (d.tags || []).forEach((t) => {
             acc[t] = (acc[t] || 0) + 1;
@@ -4450,7 +4456,9 @@ function renderGroups() {
     const allActive = !state.activeGroupFilter || state.activeGroupFilter === "__all__";
     const allCount = state.devices.length;
 
-    let html = `
+    let html = "";
+    if (!query || "tutti i telefoni".includes(query)) {
+        html += `
         <div class="group-row">
             <span class="group-name">Tutti i telefoni <span class="group-count">(${allCount})</span></span>
             <div class="group-actions">
@@ -4459,8 +4467,9 @@ function renderGroups() {
             </div>
         </div>
     `;
+    }
 
-    html += groups
+    html += shown
         .map(
             (g) => `
         <div class="group-row">
@@ -5213,6 +5222,11 @@ function initGroups() {
     const btn = document.getElementById("btnCreateGroup");
     const sel = document.getElementById("assignDevice");
     const save = document.getElementById("btnSaveAssignment");
+    const search = document.getElementById("groupSearch");
+
+    if (search) {
+        search.addEventListener("input", renderGroups);
+    }
 
     if (btn && input) {
         const create = () => {
