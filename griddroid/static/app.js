@@ -1292,6 +1292,8 @@ function createMseRemuxer(videoEl, onReady, onError) {
     let queue = [];
     let lastSps = null;
     let lastPps = null;
+    let msOpen = false;
+    let pendingInit = null; // {sps, pps} da eseguire appena ms e' aperto
     const FRAME_DUR = 50; // 20fps @ timescale 1000ms
 
     function _append(data) {
@@ -1317,6 +1319,14 @@ function createMseRemuxer(videoEl, onReady, onError) {
     }
 
     function _init(sps, pps) {
+        // MediaSource apre in modo asincrono dopo avergli assegnato la src
+        // del video. Su client lenti/in rete il primo keyframe arriva prima
+        // di sourceopen e addSourceBuffer() lancia InvalidStateError.
+        if (!msOpen) {
+            pendingInit = { sps, pps };
+            return false;
+        }
+        pendingInit = null;
         const initSeg = _fmp4InitSegment(sps, pps);
         if (!initSeg) return false;
         const profile = sps[1].toString(16).padStart(2, '0');
@@ -1379,11 +1389,22 @@ function createMseRemuxer(videoEl, onReady, onError) {
 
     function destroy() {
         queue = [];
+        pendingInit = null;
         if (sb) { try { ms.removeSourceBuffer(sb); } catch (e) {} sb = null; }
         inited = false;
     }
 
-    ms.addEventListener('sourceopen', () => onReady?.());
+    ms.addEventListener('sourceopen', () => {
+        msOpen = true;
+        // Se il primo keyframe e' arrivato prima dell'apertura, inizializza ora.
+        if (pendingInit) {
+            _init(pendingInit.sps, pendingInit.pps);
+            pendingInit = null;
+        }
+        onReady?.();
+    });
+    ms.addEventListener('error', (e) => onError?.(e));
+    ms.addEventListener('sourceended', () => { msOpen = false; });
     return { feed, destroy };
 }
 
@@ -1425,7 +1446,44 @@ function scheduleCanvasDraw(feedEl, serial, source, width, height) {
     });
 }
 
+// Limita quanti stream partono contemporaneamente: quando un client in rete
+// apre la griglia, 26 celle diventano visibili insieme e ognuna richiede un
+// keyframe all'encoder -> storm di reset_video sul telefono. Con una coda
+// globale ne avviamo max 6 in parallelo e a gruppi, riducendo il carico ADB.
+const _STREAM_START_MAX = 6;
+let _streamStartInFlight = 0;
+let _streamStartQueue = [];
+function _drainStreamStartQueue() {
+    while (_streamStartInFlight < _STREAM_START_MAX && _streamStartQueue.length) {
+        const item = _streamStartQueue.shift();
+        if (!item) continue;
+        // Potrebbe essere gia' stato stoppato/rimpiazzato mentre era in coda.
+        if (item.feedEl.dataset.wsActive === item.serial) continue;
+        // Se un feed e' gia' in volo per un altro serial (cella duplicata),
+        // non contarlo due volte: lascia che il primo avvio lo gestisca.
+        if (item.feedEl.dataset.wsActive) continue;
+        _streamStartInFlight++;
+        _realStartStreamWs(item.feedEl, item.serial);
+    }
+}
+function _onStreamStartDone() {
+    _streamStartInFlight = Math.max(0, _streamStartInFlight - 1);
+    _drainStreamStartQueue();
+}
 function startStreamWs(feedEl, serial) {
+    // Gli stream gia' attivi in pausa AutoWatch non rientrano nella coda:
+    // riprendono subito disattivando _awPaused.
+    const existing = streamSessions[serial];
+    if (existing && existing.feedEl === feedEl) {
+        feedEl._awPaused = false;
+        return;
+    }
+    // Se stiamo gia' iniziando lo stesso feed/serial, non duplicare.
+    if (_streamStartQueue.some((x) => x.feedEl === feedEl && x.serial === serial)) return;
+    _streamStartQueue.push({ feedEl, serial });
+    _drainStreamStartQueue();
+}
+function _realStartStreamWs(feedEl, serial) {
     stopStreamWs(feedEl);
     feedEl._awPaused = false;
 
@@ -1451,6 +1509,7 @@ function startStreamWs(feedEl, serial) {
     if (jpegMode && feedEl.tagName !== 'CANVAS') {
         setPlaceholder('Modalità JPEG richiede canvas', '⚠️');
         feedEl.dataset.wsRetryAt = Date.now() + 5000;
+        _onStreamStartDone();
         return;
     }
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -1485,11 +1544,13 @@ function startStreamWs(feedEl, serial) {
             } else if (msg.type === 'error') {
                 console.error(`[Worker] ${serial}:`, msg.message);
                 ws.close();
+                _onStreamStartDone();
             }
         };
         worker.onerror = (err) => {
             console.error(`[Worker] ${serial}:`, err);
             ws.close();
+            _onStreamStartDone();
         };
         session.worker = worker;
     }
@@ -1499,11 +1560,15 @@ function startStreamWs(feedEl, serial) {
     } else if (!jpegMode && !useWorker && typeof MediaSource === "undefined") {
         console.error("MediaSource non supportato");
         setPlaceholder('Errore player MSE', '⚠️');
+        _onStreamStartDone();
         return;
     }
 
     ws.onopen = () => {
         setPlaceholder('Connessione in corso...', '⏳');
+        // Lo stream e' effettivamente partito: libera uno slot della coda
+        // globale per l'avvio degli altri stream (storm guard).
+        _onStreamStartDone();
     };
 
     ws.onmessage = (event) => {
@@ -1566,6 +1631,7 @@ function startStreamWs(feedEl, serial) {
                         error: (err) => {
                             console.error(`VideoDecoder ${serial}:`, err);
                             ws.close();
+                            _onStreamStartDone();
                         },
                     });
                     session.decoder.configure({ codec, description: desc, hardwareAcceleration: "prefer-hardware" });
@@ -1573,6 +1639,7 @@ function startStreamWs(feedEl, serial) {
                 } catch (e) {
                     console.error(`Config VideoDecoder ${serial}:`, e);
                     ws.close();
+                    _onStreamStartDone();
                     return;
                 }
             }
@@ -1641,6 +1708,7 @@ function startStreamWs(feedEl, serial) {
                 } catch (err) {
                     console.error(`Inizializzazione MSE ${serial}:`, err);
                     setPlaceholder('Errore player MSE', '⚠️');
+                    _onStreamStartDone();
                     return;
                 }
             }
@@ -1657,6 +1725,9 @@ function startStreamWs(feedEl, serial) {
     };
 
     ws.onclose = (ev) => {
+        // Libera lo slot della coda globale anche se l'avvio non e' mai
+        // arrivato a onopen (connessione rifiutata o chiusa subito).
+        _onStreamStartDone();
         // ffmpeg mancante sul server: torniamo a H264 e riconnettiamo.
         if (session.jpegMode && ev && ev.reason && ev.reason.indexOf('ffmpeg') !== -1) {
             toast('ffmpeg non disponibile: torno a H264', 'warn');
@@ -1740,6 +1811,11 @@ function stopStreamWs(feedEl) {
             _frameBuffers.delete(serial);
         }
     }
+    // Se questo feed era in coda di avvio, rimuovilo senza penalizzare lo slot
+    // (lo slot e' legato alla connessione aperta, non alla coda).
+    const qIdx = _streamStartQueue.findIndex((x) => x.feedEl === feedEl && x.serial === serial);
+    if (qIdx >= 0) _streamStartQueue.splice(qIdx, 1);
+
     feedEl.dataset.wsActive = "";
     feedEl.dataset.wsRetryAt = Date.now() + 3000 + Math.random() * 3000;
     feedEl.style.display = 'none';
