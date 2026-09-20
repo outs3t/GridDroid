@@ -748,6 +748,10 @@ class AdbManager:
         (1,234.56): il separatore decimale e' quello seguito da 1-2 cifre
         finali, gli altri sono separatori delle migliaia.
         """
+        # Segno: '-', U+2212 (minus) o en-dash prima della prima cifra
+        # (anche separati dal simbolo: '-€ 234,00', '€ -234,00'). PayPal
+        # mostra i saldi in rosso cosi' e prima venivano letti positivi.
+        sign = "-" if re.match(r"^[^\d]*[-\u2212\u2013][^\d]*\d", raw) else ""
         s = re.sub(r"[^\d.,]", "", raw)
         if not s:
             return None
@@ -756,10 +760,10 @@ class AdbManager:
         if m:
             int_part = re.sub(r"[.,]", "", s[: m.start()])
             dec = m.group(2).ljust(2, "0")
-            return f"{int_part}.{dec}" if int_part else f"0.{dec}"
+            return f"{sign}{int_part}.{dec}" if int_part else f"{sign}0.{dec}"
         # Nessun decimale: intero puro
         digits = re.sub(r"[.,]", "", s)
-        return f"{digits}.00" if digits else None
+        return f"{sign}{digits}.00" if digits else None
 
     async def _foreground_package(self, serial: str) -> str:
         """Package dell'app in foreground (per identificare il bookmaker)."""
@@ -1461,7 +1465,10 @@ class AdbManager:
     # mirati, poi per keyword, poi per primo importo con valuta.
     _CDP_JS = r"""
 (() => {
-  const money = /(?:€|EUR|USD|\$|£)\s*[0-9][0-9.,\s]*[0-9]|[0-9][0-9.,]*[0-9]\s*(?:€|EUR|USD|\$|£)/i;
+  // Segno negativo opzionale ('-', minus U+2212, en-dash) prima del simbolo
+  // o del numero: PayPal mostra '-€ 234,00' e senza il match del segno il
+  // saldo veniva letto positivo.
+  const money = /[-\u2212\u2013]?\s*(?:€|EUR|USD|\$|£)\s*[-\u2212\u2013]?\s*[0-9][0-9.,\s]*[0-9]|[-\u2212\u2013]?\s*[0-9][0-9.,]*[0-9]\s*(?:€|EUR|USD|\$|£)/i;
   const kw = /saldo|balance|totale|available|disponibil|conto|wallet|fondi|credit/i;
   const pick = t => { const m = t.match(money); return m ? m[0] : null; };
   // Testo VISIBILE: innerText e' vuoto su display:none, ma textContent no —
@@ -1817,14 +1824,17 @@ class AdbManager:
                         hit = await _js(
                             "(()=>{const sels="
                             + json.dumps(sels)
-                            + ";const re=/(?:€|EUR|USD|\\$|£)\\s*[0-9]"
-                            "[0-9.,\\s]*[0-9]|[0-9][0-9.,]*[0-9]\\s*"
+                            # Segno negativo opzionale (PayPal: '-€ 234,00')
+                            # prima del simbolo o del numero.
+                            + ";const re=/[-\\u2212\\u2013]?\\s*(?:€|EUR|USD|\\$|£)"
+                            "\\s*[-\\u2212\\u2013]?\\s*[0-9][0-9.,\\s]*[0-9]|"
+                            "[-\\u2212\\u2013]?\\s*[0-9][0-9.,]*[0-9]\\s*"
                             "(?:€|EUR|USD|\\$|£)/i;"
                             # Il simbolo € puo' essere un glifo custom
                             # del font (bet365: carattere PUA, non
                             # matcha il regex) — con un selettore
                             # calibrato basta un numero decimale.
-                            + "const re2=/[0-9]+[.,][0-9]{1,2}/;"
+                            + "const re2=/[-\\u2212\\u2013]?\\s*[0-9]+[.,][0-9]{1,2}/;"
                             # Starcasino renderizza il saldo dentro
                             # shadow DOM (Stencil .hydrated): il
                             # querySelector normale non ci arriva —
@@ -1992,7 +2002,12 @@ class AdbManager:
                     saldo = None
                     saldo_val = val.get("saldo")
                     if saldo_val:
+                        # Il segno negativo puo' stare prima del simbolo
+                        # ('-€ 234,00') o del numero ('€ -234,00'): lo
+                        # catturo come prefisso opzionale e lo passo a
+                        # _normalize_amount, che lo conserva.
                         num = re.search(
+                            r"([-\u2212\u2013]\s*(?:€|EUR|USD|\$|£)?\s*)?"
                             r"[0-9]+(?:[.,][0-9]+)*[.,][0-9]{1,2}\b",
                             str(saldo_val),
                         )
