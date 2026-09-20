@@ -1721,6 +1721,10 @@ class AdbManager:
 
             async def _cdp() -> dict:
                 # pages gia' caricate: da qui in poi solo eval JS.
+                # nonlocal obbligatorio: piu' sotto 'pages = [...]' (dedup)
+                # altrimenti la rende locale della closure e i .append()
+                # precedenti esplodono con UnboundLocalError.
+                nonlocal pages
                 host = f"127.0.0.1:{port}"
 
                 async def _browser_ws_url() -> str:
@@ -2062,11 +2066,16 @@ class AdbManager:
                     serial=serial,
                 )
             return result
-        except Exception:
-            # Chrome non attivo / CDP irraggiungibile / forward morto:
-            # dimentica il forward persistente e rimuovilo — alla prossima
-            # lettura ne viene creato uno pulito.
-            if port:
+        except Exception as exc:
+            # Prima qui si ingoiava tutto in silenzio, si buttava il forward
+            # e si tornava vuoto: nessun log, nessun backoff, e 22s dopo si
+            # ricominciava — letture ferme per ore senza una riga di errore.
+            # Ora l'errore e' visibile (throttlato) e il forward viene
+            # rimosso SOLO se e' morto davvero (errore di connessione):
+            # ricrearlo a ogni giro accumula socket zombie in Chrome.
+            msg = str(exc) or type(exc).__name__
+            logs.warn(f"Lettura saldo CDP fallita: {msg}", serial=serial, throttle_s=300)
+            if port and isinstance(exc, (ConnectionError, OSError)):
                 await self._cdp_reset_fwd(serial, port)
             return empty
 
