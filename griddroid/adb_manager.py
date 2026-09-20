@@ -374,6 +374,11 @@ class AdbManager:
         # scan leggero: la lettura DOM vera parte solo se la firma
         # cambia (navigazione/login) o se il dato e' vecchio.
         self._bal_pages_sig: Dict[str, frozenset] = {}
+        # Fallimenti consecutivi dello scan devtools: dopo 3 si tenta un
+        # 'adb reconnect' (throttled) per liberare il server devtools di
+        # Chrome dalle connessioni zombie lasciate dai forward morti.
+        self._bal_fails: Dict[str, int] = {}
+        self._bal_last_reconnect: Dict[str, float] = {}
         # serial -> ts: ultima lettura DOM vera (eval JS nelle pagine).
         self._last_balance_eval: Dict[str, float] = {}
         # serial -> ts fino a cui saltare gli scan (Chrome spento /
@@ -601,6 +606,8 @@ class AdbManager:
         self._bal_visible.pop(serial, None)
         self._bal_pages_sig.pop(serial, None)
         self._bal_backoff.pop(serial, None)
+        self._bal_fails.pop(serial, None)
+        self._bal_last_reconnect.pop(serial, None)
         self._last_balance_eval.pop(serial, None)
         self._balance_cache.pop(serial, None)
         _SERIAL_PORT.pop(serial, None)
@@ -933,6 +940,39 @@ class AdbManager:
         except Exception:
             pass
 
+    async def _cdp_cleanup_stale_forwards(self, serial: str, keep: int) -> None:
+        """Rimuove i forward orfani verso chrome_devtools_remote nel nostro
+        range (39300-39900), tranne quello appena creato.
+
+        Ogni riavvio/reset/versione ne lasciava uno: con centinaia di
+        listener e le relative connessioni zombie il server devtools di
+        Chrome (single-threaded) si blocca e /json non risponde piu'.
+        I forward di terzi (es. Panda, range 24xxx) non vengono toccati.
+        """
+        try:
+            rc, out, _ = await self.adb_command(
+                "forward", "--list", serial=serial, timeout=5.0,
+            )
+            if rc != 0:
+                return
+            pat = re.compile(
+                rf"^{re.escape(serial)}\s+tcp:(\d+)\s+"
+                r"localabstract:chrome_devtools_remote"
+            )
+            for line in out.splitlines():
+                m = pat.match(line.strip())
+                if not m:
+                    continue
+                p = int(m.group(1))
+                if p == keep or not (39300 <= p <= 39900):
+                    continue
+                await self.adb_command(
+                    "forward", "--remove", f"tcp:{p}",
+                    serial=serial, timeout=5.0,
+                )
+        except Exception:
+            pass
+
     async def _auto_read_balance(self, serial: str) -> None:
         """Lettura saldo background: CDP-only, non blocca il device.
 
@@ -959,6 +999,7 @@ class AdbManager:
                     self._bal_visible[serial] = False
                     self._bal_pages_sig.pop(serial, None)
                     return
+                self._bal_fails.pop(serial, None)
                 # Firma tab: url + titolo. Il login cambia sempre una
                 # delle due (redirect alla dashboard o titolo nuovo) ->
                 # "changed" = si fionda sulla lettura vera subito.
@@ -983,8 +1024,22 @@ class AdbManager:
             self._record_cdp(serial, cdp)
         except Exception as exc:
             self._bal_backoff[serial] = time.time() + 60.0
+            fails = self._bal_fails[serial] = self._bal_fails.get(serial, 0) + 1
             msg = str(exc) or type(exc).__name__
             logs.warn(f"Auto-lettura saldo fallita: {msg}", serial=serial, throttle_s=300)
+            # Chrome tiene il server devtools appeso a connessioni zombie:
+            # l'unico sblocco non invasivo e' 'adb reconnect' — chiude i
+            # canali adbd (stream scrcpy compreso, si riavvia da solo) e
+            # Chrome libera l'handler. Max 1 volta ogni 10 min per device.
+            if fails >= 3 and \
+                    time.time() - self._bal_last_reconnect.get(serial, 0) > 600:
+                self._bal_last_reconnect[serial] = time.time()
+                self._bal_fails[serial] = 0
+                logs.warn(
+                    "Devtools non risponde: reset transport adb per sbloccarlo",
+                    serial=serial,
+                )
+                asyncio.ensure_future(self._try_reconnect(serial))
 
     def _record_cdp(self, serial: str, cdp: dict) -> int:
         """Persiste il risultato CDP: il saldo della tab migliore piu'
@@ -1566,6 +1621,7 @@ class AdbManager:
             if rc != 0:
                 return 0, []
             self._cdp_fwd[serial] = port
+            await self._cdp_cleanup_stale_forwards(serial, keep=port)
 
         # Lista target: HTTP minimale su localhost (niente requests).
         # IMPORTANTE: Host DEVE includere la porta — Chrome valida
@@ -1573,25 +1629,36 @@ class AdbManager:
         # senza rispondere (0 byte). Inoltre webSocketDebuggerUrl
         # eredita host:porta dall'Host inviato.
         host = f"127.0.0.1:{port}"
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", port), timeout=3.0
-        )
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", port), timeout=3.0
+            )
+        except Exception:
+            # Socket devtools assente (Chrome spento) o listener morto:
+            # se il forward era registrato lo dimentichiamo, cosi' il
+            # prossimo giro ne crea uno nuovo invece di riusare quello
+            # morto all'infinito.
+            await self._cdp_reset_fwd(serial, port)
+            return 0, []
         try:
             writer.write(
                 f"GET /json HTTP/1.1\r\nHost: {host}\r\n"
                 f"Connection: close\r\n\r\n".encode()
             )
             await writer.drain()
-            # /json con decine di tab supera i 64KB: leggo fino a chiusura
-            # o fine Content-Length, tetto 2MB — una sola read() arrivava
-            # troncata e json.loads falliva con 'Unterminated string'.
+            # /json con decine di tab supera i 64KB (visto 79KB in ~11s):
+            # leggo fino a chiusura o fine Content-Length, tetto 2MB e
+            # budget 15s — una sola read() arrivava troncata e json.loads
+            # falliva con 'Unterminated string'.
             raw = b""
-            total = time.monotonic() + 5.0
+            total = time.monotonic() + 15.0
             while len(raw) < 2 * 1024 * 1024 and time.monotonic() < total:
                 try:
-                    chunk = await asyncio.wait_for(reader.read(65536), timeout=2.0)
+                    chunk = await asyncio.wait_for(reader.read(65536), timeout=4.0)
                 except asyncio.TimeoutError:
-                    break
+                    if not raw:
+                        break  # mai risposto: server appeso
+                    continue  # dribble: c'e' ancora budget, riprovo
                 if not chunk:
                     break
                 raw += chunk
@@ -1602,13 +1669,21 @@ class AdbManager:
                         break
         finally:
             writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), 1.0)
+            except Exception:
+                pass
         body = raw.split(b"\r\n\r\n", 1)
         if len(body) < 2:
-            return port, []
+            # TCP accettato ma Chrome non risponde mai: il server devtools
+            # e' single-threaded e una connessione zombie (forward morti
+            # accumulati) lo blocca. Errore esplicito -> il chiamante
+            # logga e dopo N fallimenti fa 'adb reconnect'.
+            raise RuntimeError("devtools /json: nessuna risposta (server occupato)")
         try:
             targets = json.loads(body[1].decode("utf-8", errors="replace"))
-        except Exception:
-            return port, []
+        except Exception as exc:
+            raise RuntimeError(f"devtools /json invalido: {exc}")
         # TUTTE le pagine web reali (skip chrome:// e about:blank):
         # con piu' tab aperte il primo target non e' quello visibile
         # — leggere la tab sbagliata attribuiva saldi al book di
